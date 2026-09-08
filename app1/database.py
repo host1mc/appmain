@@ -361,6 +361,57 @@ def _is_oracle_unreachable(exc) -> bool:
     return any(tag in msg for tag in _ORACLE_DOWN_MARKERS)
 
 
+_ORACLE_STORAGE_MARKERS = (
+    "ORA-01653", "ORA-01654", "ORA-01652", "ORA-01658", "ORA-01659",
+    "ORA-01631", "ORA-01632", "ORA-01688", "ORA-01691",
+    "ORA-01536", "ORA-12953", "ORA-12954", "ORA-30036",
+    "unable to extend",
+)
+_STORAGE_CACHE = {}
+_STORAGE_TTL = 30.0
+_STORAGE_PCT = 0.95
+_STORAGE_MIN_FREE = 32 * 1024 * 1024
+
+
+def _is_oracle_storage_full(exc) -> bool:
+    msg = str(exc or "")
+    return any(tag.lower() in msg.lower() for tag in _ORACLE_STORAGE_MARKERS)
+
+
+def _dsn_storage_full(conn, dsn) -> bool:
+    """True when this ATP is out of (or nearly out of) tablespace."""
+    now = time.monotonic()
+    hit = _STORAGE_CACHE.get(dsn)
+    if hit and now - hit[0] < _STORAGE_TTL:
+        return hit[1]
+    full = False
+    try:
+        cur = conn.cursor()
+        cur.execute("SELECT NVL(SUM(bytes), 0) FROM user_segments")
+        used = int(cur.fetchone()[0] or 0)
+        cur.execute(
+            "SELECT NVL(SUM(CASE WHEN max_bytes < 0 THEN NULL ELSE max_bytes END), 0) "
+            "FROM user_ts_quotas"
+        )
+        quota = int(cur.fetchone()[0] or 0)
+        if quota <= 0:
+            try:
+                quota = int(float(_setting("ORACLE_STORAGE_GB", "20"))) * (1024 ** 3)
+            except (TypeError, ValueError):
+                quota = 20 * (1024 ** 3)
+        remaining = quota - used
+        full = remaining <= _STORAGE_MIN_FREE or (quota and used / quota >= _STORAGE_PCT)
+        if full:
+            _debug_print(
+                f"[database] Oracle storage full used={used} quota={quota}",
+                file=sys.stderr,
+            )
+    except Exception as ex:
+        full = _is_oracle_storage_full(ex)
+    _STORAGE_CACHE[dsn] = (now, full)
+    return full
+
+
 def _failover_oracle(reason):
     """Move the live target to the next DSN. Returns True if there is one."""
     global _ORACLE_CFG, _ORACLE_POOL, _ORACLE_TARGET_I, _SCHEMA_ENSURED

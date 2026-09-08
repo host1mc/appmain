@@ -109,6 +109,7 @@ app.config["SESSION_COOKIE_SECURE"] = False
 
 _oracle_pools = {}  # {shard_id: connection}
 _oracle_live = {}   # requested shard -> dsn index actually in use
+_oracle_skip = set()  # DSN strings skipped because storage is full
 
 
 def _resolve_shard(shard_id=None):
@@ -167,9 +168,19 @@ def _oracle_conn(shard_id=None):
             start = n
             break
     last = None
-    for t in targets[start:]:
+    for t in targets[start:] + targets[:start]:
+        if t["dsn"] in _oracle_skip and any(x["dsn"] not in _oracle_skip for x in targets):
+            continue
         try:
             conn = oracledb.connect(user=t["user"], password=t["password"], dsn=t["dsn"])
+            if _oracle_storage_full(conn) and any(x["dsn"] != t["dsn"] for x in targets):
+                _oracle_skip.add(t["dsn"])
+                print(f"[db_admin] Oracle DSN index {t['i']} storage full, next DSN")
+                try:
+                    conn.close()
+                except Exception:
+                    pass
+                continue
             _oracle_pools[sid] = conn
             _oracle_live[sid] = t["i"]
             if t["i"] != sid:
@@ -180,6 +191,41 @@ def _oracle_conn(shard_id=None):
             print(f"[db_admin] Oracle DSN index {t['i']} unreachable: {ex}")
             continue
     raise RuntimeError(f"Oracle unreachable: {last}")
+
+
+_ORACLE_STORAGE_MARKERS = (
+    "ORA-01653", "ORA-01654", "ORA-01652", "ORA-01658", "ORA-01659",
+    "ORA-01631", "ORA-01632", "ORA-01688", "ORA-01691",
+    "ORA-01536", "ORA-12953", "ORA-12954", "ORA-30036",
+    "unable to extend",
+)
+
+
+def _is_oracle_storage_full(exc) -> bool:
+    msg = str(exc or "")
+    return any(tag.lower() in msg.lower() for tag in _ORACLE_STORAGE_MARKERS)
+
+
+def _oracle_storage_full(conn) -> bool:
+    try:
+        cur = conn.cursor()
+        cur.execute("SELECT NVL(SUM(bytes), 0) FROM user_segments")
+        used = int(cur.fetchone()[0] or 0)
+        cur.execute(
+            "SELECT NVL(SUM(CASE WHEN max_bytes < 0 THEN NULL ELSE max_bytes END), 0) "
+            "FROM user_ts_quotas"
+        )
+        quota = int(cur.fetchone()[0] or 0)
+        cur.close()
+        if quota <= 0:
+            try:
+                quota = int(float(os.environ.get("ORACLE_STORAGE_GB", "20"))) * (1024 ** 3)
+            except (TypeError, ValueError):
+                quota = 20 * (1024 ** 3)
+        remaining = quota - used
+        return remaining <= 32 * 1024 * 1024 or (quota and used / quota >= 0.95)
+    except Exception as ex:
+        return _is_oracle_storage_full(ex)
 
 
 def _oracle_query(sql, params=None, shard_id=None):
