@@ -431,37 +431,54 @@ def _failover_oracle(reason):
     return True
 
 
+def _is_pool_exhausted(exc) -> bool:
+    msg = str(exc or "")
+    if "DPY-4005" in msg:
+        return True
+    args = getattr(exc, "args", None) or ()
+    if args:
+        code = getattr(args[0], "full_code", None)
+        if code == "DPY-4005":
+            return True
+    return False
+
+
 def _oracle_conn():
     last_ex = None
     tried = set()
-    for _ in range(max(1, len(_ORACLE_TARGETS) or 1)):
-        cfg = _ORACLE_CFG
+    n = max(1, len(_ORACLE_TARGETS) or 1)
+    for _ in range(n):
+        cfg = _ORACLE_CFG or {}
         key = cfg.get("dsn")
-        if key in tried:
-            break
+        if not key or key in tried:
+            if not _failover_oracle("no dsn"):
+                break
+            continue
         tried.add(key)
         pool = _oracle_pool()
         try:
-            return pool.acquire()
+            conn = pool.acquire()
         except Exception as ex:
             last_ex = ex
-            # Local pool wait once, then hop — a full primary must not 503
-            # while ORACLE_DSN_n still has sessions.
-            if _is_pool_exhausted(ex) and not _pool_saturated(pool):
-                try:
-                    return pool.acquire()
-                except Exception as ex2:
-                    last_ex = ex2
-                    ex = ex2
-            hop = (
-                _is_oracle_unreachable(ex)
-                or _is_pool_exhausted(ex)
-                or _pool_saturated(pool)
-            )
-            if not hop:
+            # Do not wait on the same pool again — DPY-4005 already burned
+            # wait_timeout. Hop to ORACLE_DSN_n while one remains.
+            if not (
+                _is_pool_exhausted(ex)
+                or _is_oracle_unreachable(ex)
+                or _is_oracle_storage_full(ex)
+            ):
                 raise
             if not _failover_oracle(ex):
                 raise
+            continue
+        if len(_ORACLE_TARGETS) > 1 and _dsn_storage_full(conn, key):
+            try:
+                conn.close()
+            except Exception:
+                pass
+            if _failover_oracle("storage full"):
+                continue
+        return conn
     if last_ex:
         raise last_ex
     raise RuntimeError("Oracle is not configured")
