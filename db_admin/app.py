@@ -255,6 +255,12 @@ def _oracle_query(sql, params=None, shard_id=None):
             except Exception:
                 pass
             _oracle_pools.pop(sid, None)
+            if _is_oracle_storage_full(ex):
+                live_i = _oracle_live.get(sid)
+                for t in _oracle_targets():
+                    if t["i"] == live_i:
+                        _oracle_skip.add(t["dsn"])
+                        break
             print(f"[db_admin] Oracle query failed, retry/failover: {ex}")
             continue
         finally:

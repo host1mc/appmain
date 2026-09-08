@@ -236,6 +236,13 @@ def _load_config():
         if len(targets) > 1:
             _debug_print(f"[database] Oracle failover: {len(targets)} DSN(s) "
                          f"({', '.join(t['label'] for t in targets)})")
+        elif any(_setting(f"DB_{i}", "").strip() for i in range(0, 8)):
+            _debug_print(
+                "[database] DB_0/DB_1 are Mongo URIs — they do not fail over "
+                "ORACLE_DSN. Add the second ATP's SQL connect string as "
+                "ORACLE_DSN_1 to hop on DPY-4005 or full storage.",
+                file=sys.stderr,
+            )
 
 def _tier_name() -> str:
     """Which tier this process is, from the launcher that started it.
@@ -469,6 +476,11 @@ def _oracle_conn():
             ):
                 raise
             if not _failover_oracle(ex):
+                _debug_print(
+                    "[database] Oracle failover skipped (set ORACLE_DSN_1): "
+                    f"{ex}",
+                    file=sys.stderr,
+                )
                 raise
             continue
         if len(_ORACLE_TARGETS) > 1 and _dsn_storage_full(conn, key):
