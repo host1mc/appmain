@@ -692,6 +692,24 @@ def build_routes(runtime, config):
                 hosts.append(host)
         return ",".join(hosts)
 
+    async def _node_name_of(server):
+        node_id = node_id_of_server(server)
+        if node_id is None:
+            return ""
+        try:
+            import node_registry
+            nodes = await run_in_threadpool(node_registry.list_nodes)
+        except Exception:
+            return ""
+        try:
+            numeric = int(node_id)
+        except (TypeError, ValueError):
+            return ""
+        for node in nodes or []:
+            if node.get("id") == numeric:
+                return str(node.get("name") or "")
+        return ""
+
     async def client_for_node_id(node_id):
         router = getattr(runtime, "node_router", None)
         if router is None:
@@ -2464,14 +2482,6 @@ def build_routes(runtime, config):
         Route("/api/servers/{server_id}/files", api_files, methods=["GET"]),
         Route("/api/servers/{server_id}/file", api_file, methods=["GET", "PUT", "DELETE"]),
         Route("/api/servers/{server_id}/directory", api_directory, methods=["POST"]),
-        Route("/api/servers/{server_id}/upload", api_upload, methods=["POST"]),
-        Route("/api/servers/{server_id}/extract", api_extract, methods=["POST"]),
-        Route("/activity", activity_page, methods=["GET"]),
-        Route("/account", account_page, methods=["GET"]),
-        Route("/account/password", account_change_password, methods=["POST"]),
-        WebSocketRoute("/ws/console/{server_id}", console_ws),
-    ]
-vers/{server_id}/directory", api_directory, methods=["POST"]),
         Route("/api/servers/{server_id}/upload", api_upload, methods=["POST"]),
         Route("/api/servers/{server_id}/extract", api_extract, methods=["POST"]),
         Route("/activity", activity_page, methods=["GET"]),
