@@ -1040,7 +1040,6 @@ def build_routes(runtime, config):
                 total = (exp - datetime.now(timezone.utc)).total_seconds()
                 days_left = max(0, math.ceil(total / 86400))
             except Exception:
-                days_l
                 days_left = None
         stopped = bool(row.get("bot_stopped_at"))
         # Renew only opens inside the window before the turn-off date (an
@@ -1258,7 +1257,10 @@ def build_routes(runtime, config):
         form = await request.form()
         check_csrf(request, csrf_from(request, form))
         # Verify the Turnstile challenge before anything expensive runs.
-        if not turnstile.verify(_form_text(form, "cf-turnstile-response")):
+        if not turnstile.verify(
+            _form_text(form, "cf-turnstile-response"),
+            auth.client_ip(request, config.trust_proxy),
+        ):
             msg = "Verification failed — complete the challenge and try again"
             if wants_json(request):
                 return JSONResponse({"ok": False, "error": msg}, status_code=400)
@@ -2397,7 +2399,7 @@ def build_routes(runtime, config):
                         # gap in a stack trace.
                         continue
                     await websocket.send_json(
-                        {"type": "log", "data": "\n".join(data_lines) + "\n"}
+                        {"type": "log", "data": _sanitize_console("\n".join(data_lines) + "\n")}
                     )
                 if (
                     streamed > _CONSOLE_MAX_STREAM_BYTES

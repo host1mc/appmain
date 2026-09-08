@@ -1451,6 +1451,7 @@ def api_auth_login():
 # ── Fingerprint API (public) ──
 
 @app.route("/api/fingerprint/check-owner", methods=["POST"])
+@api_internal_required
 @limiter.limit("10 per minute")
 def api_fingerprint_owner():
     data = _json_object()

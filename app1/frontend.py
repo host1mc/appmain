@@ -103,6 +103,7 @@ BLOCKED_PROXY_PREFIXES = (
     "auth",
     "panel-store",
     "internal",
+    "fingerprint",
 )
 
 
