@@ -53,7 +53,9 @@
         <div class="crumb">{% block crumb %}db admin{% endblock %}</div>
       </div>
       <div class="chips">
+        <span class="chip"><span class="pulse"></span> live</span>
         <span class="chip"><span class="u">TABLES</span> {{ side_totals.collections|default(0) }}</span>
+        <span class="chip"><span class="u">ROWS</span> {{ side_totals.rows|default(0)|num }}</span>
       </div>
     </header>
 
