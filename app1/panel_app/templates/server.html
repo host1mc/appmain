@@ -84,20 +84,21 @@
 
     <section class="tab-panel" data-panel="startup" role="tabpanel" id="panel-startup" aria-labelledby="tab-startup">
       <div class="panel-alert panel-alert-warning" id="runtime-change-warning" hidden>
-        <strong>Unsaved runtime or startup changes</strong>
-        <p>You are changing the runtime or startup. The server will be stopped and rebuilt if it is running. Start/Stop/Restart are disabled until you apply or cancel.</p>
+        <strong>Unsaved changes</strong>
+        <p>Changing the runtime image or the startup command rebuilds the container. Your files stay untouched. If the server is running it is stopped first; start it again when the rebuild finishes. Apply each change on its own button.</p>
       </div>
       <div class="details-grid">
         <article class="detail-card"><span>Docker image</span><strong>{{ server.image }}</strong><p>Allowlisted on the backend node.</p></article>
         <article class="detail-card"><span>Working directory</span><strong>/home/container</strong><p>Your persistent server files are mounted here.</p></article>
         <article class="detail-card wide" id="runtime-change-card" data-current-startup="{{ server.startup }}">
-          <span>Runtime and startup</span>
-          <p>Changing the runtime version or startup command rebuilds the container. Your files stay untouched. If the server is running it is stopped first; you start it again when the rebuild finishes.</p>
+          <span>Runtime</span>
+          <p>Picking a different language fills the matching default startup command below. Saving runtime rebuilds the container on the new image. Version-only changes keep your current startup.</p>
           <div class="command-input"><span>Runtime</span>
             <select id="runtime-select" class="runtime-select" aria-label="Runtime version" data-current-runtime="{{ server.runtime }}" data-current-version="{{ server.version }}">
               {% for runtime_key, runtime_config in runtimes.items() %}
                 {% for version in runtime_config.versions %}
                   <option value="{{ runtime_key }}|{{ version }}" data-runtime="{{ runtime_key }}" data-version="{{ version }}"
+                          data-default-startup="{{ runtime_config.default_startup }}"
                           {% if server.runtime == runtime_key and server.version == version %}selected{% endif %}>
                     {{ runtime_config.label }} {{ version }}
                   </option>
@@ -105,13 +106,22 @@
               {% endfor %}
             </select>
           </div>
+          <div class="startup-actions">
+            <button class="button button-quiet button-small" id="cancel-runtime-change" type="button" hidden>Cancel runtime</button>
+            <button class="button button-primary button-small" id="apply-runtime-change" type="button" {% if creating %}disabled{% endif %} disabled>Apply runtime</button>
+            <small id="runtime-apply-status"></small>
+          </div>
+        </article>
+        <article class="detail-card wide" id="startup-change-card">
+          <span>Startup</span>
+          <p>The command the container runs on start. Saving it rebuilds the container with this command. Files are not touched.</p>
           <div class="command-input"><span>Startup</span>
             <input id="startup-input" maxlength="500" aria-label="Startup command" value="{{ server.startup }}">
           </div>
           <div class="startup-actions">
-            <button class="button button-quiet button-small" id="cancel-runtime-change" type="button" hidden>Cancel</button>
-            <button class="button button-primary button-small" id="apply-runtime-change" type="button" {% if creating %}disabled{% endif %} disabled>Apply runtime &amp; startup</button>
-            <small id="runtime-apply-status"></small>
+            <button class="button button-quiet button-small" id="cancel-startup-change" type="button" hidden>Cancel startup</button>
+            <button class="button button-primary button-small" id="apply-startup-change" type="button" {% if creating %}disabled{% endif %} disabled>Apply startup</button>
+            <small id="startup-apply-status"></small>
           </div>
         </article>
         <article class="detail-card"><span>Memory limit</span><strong>{{ server.memory_mb }} MB</strong><p>Hard Docker memory limit.</p></article>

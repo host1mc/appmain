@@ -53,6 +53,7 @@
   let lastNetworkAt = 0;
   let currentPath = '';
   let logsCleared = false;
+  let consoleSince = 0;
   let lastState = null;
   const commandHistory = [];
   let historyIndex = -1;
@@ -453,7 +454,6 @@
         method: 'POST',
         body: JSON.stringify({ command }),
       });
-      logsCleared = false;
       appendConsole(`\n$ ${command}`);
       input.value = '';
     } catch (error) {
@@ -1182,7 +1182,9 @@
 
   function wsUrl() {
     const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
-    return `${proto}//${location.host}${PANEL_BASE}/ws/console/${serverId}`;
+    let url = `${proto}//${location.host}${PANEL_BASE}/ws/console/${serverId}`;
+    if (consoleSince > 0) url += `?since=${encodeURIComponent(consoleSince.toFixed(3))}`;
+    return url;
   }
 
   function connectWs() {
@@ -1207,13 +1209,9 @@
             output.textContent = '';
           }
         } else if (msg.type === 'log') {
-          if (!logsCleared) {
-            appendConsole(msg.data);
-          }
+          appendConsole(msg.data);
         } else if (msg.type === 'error') {
-          if (!logsCleared) {
-            appendConsole(`\n[ws error] ${msg.message}\n`);
-          }
+          appendConsole(`\n[ws error] ${msg.message}\n`);
         }
       } catch (_) {}
     };
@@ -1266,6 +1264,31 @@
     } catch (error) {
       setStatus('unavailable');
       setPowerEnabled(true, lastState?.server?.install_status !== 'running');
+      setConsoleEnabled(true);
+      pollDelay = Math.min(MAX_INTERVAL, Math.round(pollDelay * 1.8));
+    } finally {
+      polling = false;
+      scheduleNextPoll(pollDelay);
+    }
+  }
+
+  document.addEventListener('visibilitychange', () => {
+    if (document.hidden) {
+      if (pollTimer) { clearTimeout(pollTimer); pollTimer = null; }
+    } else {
+      pollDelay = BASE_INTERVAL;
+      runPollCycle();
+      if (wsShouldConnect && !wsConnected) {
+        wsRetryDelay = WS_BASE_INTERVAL;
+        scheduleWsReconnect();
+      }
+    }
+  });
+
+  setInterval(updateUptime, 1000);
+  runPollCycle();
+})();
+abled(true, lastState?.server?.install_status !== 'running');
       setConsoleEnabled(true);
       pollDelay = Math.min(MAX_INTERVAL, Math.round(pollDelay * 1.8));
     } finally {

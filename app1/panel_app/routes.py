@@ -2295,11 +2295,26 @@ def build_routes(runtime, config):
         await websocket.send_json({"type": "connected"})
 
         # Stream from node agent -----------------------------------------
-        tail = 200  # initial backfill
+        # ``since`` (unix seconds) is set after the owner clicks Clear view, so
+        # the follow stream must not replay Docker's historical tail.
+        since_raw = ""
+        try:
+            since_raw = str(websocket.query_params.get("since") or "").strip()
+        except Exception:
+            since_raw = ""
+        since_val = None
+        if since_raw:
+            try:
+                since_val = float(since_raw)
+            except (TypeError, ValueError):
+                since_val = None
+        tail = 0 if since_val else 200
         follow_url = (
             f"{node_url}/api/v1/servers/{parse.quote(server_id, safe='')}/logs/follow"
             f"?tail={tail}"
         )
+        if since_val and since_val > 0:
+            follow_url += f"&since={since_val}"
         try:
             req = urlrequest.Request(
                 follow_url,
