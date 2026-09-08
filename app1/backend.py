@@ -2386,6 +2386,14 @@ def serve():
     init()
     _debug_print(f"[backend] API server running on http://{host}:{BACKEND_PORT}")
     _debug_print(f"[backend] engine control API: {engine_client.ENGINE_URL}")
+    # Waitress logs every queued request as WARNING. On a cold Oracle pool the
+    # eight threads fill for a few seconds and that prints "Task queue depth is
+    # 1..N" forever. That is load, not a crash — keep it off the combined
+    # console unless CONSOLE_DEBUG is on.
+    if os.environ.get("CONSOLE_DEBUG", "").strip().lower() not in (
+            "1", "true", "yes", "on"):
+        logging.getLogger("waitress.queue").setLevel(logging.ERROR)
+        logging.getLogger("waitress").setLevel(logging.ERROR)
     wserve(
         app,
         host=host,
