@@ -1,7 +1,7 @@
 {% extends "base.html" %}
-{% block title %}User {{ u.id|shortid }}{% endblock %}
-{% block h1 %}User {{ u.id|shortid }}{% endblock %}
-{% block crumb %}analysis / users / <span class="mono">{{ u.id|shortid }}</span>{% endblock %}
+{% block title %}{{ u.name or u.id|shortid }}{% endblock %}
+{% block h1 %}{{ u.name or u.id|shortid }}{% endblock %}
+{% block crumb %}analysis / users / <span class="mono">{{ u.name or u.id|shortid }}</span>{% endblock %}
 {% block content %}
 
 {% set next_url = request.path %}

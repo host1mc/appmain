@@ -507,7 +507,43 @@ def collections_report():
     return result
 
 
-def users_report():
+def username_map():
+    """uid -> display username for the current shard."""
+    if has_request_context() and getattr(g, "_username_map", None) is not None:
+        return g._username_map
+    names = {}
+    all_cols = all_collections()
+    if not any(c.upper() == "USERS" for c in all_cols):
+        if has_request_context():
+            g._username_map = names
+        return names
+    users_tbl = next(c for c in all_cols if c.upper() == "USERS")
+    fields = collection_fields(users_tbl)
+    users_id_field = _user_id_field(users_tbl, fields) or (
+        list(fields.keys())[0] if fields else "uid")
+    shard_id = _get_shard_id()
+    try:
+        if _is_oracle(shard_id):
+            rows = _oracle_query(f'SELECT * FROM "{users_tbl}" WHERE ROWNUM <= 2000')
+        elif _is_heatwave(shard_id):
+            rows = _heatwave_query(f"SELECT * FROM {_my_ident(users_tbl)} LIMIT 2000")
+        else:
+            rows = list(_mongo(shard_id)[users_tbl].find().limit(2000))
+        for doc in rows or []:
+            uid = str(_iget(doc, users_id_field) or _iget(doc, "UID") or _iget(doc, "uid") or "")
+            uname = _iget(doc, "USERNAME") or _iget(doc, "username") or _iget(doc, "DISPLAY_NAME") or ""
+            if uname and _looks_encrypted(str(uname)) and _decrypt:
+                try:
+                    uname = _decrypt(str(uname))
+                except Exception:
+                    pass
+            if uid and uname:
+                names[uid] = str(uname)
+    except Exception as exc:
+        print(f"[db_admin] username_map: {exc}")
+    if has_request_context():
+        g._username_map = names
+    return names
     all_cols = all_collections()
     shard_id = _get_shard_id()
     per_user = {}
@@ -562,56 +598,7 @@ def users_report():
                 pass
 
     # Get usernames from USERS table
-    names = {}
-    if any(c.upper() == "USERS" for c in all_cols):
-        users_tbl = next(c for c in all_cols if c.upper() == "USERS")
-        fields = collection_fields(users_tbl)
-        users_id_field = _user_id_field(users_tbl, fields) or (
-            list(fields.keys())[0] if fields else "uid")
-        if _is_oracle(shard_id):
-            try:
-                rows = _oracle_query(f'SELECT * FROM "{users_tbl}" WHERE ROWNUM <= 500')
-                for doc in rows:
-                    uid = str(_iget(doc, users_id_field) or "")
-                    uname = _iget(doc, "USERNAME") or ""
-                    if uname and _looks_encrypted(str(uname)) and _decrypt:
-                        try:
-                            uname = _decrypt(str(uname))
-                        except Exception:
-                            pass
-                    if uid:
-                        names[uid] = str(uname) if uname else ""
-            except Exception:
-                pass
-        elif _is_heatwave(shard_id):
-            try:
-                rows = _heatwave_query(f"SELECT * FROM {_my_ident(users_tbl)} LIMIT 500")
-                for doc in rows:
-                    uid = str(_iget(doc, users_id_field) or "")
-                    uname = _iget(doc, "USERNAME") or _iget(doc, "username") or ""
-                    if uname and _looks_encrypted(str(uname)) and _decrypt:
-                        try:
-                            uname = _decrypt(str(uname))
-                        except Exception:
-                            pass
-                    if uid:
-                        names[uid] = str(uname) if uname else ""
-            except Exception:
-                pass
-        else:
-            try:
-                for doc in _mongo(shard_id)[users_tbl].find({}, {"_id": 1, "username": 1}).limit(500):
-                    uid = str(doc.get("_id", ""))
-                    uname = doc.get("username", "")
-                    if uname and _looks_encrypted(str(uname)) and _decrypt:
-                        try:
-                            uname = _decrypt(str(uname))
-                        except Exception:
-                            pass
-                    if uid:
-                        names[uid] = str(uname) if uname else ""
-            except Exception:
-                pass
+    names = username_map()
 
     result = []
     for uid, cols_d in per_user.items():
@@ -668,6 +655,10 @@ def display_value(val, col="", key=None):
             except Exception:
                 return "[cannot decrypt]"
         return "[encrypted]"
+    if _leaf(col) in ("uid", "user_id", "userid"):
+        uname = username_map().get(s)
+        if uname:
+            return uname
     return s
 
 
