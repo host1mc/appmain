@@ -1,0 +1,286 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  {{ ad_head() }}
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>My Bots — {{ user.display_name }}</title>
+  <meta name="csrf-token" content="{{ csrf_token() }}">
+  <meta name="robots" content="noindex, nofollow">
+  <link rel="icon" type="image/png" sizes="32x32" href="{{ url_for('static', filename='favicon-32.png') }}">
+  <link rel="icon" type="image/png" sizes="64x64" href="{{ url_for('static', filename='favicon-64.png') }}">
+  <link rel="apple-touch-icon" href="{{ url_for('static', filename='apple-touch-icon.png') }}">
+  <meta name="theme-color" content="#18202f">
+  <link rel="manifest" href="{{ url_for('site_webmanifest') }}">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black">
+  <meta name="apple-mobile-web-app-title" content="ENDHOST">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body class="panel-body{% if request.cookies.get('sb_collapsed') == '1' %} sidebar-collapsed{% endif %}" data-guard="{{ guard_mode }}">
+  <a class="skip-link" href="#main">Skip to main content</a>
+  {% if guard_mode == 'gate' %}
+  <div id="script-gate">
+    <div class="js-required"><div><h1>JavaScript Required</h1><p>This site needs JavaScript enabled to continue. Please disable any script/content blocker for this site, then reload.</p></div></div>
+  </div>
+  {% endif %}
+  {% include "_sidebar.html" %}
+
+  <div class="panel-shell">
+    <header class="topbar">
+      <button class="icon-button mobile-menu" id="mobile-menu" type="button" aria-label="Open navigation">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16M4 12h16M4 17h16"/></svg>
+      </button>
+      <div class="topbar-context">Home</div>
+      <button type="button" class="btn btn-ghost btn-sm" data-act="open-settings" aria-haspopup="dialog" aria-expanded="false" aria-controls="settings-modal">Settings</button>
+    </header>
+
+    <main class="content" id="main">
+    {% if impersonator %}
+    <div class="imp-banner" role="status">
+      <span class="imp-badge">ADMIN VIEW</span>
+      <span>You are viewing <strong>{{ user.display_name }}</strong>'s account as an impersonator (signed in by {{ impersonator }}).</span>
+      <a href="{{ url_for('user_logout', t=logout_token()) }}">Exit</a>
+    </div>
+    {% endif %}
+
+    {% if user.account_type == 'trial' and user.renew_open %}
+    <div id="trial-banner" style="display:flex;align-items:center;gap:10px;margin-bottom:10px;padding:8px 14px;background:rgba(155,89,182,.12);border-radius:8px;font-size:13px">
+      <span style="flex:1">Your trial renew window is open. Click <strong>Renew</strong> to keep it working for another cycle.</span>
+      <button type="button" class="btn btn-primary btn-sm" data-act="renew">Renew</button>
+    </div>
+    {% endif %}
+
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px">
+      <h1 style="font-size:22px;font-weight:700">Home</h1>
+    </div>
+    <div class="product-cards">
+      <a class="product-card" href="#slots-mount">
+        <span class="pc-icon mc"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" width="24" height="24"><path d="M22 12h-4l-3 9L9 3l-3 9H2"/></svg></span>
+        <span class="pc-body">
+          <strong>MC Status Bot</strong>
+          <small>Minecraft server status bots for Discord — live player count, edition, uptime, and a fully custom embed.</small>
+        </span>
+        <span class="pc-cta">Manage bots <i aria-hidden="true">→</i></span>
+      </a>
+      <a class="product-card" href="/panel/dashboard">
+        <span class="pc-icon code"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" width="24" height="24"><path d="m16 18 6-6-6-6"/><path d="m8 6-6 6 6 6"/></svg></span>
+        <span class="pc-body">
+          <strong>App Hosting</strong>
+          <small>Host any app or bot on Node.js, Python, Ruby, Go, PHP or Bun — pick a runtime, set your start command, and deploy in seconds.</small>
+        </span>
+        <span class="pc-cta">Deploy server <i aria-hidden="true">→</i></span>
+      </a>
+    </div>
+
+    {{ ad_unit('banner_468x60') }}
+
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px;margin-top:8px">
+      <h2 style="font-size:22px;font-weight:700">My Bots <span class="pill">{{ user.slots|int }} status-bot slot{{ 's' if user.slots|int != 1 }}</span></h2>
+    </div>
+    <p class="note" style="text-align:left;margin-top:0">Each slot is a fully independent bot with its own server, Discord connection, and embed design.</p>
+    <p class="note" style="text-align:left">Keep your own backup of your bot configuration and files. No data loss is expected, but the site is not responsible if it happens, so looking after your own copy is your responsibility. Details are in the <a href="{{ site_url('terms') }}">terms</a>.</p>
+
+    <div id="slots-mount" class="slots-grid">
+      {% for bot in bots %}
+
+        <a class="slot-card" href="{{ url_for('user_bot_editor', bot_id=bot.id) }}">
+          <div class="slot-num">Slot #{{ bot.slot_index|int + 1 }}</div>
+          <div class="slot-icon" aria-hidden="true">
+            {% if bot.running %}
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" width="40" height="40"><path d="M12 2v10"/><path d="M18.4 6.6a9 9 0 1 1-12.77.04"/></svg>
+            {% else %}
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" width="40" height="40"><rect x="4" y="4" width="16" height="16" rx="3"/></svg>
+            {% endif %}
+          </div>
+          <div class="slot-name">{{ bot.name }}</div>
+          <div class="slot-status">
+            {% if bot.running %}
+              <span class="badge on">RUNNING</span>
+            {% else %}
+              <span class="badge off">STOPPED</span>
+            {% endif %}
+          </div>
+          <div class="slot-desc">
+            {% if bot.server_ip %}{{ bot.server_ip }}:{{ bot.server_port|int }}{% else %}Not configured{% endif %}
+          </div>
+          <div class="slot-actions">
+            <span class="btn btn-primary btn-sm">Edit</span>
+          </div>
+        </a>
+      {% endfor %}
+    </div>
+    {% if not bots %}
+
+    <p class="note" style="text-align:left">No status-bot slots are enabled on this account, so there is nothing to show here yet. Ask in <a href="{{ discord_invite }}" rel="noopener noreferrer" target="_blank">our Discord</a> to have a slot enabled.</p>
+    {% endif %}
+
+    <div class="review-box card" id="review-box">
+      <h2 style="font-size:18px;font-weight:700;margin:0 0 4px">Leave a review</h2>
+      <p class="note" style="text-align:left;margin-top:0">Posting as <strong>{{ user.display_name }}</strong>. Approved reviews appear on the home page.</p>
+      <div class="star-input" role="radiogroup" aria-label="Rating">
+        <input type="radio" name="review-rating" id="rv-star5" value="5" aria-label="5 stars"><label for="rv-star5" title="5 stars">★</label>
+        <input type="radio" name="review-rating" id="rv-star4" value="4" aria-label="4 stars"><label for="rv-star4" title="4 stars">★</label>
+        <input type="radio" name="review-rating" id="rv-star3" value="3" aria-label="3 stars"><label for="rv-star3" title="3 stars">★</label>
+        <input type="radio" name="review-rating" id="rv-star2" value="2" aria-label="2 stars"><label for="rv-star2" title="2 stars">★</label>
+        <input type="radio" name="review-rating" id="rv-star1" value="1" aria-label="1 star"><label for="rv-star1" title="1 star">★</label>
+      </div>
+      <div class="field"><label for="review-body">Your review</label><textarea id="review-body" rows="4" maxlength="4000" aria-describedby="review-msg" placeholder="Tell others how the hosting has been for you…"></textarea></div>
+      <button type="button" class="btn btn-primary" data-act="submit-review">Submit review</button>
+      <p class="note" id="review-msg" role="status" style="margin-top:12px"></p>
+    </div>
+
+    {{ ad_unit('banner_300x250') }}
+
+    {{ ad_unit('leaderboard') }}
+
+    {{ ad_unit('native') }}
+    </main>
+  </div>
+  <div class="sidebar-scrim" id="sidebar-scrim"></div>
+
+  <div class="toast" id="toast" role="status" aria-live="polite"></div>
+
+  <div class="modal-overlay" id="settings-modal">
+    <div class="modal" role="dialog" aria-modal="true" aria-labelledby="settings-title">
+      <button type="button" class="modal-close" data-act="close-settings" aria-label="Close settings">&times;</button>
+      <h2 id="settings-title">Settings</h2>
+      <p class="hint">Update your account password.</p>
+      <div class="field"><label for="s-old-pass">Current Password</label><input id="s-old-pass" type="password" autocomplete="current-password" aria-describedby="s-msg"></div>
+      <div class="field"><label for="s-new-pass">New Password</label><input id="s-new-pass" type="password" autocomplete="new-password" minlength="4" aria-describedby="s-msg"></div>
+      <button type="button" class="btn btn-primary" data-act="save-password" style="width:100%">Save Password</button>
+      <p class="note" id="s-msg" role="status" style="margin-top:12px"></p>
+    </div>
+  </div>
+
+<script nonce="{{ csp_nonce }}">
+const USER_ID = {{ user.uid|tojson }};
+const CSRF_TOKEN = {{ csrf_token()|tojson }};
+let lastFocus = null;
+function settingsToggle(){ return document.querySelector('[data-act="open-settings"]'); }
+function openSettings(){
+  lastFocus = document.activeElement;
+  document.getElementById('settings-modal').classList.add('show');
+  const t = settingsToggle(); if(t) t.setAttribute('aria-expanded','true');
+  const f = document.getElementById('s-old-pass'); if(f) f.focus();
+}
+function closeSettings(){
+  document.getElementById('settings-modal').classList.remove('show');
+  document.getElementById('s-msg').textContent='';
+  const t = settingsToggle(); if(t) t.setAttribute('aria-expanded','false');
+  if(lastFocus && lastFocus.focus) lastFocus.focus();
+  lastFocus = null;
+}
+
+function busy(btn, on, label){
+  if(!btn) return;
+  btn.disabled = on;
+  btn.setAttribute('aria-busy', on ? 'true' : 'false');
+  if(on){ btn.dataset.idleLabel = btn.textContent; btn.textContent = label; }
+  else if(btn.dataset.idleLabel){ btn.textContent = btn.dataset.idleLabel; delete btn.dataset.idleLabel; }
+}
+function api(url, opts={}){
+  return new Promise(resolve => {
+    const xhr = new XMLHttpRequest();
+    xhr.open((opts.method||'GET'), url, true);
+    xhr.setRequestHeader('Content-Type','application/json');
+    xhr.setRequestHeader('X-CSRF-Token', CSRF_TOKEN);
+    if(window.__deviceFingerprint) xhr.setRequestHeader('X-Device-Fingerprint', window.__deviceFingerprint);
+    xhr.timeout = 30000;
+    xhr.onload = () => { try { resolve(JSON.parse(xhr.responseText)); } catch(e) { resolve({ok:false,error:'Invalid response'}); } };
+    xhr.onerror = () => resolve({ok:false,error:'Network error'});
+    xhr.ontimeout = () => resolve({ok:false,error:'Timed out'});
+    xhr.send(opts.body||null);
+  });
+}
+function toast(m,err){
+  const t=document.getElementById('toast');if(!t)return;
+  t.textContent=m;t.className='toast show'+(err?' err':'');
+  setTimeout(()=>{if(t)t.className='toast'},2600);
+}
+async function savePassword(btn){
+  const old=document.getElementById('s-old-pass').value.trim();
+  const nw=document.getElementById('s-new-pass').value.trim();
+  const msg=document.getElementById('s-msg');
+  if(!old||!nw){msg.textContent='Fill in both fields';msg.style.color='var(--red)';document.getElementById(old?'s-new-pass':'s-old-pass').focus();return}
+  if(nw.length<4){msg.textContent='New password must be at least 4 characters';msg.style.color='var(--red)';document.getElementById('s-new-pass').focus();return}
+  msg.textContent='Saving...';msg.style.color='var(--muted2)';
+  busy(btn,true,'Saving…');
+  const res=await api('/api/user/'+USER_ID+'/password',{method:'PUT',body:JSON.stringify({old_password:old,new_password:nw})});
+  busy(btn,false);
+  if(res&&res.ok){
+    msg.textContent='Password updated';msg.style.color='var(--green)';
+    document.getElementById('s-old-pass').value='';document.getElementById('s-new-pass').value='';
+    setTimeout(closeSettings,1200);
+  } else {
+    msg.textContent=res?.error||'Error';msg.style.color='var(--red)';
+    document.getElementById('s-old-pass').focus();
+  }
+}
+async function submitReview(btn){
+  const msg = document.getElementById('review-msg');
+  const checked = document.querySelector('input[name="review-rating"]:checked');
+  const rating = checked ? parseInt(checked.value) : 0;
+  const field = document.getElementById('review-body');
+  const body = field.value.trim();
+  if(!rating){ msg.textContent='Please choose a star rating'; msg.style.color='var(--red)'; document.getElementById('rv-star5').focus(); return; }
+  if(!body){ msg.textContent='Please write a few words'; msg.style.color='var(--red)'; field.setAttribute('aria-invalid','true'); field.focus(); return; }
+  field.removeAttribute('aria-invalid');
+  msg.textContent='Submitting…'; msg.style.color='var(--muted2)';
+  busy(btn,true,'Submitting…');
+  const res = await api('/api/reviews', {method:'POST', body:JSON.stringify({rating, body})});
+  busy(btn,false);
+  if(res && res.ok){
+    msg.textContent='Thanks — your review is pending approval.'; msg.style.color='var(--green)';
+    field.value='';
+    if(checked) checked.checked=false;
+  } else {
+    msg.textContent=(res && res.error) || 'Error'; msg.style.color='var(--red)';
+  }
+}
+async function renewTrial(btn){
+  if (btn && btn.disabled) return;
+  try {
+    busy(btn, true, 'Renewing…');
+    const res = await api('/api/user/' + USER_ID + '/renew', {method:'POST'});
+    if (res && res.ok) toast('Trial renewed — your bot keeps running for 7 more days');
+
+    else if (res && res.code === 'rate_limited') toast(res?.error || 'You can renew once a day closer to your turn-off date.', true);
+    else toast(res?.error || 'Failed to renew', true);
+  } catch(e) {
+    console.error('renewTrial error:', e);
+    toast('Error: ' + e.message, true);
+  } finally {
+    busy(btn, false);
+  }
+}
+
+document.getElementById('settings-modal')?.addEventListener('click',function(e){if(e.target===this)closeSettings()});
+
+document.addEventListener('keydown', function(e){
+  if(e.key !== 'Escape') return;
+  if(document.getElementById('settings-modal')?.classList.contains('show')) closeSettings();
+});
+
+document.addEventListener('click', function(e){
+  const el = e.target.closest('[data-act]');
+  if(!el) return;
+  switch(el.dataset.act){
+    case 'open-settings':  e.preventDefault(); openSettings(); break;
+    case 'close-settings': closeSettings(); break;
+    case 'save-password':  savePassword(el); break;
+    case 'submit-review':  submitReview(el); break;
+    case 'renew':          renewTrial(el); break;
+  }
+});
+</script>
+
+  {{ ad_unit('mobile') }}
+  {{ ad_unit('social_bar') }}
+
+{{ ad_scripts() }}
+<script nonce="{{ csp_nonce }}" src="{{ url_for('static', filename='n3.js') }}" defer></script>
+</body>
+</html>

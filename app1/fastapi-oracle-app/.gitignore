@@ -1,0 +1,14 @@
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+env/
+*.db
+.env
+Wallet_ATP/
+*.zip
+*.pem
+*.sso
+dist/
+build/

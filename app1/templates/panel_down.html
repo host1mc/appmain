@@ -1,0 +1,36 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>{{ heading | default('Hosting panel unavailable', true) }}</title>
+  <meta name="robots" content="noindex, nofollow">
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+
+<body data-guard="off">
+  <div class="nav">
+    <div class="brand"><a href="{{ url_for('user_dashboard') }}"><span class="dot"></span> ENDHOST</a></div>
+    <div class="links"><a href="{{ url_for('user_dashboard') }}">My bots</a></div>
+  </div>
+  <main class="container">
+    <div class="card" style="max-width:560px;margin:80px auto;text-align:center;padding:48px 32px">
+      <div style="font-size:64px;margin-bottom:16px" aria-hidden="true">&#128268;</div>
+      <h1 style="font-size:28px;margin-bottom:8px">{{ heading | default('Hosting panel unavailable', true) }}</h1>
+      <p role="status" style="color:var(--muted);font-size:16px;line-height:1.6;margin-bottom:24px">{{ detail | default('The bot hosting service is not reachable right now.', true) }}</p>
+
+      <p style="color:var(--muted2);font-size:14px;margin-bottom:24px">Your hosted apps and bots are unaffected and keep running.</p>
+      <div class="cta" style="justify-content:center">
+        {% if retry %}
+        <a href="{{ request.path }}" class="btn btn-primary">Try again</a>
+        {% endif %}
+        <a href="{{ url_for('user_dashboard') }}" class="btn btn-ghost">Back to my bots</a>
+      </div>
+      {% if status %}
+      <p style="color:var(--muted2);font-size:12px;margin-top:28px">Error {{ status }}</p>
+      {% endif %}
+    </div>
+  </main>
+  {{ ad_scripts() }}
+</body>
+</html>

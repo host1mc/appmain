@@ -1,0 +1,44 @@
+Flask>=3.1.3            # frontend.py, backend.py, engine.py; ProxyFix comes with it
+# Declared explicitly even though Flask depends on it, because three tiers import
+# it directly rather than through Flask: werkzeug.exceptions.HTTPException in
+# frontend.py/backend.py/engine.py and werkzeug.middleware.proxy_fix.ProxyFix.
+# A direct import wants its own floor — resolving it only as Flask's transitive
+# dependency means a resolver is free to pick a version older than those names.
+Werkzeug>=3.1
+cryptography>=50.0.0    # crypto_util.py — Fernet over data/secret.key, AES-GCM
+requests>=2.33.0        # frontend/backend/engine/mc_status2 outbound calls
+flask-limiter>=3.5      # frontend.py:204, backend.py:83
+redis>=5.0              # shared rate-limit storage when RATELIMIT_STORAGE_URI is set
+waitress>=3.0.1         # every start_*.py serves through it
+# Required by database.py, the ATP data backend. The standalone admin
+# console ships its own requirements file.
+oracledb>=2.0
+# Required by panel_app/database.py — the panel tier's own async SQLAlchemy
+# engine over the same ATP (oracle+oracledb_async dialect) — and by
+# panel_app/oracle_models.py, which declares the panel_* tables on its Base.
+sqlalchemy>=2.0.30
+# Panel tier (ASGI) — starlette, uvicorn, jinja2, itsdangerous, python-dotenv,
+# and markupsafe are all imported directly by panel_app/ modules. Flask brings
+# jinja2 and markupsafe transitively, but the panel loads them without Flask,
+# so they need their own floor.
+starlette>=0.45.0       # panel_app/__init__.py, routes.py, auth.py, edge.py, …
+uvicorn>=0.29.0         # asgi_panel.py — serves the panel ASGI app
+jinja2>=3.1.4           # panel_app/templating.py, check_panel_house_ads.py
+itsdangerous>=2.2.0     # panel_app/flashes.py — signed session cookies
+python-dotenv>=1.0.0    # asgi_panel.py, panel_app/database.py — .env loading
+# Starlette parses request.form() bodies (routes.py create_server and every other
+# POST form) through python-multipart. Starlette does not depend on it, so without
+# an explicit floor the panel boots fine and then 500s the first form submit with
+# "python-multipart library must be installed".
+python-multipart>=0.0.18
+markupsafe>=2.1         # frontend.py — Markup, escape (Flask re-exports these,
+                        #   but frontend.py imports from markupsafe directly)
+# Required by reviews_db.py — the HeatWave (MySQL) connection pool. The second
+# data backend: database.py owns the ATP, reviews_db.py owns the `reviews`
+# table and nothing else.
+mysql-connector-python>=9.1.0
+# Argon2id for new password hashes — database.py hash_password and
+# panel_app/panel_security.py. Imported inside a try in both, so a tier without
+# it keeps minting and checking PBKDF2 rather than failing to boot; installing it
+# is what lets an existing PBKDF2 hash upgrade on the owner's next login.
+argon2-cffi>=23.1.0

@@ -1,0 +1,257 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  {{ ad_head() }}
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="description" content="Create a free ENDHOST account.">
+  <title>{% if step == "2" %}Verify your email{% else %}Create your free account{% endif %} — ENDHOST</title>
+  <meta name="csrf-token" content="{{ csrf_token() }}">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="icon" type="image/png" sizes="32x32" href="{{ url_for('static', filename='favicon-32.png') }}">
+  <link rel="icon" type="image/png" sizes="64x64" href="{{ url_for('static', filename='favicon-64.png') }}">
+  <link rel="apple-touch-icon" href="{{ url_for('static', filename='apple-touch-icon.png') }}">
+  <meta name="theme-color" content="#18202f">
+  <link rel="manifest" href="{{ url_for('site_webmanifest') }}">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black">
+  <meta name="apple-mobile-web-app-title" content="ENDHOST">
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body data-guard="{{ guard_mode }}">
+  <a class="skip-link" href="#main">Skip to main content</a>
+  {% if guard_mode == 'gate' %}
+  <div id="script-gate">
+    <div class="js-required"><div><h1>JavaScript Required</h1><p>This site needs JavaScript enabled to continue. Please disable any script/content blocker for this site, then reload.</p></div></div>
+  </div>
+  {% endif %}
+
+  <header class="nav">
+    <div class="brand"><a href="{{ site_url('index') }}"><img class="brand-logo" src="{{ url_for('static', filename='logo-128.png') }}" alt="ENDHOST" width="40" height="40"><span class="brand-lockup"><strong>ENDHOST</strong></span></a></div>
+    {% include "_nav_toggle.html" %}
+    <nav class="links" id="site-nav-links" aria-label="Primary">
+      <a href="{{ site_url('index') }}">Home</a>
+      <a href="{{ site_url('help') }}">Help</a>
+      <a href="{{ url_for('user_login') }}" class="btn btn-ghost btn-sm nav-cta">Log in</a>
+    </nav>
+  </header>
+
+  <main id="main" class="auth-wrap">
+    <div class="auth-split">
+      <div class="auth-card">
+        {% if step == "2" %}
+          <h1 class="auth-title">Check your email</h1>
+          <p class="hint">We sent a 6-digit code to <strong>{{ email }}</strong>. Enter it below to activate your account.</p>
+
+          {% with msgs = get_flashed_messages(with_categories=true) %}
+            {% if msgs %}
+              <div role="alert" aria-live="assertive" id="auth-errors" tabindex="-1" data-error-summary>
+                {% for cat,m in msgs %}<div class="flash {{cat}}">{{m}}</div>{% endfor %}
+              </div>
+            {% endif %}
+          {% endwith %}
+
+          <form method="post" action="{{ url_for('user_register') }}">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+            <input type="hidden" name="step" value="2">
+            <div class="field">
+              <label for="otp">Verification code</label>
+
+              <input id="otp" name="otp" class="otp-input" placeholder="000000"
+                     maxlength="6" required autocomplete="one-time-code"
+                     inputmode="numeric" pattern="[0-9]{6}"
+                     aria-describedby="otp-hint otp-error" data-autofocus>
+              <p class="field-hint" id="otp-hint">Six digits, no spaces. The code expires shortly, so use it soon.</p>
+              <p class="field-hint field-error" id="otp-error"></p>
+            </div>
+            <button class="btn btn-primary btn-block" type="submit" data-busy-label="Verifying…">Verify &amp; activate</button>
+          </form>
+
+          <p class="note">Code didn't arrive? Check spam, or <a href="{{ url_for('user_register') }}">start again</a>.</p>
+        {% else %}
+          <h1 class="auth-title">Create your account</h1>
+          <p class="hint">Free — no trial clock.</p>
+
+          {% with msgs = get_flashed_messages(with_categories=true) %}
+            {% if msgs %}
+              <div role="alert" aria-live="assertive" id="auth-errors" tabindex="-1" data-error-summary>
+                {% for cat,m in msgs %}<div class="flash {{cat}}">{{m}}</div>{% endfor %}
+              </div>
+            {% endif %}
+          {% endwith %}
+
+          <form method="post" action="{{ url_for('user_register') }}" data-fp-form>
+            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+            <input type="hidden" name="step" value="1">
+            <input type="hidden" name="fingerprint" data-fp-input>
+            <input type="hidden" name="fingerprint_detail" data-fp-detail>
+            <div class="field">
+              <label for="username">Username</label>
+              <input id="username" name="username" autocomplete="username" required
+                     aria-describedby="username-error" data-autofocus>
+              <p class="field-hint field-error" id="username-error"></p>
+            </div>
+            <div class="field">
+              <label for="display_name">Display name <span class="opt">(optional)</span></label>
+              <input id="display_name" name="display_name" autocomplete="nickname">
+            </div>
+            <div class="field">
+              <label for="email">Email</label>
+              <input id="email" name="email" type="email" placeholder="you@example.com"
+                     autocomplete="email" required inputmode="email" aria-describedby="email-hint email-error">
+              <p class="field-hint" id="email-hint">We send a verification code here. That's all it's used for.</p>
+              <p class="field-hint field-error" id="email-error"></p>
+            </div>
+            <div class="field">
+              <label for="password">Password</label>
+              <div class="pw-wrap">
+                <input id="password" name="password" type="password"
+                       autocomplete="new-password" required minlength="8"
+                       aria-describedby="password-error" data-strength>
+              </div>
+              <p class="field-hint field-error" id="password-error"></p>
+            </div>
+            {% if turnstile_site_key %}
+            <div class="field">
+              <div class="cf-turnstile" data-sitekey="{{ turnstile_site_key }}"></div>
+            </div>
+            {% endif %}
+            <div class="field">
+              <label class="check-row" for="agree_terms">
+                <input type="checkbox" id="agree_terms" name="agree_terms" value="1" required
+                       aria-describedby="agree-error">
+                <span>I agree to the <a href="{{ site_url('terms') }}">Terms of Service</a> and the <a href="{{ site_url('privacy') }}">Privacy Policy</a></span>
+              </label>
+              <p class="field-hint field-error" id="agree-error"></p>
+            </div>
+            <button class="btn btn-primary btn-block" type="submit" data-busy-label="Sending code…">Create account — send code</button>
+          </form>
+          <p class="note">Already registered? <a href="{{ url_for('user_login') }}">Log in</a></p>
+        {% endif %}
+      </div>
+
+      <aside class="auth-aside">
+        <div class="eyebrow">Powered by End × Zairo</div>
+        {% if step == "2" %}
+          <h2 class="auth-hero">One code and <span class="grad">you're live.</span></h2>
+          <p class="lede">Verifying your email is the last step — then you can build your first status card.</p>
+          <ul class="auth-points">
+            <li><svg viewBox="0 0 20 20" fill="currentColor" aria-hidden="true" width="17" height="17"><path fill-rule="evenodd" d="M16.704 4.153a.75.75 0 01.143 1.052l-8 10.5a.75.75 0 01-1.127.075l-4.5-4.5a.75.75 0 011.06-1.06l3.894 3.893 7.48-9.817a.75.75 0 011.05-.143z" clip-rule="evenodd"/></svg><span><b>Why verify?</b> It keeps one person from farming unlimited free bots.</span></li>
+            <li><svg viewBox="0 0 20 20" fill="currentColor" aria-hidden="true" width="17" height="17"><path fill-rule="evenodd" d="M16.704 4.153a.75.75 0 01.143 1.052l-8 10.5a.75.75 0 01-1.127.075l-4.5-4.5a.75.75 0 011.06-1.06l3.894 3.893 7.48-9.817a.75.75 0 011.05-.143z" clip-rule="evenodd"/></svg><span><b>No marketing email.</b> The code is the only thing we send.</span></li>
+            <li><svg viewBox="0 0 20 20" fill="currentColor" aria-hidden="true" width="17" height="17"><path fill-rule="evenodd" d="M16.704 4.153a.75.75 0 01.143 1.052l-8 10.5a.75.75 0 01-1.127.075l-4.5-4.5a.75.75 0 011.06-1.06l3.894 3.893 7.48-9.817a.75.75 0 011.05-.143z" clip-rule="evenodd"/></svg><span><b>Under a minute left.</b> Build the card, add the bot, done.</span></li>
+          </ul>
+        {% else %}
+          <h2 class="auth-hero">Your code, <span class="grad">hosted free.</span></h2>
+          <p class="lede">Live Discord status embeds — built, customised and hosted for you.</p>
+          <ul class="auth-points">
+            <li><svg viewBox="0 0 20 20" fill="currentColor" aria-hidden="true" width="17" height="17"><path fill-rule="evenodd" d="M16.704 4.153a.75.75 0 01.143 1.052l-8 10.5a.75.75 0 01-1.127.075l-4.5-4.5a.75.75 0 011.06-1.06l3.894 3.893 7.48-9.817a.75.75 0 011.05-.143z" clip-rule="evenodd"/></svg><span><b>Free for life</b> — not a trial, and there's no paid tier waiting.</span></li>
+            <li><svg viewBox="0 0 20 20" fill="currentColor" aria-hidden="true" width="17" height="17"><path fill-rule="evenodd" d="M16.704 4.153a.75.75 0 01.143 1.052l-8 10.5a.75.75 0 01-1.127.075l-4.5-4.5a.75.75 0 011.06-1.06l3.894 3.893 7.48-9.817a.75.75 0 011.05-.143z" clip-rule="evenodd"/></svg><span><b>Java and Bedrock</b> — players, version, MOTD, refreshed round the clock.</span></li>
+            <li><svg viewBox="0 0 20 20" fill="currentColor" aria-hidden="true" width="17" height="17"><path fill-rule="evenodd" d="M16.704 4.153a.75.75 0 01.143 1.052l-8 10.5a.75.75 0 01-1.127.075l-4.5-4.5a.75.75 0 011.06-1.06l3.894 3.893 7.48-9.817a.75.75 0 011.05-.143z" clip-rule="evenodd"/></svg><span><b>Token encrypted</b> — never sent to the browser, never shown back.</span></li>
+          </ul>
+        {% endif %}
+        <p class="aside-note">Want the walkthrough first? Read the <a href="{{ site_url('help') }}">setup guide</a>, or ask in <a href="{{ discord_invite }}" rel="noopener noreferrer" target="_blank">our Discord</a>.</p>
+      </aside>
+    </div>
+  </main>
+
+  {{ ad_unit('leaderboard') }}
+
+  <footer class="footer">
+    <div class="footer-grid">
+      <div class="footer-col footer-about">
+        <div class="brand"><img class="brand-logo" src="{{ url_for('static', filename='logo-128.png') }}" alt="ENDHOST" width="40" height="40"><span class="brand-lockup"><strong>ENDHOST</strong></span></div>
+        <p class="footer-blurb">Free app hosting — run Node.js, Python, Ruby, Go, PHP or Bun around the clock, plus live Minecraft status embeds for Discord.</p>
+      </div>
+      <div class="footer-col">
+        <h4>Product</h4>
+        <a href="{{ site_url('hosting') }}">App Hosting</a>
+        <a href="{{ site_url('help') }}">Help / setup</a>
+        <a href="{{ site_url('blog') }}">Blog</a>
+      </div>
+      <div class="footer-col">
+        <h4>Community</h4>
+        <a href="{{ discord_invite }}" rel="noopener noreferrer" target="_blank">Join the Discord</a>
+        <a href="{{ panel_url('user_register') }}">Sign up free</a>
+        <a href="{{ panel_url('user_login') }}">Log in</a>
+      </div>
+      <div class="footer-col">
+        <h4>Company</h4>
+        <a href="{{ site_url('about') }}">About us</a>
+        <a href="{{ site_url('contact') }}">Contact us</a>
+        <a href="{{ site_url('privacy') }}">Privacy Policy</a>
+        <a href="{{ site_url('terms') }}">Terms of Service</a>
+      </div>
+    </div>
+    <div class="footer-bottom">
+      <p class="footer-note">Powered by End × Zairo · Free</p>
+    </div>
+  </footer>
+
+  {{ ad_unit('mobile') }}
+  {{ ad_unit('popunder_entry') }}
+  {{ ad_unit('social_bar') }}
+  {{ ad_scripts() }}
+  <script nonce="{{ csp_nonce }}" src="{{ url_for('static', filename='a4.js') }}" defer></script>
+  <script nonce="{{ csp_nonce }}" src="{{ url_for('static', filename='n3.js') }}" defer></script>
+  {% if turnstile_site_key %}
+  <script nonce="{{ csp_nonce }}" src="https://challenges.cloudflare.com/turnstile/v0/api.js" async defer></script>
+  {% endif %}
+  <script nonce="{{ csp_nonce }}">
+
+    (function () {
+      var MSG = {
+        username: 'Choose a username.',
+        email: 'Enter an email address we can send the code to.',
+        password: 'Pick a password of at least 8 characters.',
+        otp: 'Enter the 6-digit code from the email.',
+        agree_terms: 'Please agree to the Terms and Privacy Policy to continue.'
+      };
+
+      function box(el) { return el.id ? document.getElementById(el.id + '-error') : null; }
+
+      function mark(el) {
+        var b = box(el);
+        if (b) b.textContent = MSG[el.name] || el.validationMessage;
+        el.setAttribute('aria-invalid', 'true');
+      }
+
+      function unmark(el) {
+        var b = box(el);
+        if (b) b.textContent = '';
+        el.removeAttribute('aria-invalid');
+      }
+
+      document.addEventListener('invalid', function (e) {
+        if (!e.target || !e.target.id) return;
+        e.preventDefault();
+        mark(e.target);
+      }, true);
+
+      document.addEventListener('input', function (e) {
+        var el = e.target;
+        if (el && el.id && el.hasAttribute('aria-invalid') && el.validity && el.validity.valid) unmark(el);
+      }, true);
+
+      document.addEventListener('submit', function (e) {
+        var form = e.target;
+        if (form.querySelectorAll) {
+          var stale = form.querySelectorAll('[aria-invalid]');
+          for (var i = 0; i < stale.length; i++) unmark(stale[i]);
+        }
+        var btn = e.submitter || (form.querySelector && form.querySelector('button[type="submit"], button:not([type])'));
+        if (btn && !btn.disabled) {
+          var busy = btn.getAttribute('data-busy-label');
+          if (busy) btn.textContent = busy;
+          btn.setAttribute('aria-busy', 'true');
+          btn.disabled = true;
+        }
+      }, true);
+
+      var summary = document.querySelector('[data-error-summary]');
+      if (summary) summary.focus();
+    })();
+  </script>
+</body>
+</html>

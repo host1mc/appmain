@@ -1,0 +1,339 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  {{ ad_head() }}
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="description" content="Free hosting for your code — Node.js, Python, Ruby, Go, PHP and Bun, running around the clock. Discord and Telegram bots, web services, or a live Minecraft status embed.">
+  <meta name="robots" content="index, follow">
+  <meta property="og:type" content="website">
+  <meta property="og:site_name" content="ENDHOST">
+  <meta property="og:title" content="ENDHOST — Free hosting for Node.js, Python, Ruby, Go, PHP &amp; Bun">
+  <meta property="og:description" content="Free Minecraft status bot hosting. Live Discord server-status embeds — built, customised and hosted for you.">
+  <meta name="twitter:card" content="summary">
+  {% if site_host %}<meta property="og:url" content="{{ site_url('index') }}">
+  <meta property="og:image" content="{{ site_host }}{{ url_for('static', filename='apple-touch-icon.png') }}">
+  <meta name="twitter:image" content="{{ site_host }}{{ url_for('static', filename='apple-touch-icon.png') }}">{% endif %}
+  <link rel="icon" type="image/png" sizes="32x32" href="{{ url_for('static', filename='favicon-32.png') }}">
+  <link rel="icon" type="image/png" sizes="64x64" href="{{ url_for('static', filename='favicon-64.png') }}">
+  <link rel="apple-touch-icon" href="{{ url_for('static', filename='apple-touch-icon.png') }}">
+  <meta name="theme-color" content="#18202f">
+  <link rel="manifest" href="{{ url_for('site_webmanifest') }}">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black">
+  <meta name="apple-mobile-web-app-title" content="ENDHOST">
+  <title>ENDHOST — Free hosting for Node.js, Python, Ruby, Go, PHP &amp; Bun</title>
+
+  {% if site_host %}<link rel="canonical" href="{{ site_url('index') }}">
+
+  <script type="application/ld+json" nonce="{{ csp_nonce }}">
+  {
+    "@context": "https://schema.org",
+    "@graph": [
+      {
+        "@type": "Organization",
+        "@id": {{ (site_host ~ "/#org") | tojson }},
+        "name": "ENDHOST",
+        "url": {{ (site_host ~ "/") | tojson }},
+        "logo": {{ (site_host ~ url_for("static", filename="logo.png")) | tojson }}
+      },
+      {
+        "@type": "WebSite",
+        "@id": {{ (site_host ~ "/#website") | tojson }},
+        "name": "ENDHOST",
+        "url": {{ (site_host ~ "/") | tojson }},
+        "publisher": { "@id": {{ (site_host ~ "/#org") | tojson }} }
+      }
+    ]
+  }
+  </script>{% endif %}
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body data-guard="{{ guard_mode }}">
+  <a class="skip-link" href="#main">Skip to main content</a>
+  {% if guard_mode == 'gate' %}
+  <div id="script-gate">
+    <div class="js-required"><div><h1>JavaScript Required</h1><p>This site needs JavaScript enabled to continue. Please disable any script/content blocker for this site, then reload.</p></div></div>
+  </div>
+  {% endif %}
+
+  <header class="nav" id="home-header">
+    <div class="brand"><a href="{{ site_url('index') }}"><img class="brand-logo" src="{{ url_for('static', filename='logo-128.png') }}" alt="ENDHOST" width="40" height="40"><span class="brand-lockup"><strong>ENDHOST</strong></span></a></div>
+    {% include "_nav_toggle.html" %}
+    <nav class="links" id="site-nav-links" aria-label="Primary">
+      <a href="{{ site_url('hosting') }}">Bot hosting</a>
+      <a href="{{ site_url('help') }}">Help</a>
+      <a href="#faq">FAQ</a>
+      <a href="{{ site_url('about') }}">About</a>
+      <a href="{{ site_url('contact') }}">Contact</a>
+
+      <a href="{{ panel_url('user_login') }}">Log in</a>
+      <a href="{{ panel_url('user_register') }}" class="btn btn-primary btn-sm nav-cta">Get started free</a>
+    </nav>
+  </header>
+
+  <main id="main">
+
+    <section class="hero">
+      <div class="hero-copy">
+        <h1>Your code,<br><span class="grad">hosted free.</span></h1>
+        <p class="sub">Deploy a Node.js, Python, Ruby, Go, PHP or Bun app from the panel and we keep it running around the clock — Discord bots, Telegram bots, web services, anything that stays up. Want a live Minecraft status embed instead? We build and host that too.</p>
+
+        <div class="cta">
+          <a class="btn btn-discord" href="{{ discord_invite }}" rel="noopener noreferrer" target="_blank">
+            <svg class="ico" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true" width="20" height="20"><path d="M20.317 4.37a19.79 19.79 0 0 0-4.885-1.515.074.074 0 0 0-.079.037c-.21.375-.444.864-.608 1.25a18.27 18.27 0 0 0-5.487 0 12.64 12.64 0 0 0-.617-1.25.077.077 0 0 0-.079-.037A19.736 19.736 0 0 0 3.677 4.37a.07.07 0 0 0-.032.027C.533 9.046-.32 13.58.099 18.057a.082.082 0 0 0 .031.057 19.9 19.9 0 0 0 5.993 3.03.078.078 0 0 0 .084-.028c.462-.63.874-1.295 1.226-1.994a.076.076 0 0 0-.041-.106 13.107 13.107 0 0 1-1.872-.892.077.077 0 0 1-.008-.128 10.2 10.2 0 0 0 .372-.292.074.074 0 0 1 .077-.01c3.928 1.793 8.18 1.793 12.062 0a.074.074 0 0 1 .078.01c.12.098.246.198.373.292a.077.077 0 0 1-.006.127 12.299 12.299 0 0 1-1.873.892.077.077 0 0 0-.041.107c.36.698.772 1.362 1.225 1.993a.076.076 0 0 0 .084.028 19.839 19.839 0 0 0 6.002-3.03.077.077 0 0 0 .032-.054c.5-5.177-.838-9.674-3.549-13.66a.061.061 0 0 0-.031-.03zM8.02 15.33c-1.183 0-2.157-1.085-2.157-2.419 0-1.333.956-2.419 2.157-2.419 1.21 0 2.176 1.096 2.157 2.42 0 1.333-.956 2.418-2.157 2.418zm7.975 0c-1.183 0-2.157-1.085-2.157-2.419 0-1.333.955-2.419 2.157-2.419 1.21 0 2.176 1.096 2.157 2.42 0 1.333-.946 2.418-2.157 2.418z"/></svg>
+            Join our Discord
+          </a>
+          <a class="btn btn-ghost" href="{{ panel_url('user_register') }}">Start free</a>
+        </div>
+
+        <ul class="trust">
+          <li><svg viewBox="0 0 20 20" fill="currentColor" aria-hidden="true" width="16" height="16"><path fill-rule="evenodd" d="M16.704 4.153a.75.75 0 01.143 1.052l-8 10.5a.75.75 0 01-1.127.075l-4.5-4.5a.75.75 0 011.06-1.06l3.894 3.893 7.48-9.817a.75.75 0 011.05-.143z" clip-rule="evenodd"/></svg>Free</li>
+          <li><svg viewBox="0 0 20 20" fill="currentColor" aria-hidden="true" width="16" height="16"><path fill-rule="evenodd" d="M16.704 4.153a.75.75 0 01.143 1.052l-8 10.5a.75.75 0 01-1.127.075l-4.5-4.5a.75.75 0 011.06-1.06l3.894 3.893 7.48-9.817a.75.75 0 011.05-.143z" clip-rule="evenodd"/></svg>Encrypted tokens</li>
+          <li><svg viewBox="0 0 20 20" fill="currentColor" aria-hidden="true" width="16" height="16"><path fill-rule="evenodd" d="M16.704 4.153a.75.75 0 01.143 1.052l-8 10.5a.75.75 0 01-1.127.075l-4.5-4.5a.75.75 0 011.06-1.06l3.894 3.893 7.48-9.817a.75.75 0 011.05-.143z" clip-rule="evenodd"/></svg>24/7 hosting</li>
+        </ul>
+      </div>
+
+      <div class="hero-visual" aria-hidden="true">
+        <div class="dc-window">
+          <div class="dc-titlebar">
+            <svg class="dc-hash" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" aria-hidden="true" width="15" height="15"><path d="M4 9h16M4 15h16M10 3 8 21M16 3l-2 18"/></svg>
+            <span class="dc-name">server-status</span>
+          </div>
+          <div class="dc-body">
+            <div class="dc-author">
+              <div class="dc-avatar">MC</div>
+              <div class="dc-author-line">
+                <span class="dc-author-name">Server Status</span>
+                <span class="dc-author-time">Today at 12:04 PM</span>
+              </div>
+            </div>
+            <div class="dc-embed">
+              <div class="dc-embed-head">
+                <div class="dc-embed-title">Survival SMP</div>
+                <span class="dc-pill dc-pill-on">Online</span>
+              </div>
+
+              <div class="dc-embed-fields">
+                <div class="dc-embed-line"><span class="dc-embed-k">Players</span><span class="dc-embed-v">24 / 100</span></div>
+                <div class="dc-embed-line"><span class="dc-embed-k">Version</span><span class="dc-embed-v">1.21.1</span></div>
+                <div class="dc-embed-line wide"><span class="dc-embed-k">IP</span><span class="dc-embed-v">play.yourserver.com</span></div>
+              </div>
+              <div class="dc-embed-footer"><span class="dc-live"></span>live updates</div>
+            </div>
+          </div>
+        </div>
+        <div class="visual-glow"></div>
+      </div>
+    </section>
+
+    <section class="stats" aria-label="Service statistics">
+      <div class="stats-item"><span class="stats-num">24/7</span><span class="stats-label">engine on, no PC of yours</span></div>
+      <div class="stats-item"><span class="stats-num">100%</span><span class="stats-label">free — no trial</span></div>
+    </section>
+
+    <section class="section" id="features">
+      <h2 class="section-title">Everything included, nothing to run</h2>
+      <p class="section-sub">We host the bot so you don't have to. Your tokens stay encrypted; your status stays live.</p>
+      <div class="feature-grid grid3">
+        <div class="feature">
+          <div class="ic ic-svg"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" width="26" height="26"><path d="M21 2l-2 2m-7.61 7.61a5.5 5.5 0 1 1-7.778 7.778 5.5 5.5 0 0 1 7.777-7.777zm0 0L15.5 7.5m0 0 3 3L22 7l-3-3m-3.5 3.5L19 4"/></svg></div>
+          <h3>Design it your way</h3>
+          <p>Colours, fields and layout for your status card — built visually, previewed exactly as it appears in Discord chat.</p>
+        </div>
+        <div class="feature">
+          <div class="ic ic-svg"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" width="26" height="26"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7Z"/><circle cx="12" cy="12" r="3"/></svg></div>
+          <h3>Live player count</h3>
+          <p>Real-time players, version, MOTD and the player list — Java and Bedrock — refreshed automatically, always accurate.</p>
+        </div>
+        <div class="feature">
+          <div class="ic ic-svg"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" width="26" height="26"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg></div>
+          <h3>Encrypted tokens</h3>
+          <p>Your bot token is encrypted at rest. Only the hosting engine ever reads it — and it never touches the browser.</p>
+        </div>
+        <div class="feature">
+          <div class="ic ic-svg"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" width="26" height="26"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg></div>
+          <h3>Up 24/7, no uptime hunting</h3>
+          <p>Status keeps updating around the clock. When your server is down, the embed says so — honestly, in real time.</p>
+        </div>
+        <div class="feature">
+          <div class="ic ic-svg"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" width="26" height="26"><path d="M12 20h9"/><path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4Z"/></svg></div>
+          <h3>Free</h3>
+          <p>No pricing tiers and no trials that expire. The bot is free for life — the Discord community is the whole point.</p>
+        </div>
+        <div class="feature">
+          <div class="ic ic-svg"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" width="26" height="26"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg></div>
+          <h3>Get help from humans</h3>
+          <p>Setup questions, custom requests, server issues — answered by real people in the community, not a ticket bot.</p>
+        </div>
+      </div>
+    </section>
+
+    <section class="section faq" id="faq">
+      <h2 class="section-title">Questions, answered straight</h2>
+      <p class="section-sub">Wondering how the free service works? Here's exactly how.</p>
+      <div class="faq-list">
+        <details class="faq-item">
+          <summary>Is it really free, or free for now?</summary>
+          <p>Free for life. There's no trial clock and no tier that unlocks later. Hosting a status bot costs us very little per server, and a bigger Discord community is worth more to us than subscription revenue.</p>
+        </details>
+        <details class="faq-item">
+          <summary>What's the catch?</summary>
+          <p>The site runs ads, and we'd like you in the Discord. That's it. Your bot isn't rate-limited, badged or downgraded, and we don't upsell you inside it.</p>
+        </details>
+        <details class="faq-item">
+          <summary>Is my bot token safe?</summary>
+          <p>Your token is encrypted before it's stored and only ever decrypted by the hosting engine that needs it. It's never sent to the browser and never shown back to you after you save it.</p>
+        </details>
+        <details class="faq-item">
+          <summary>Does it work with Bedrock as well as Java?</summary>
+          <p>Both. Player count, version, MOTD and the player list are pulled for Java and Bedrock servers alike, and the embed refreshes automatically.</p>
+        </details>
+        <details class="faq-item">
+          <summary>What happens when my Minecraft server goes down?</summary>
+          <p>The embed says so, honestly and in real time. It flips to offline rather than freezing on a stale player count, so your members can trust what it shows.</p>
+        </details>
+        <details class="faq-item">
+          <summary>How often does the status refresh?</summary>
+          <p>You set the interval in the builder. The minimum is 15 seconds so we do not hammer your Minecraft server or Discord's API. Most people leave it at 60 seconds.</p>
+        </details>
+        <details class="faq-item">
+          <summary>Do I need to keep a computer on?</summary>
+          <p>No. Once hosting is started, our engine polls your server and edits the Discord message. Closing the browser does not stop the embed.</p>
+        </details>
+        <details class="faq-item">
+          <summary>What Discord permissions does the bot need?</summary>
+          <p>View Channel, Send Messages, and Read Message History on the status channel. It posts one embed and then edits that same message. It does not need administrator, kick, or ban.</p>
+        </details>
+        <details class="faq-item">
+          <summary>How do I delete my account?</summary>
+          <p>You can delete your account from the panel. That stops your bots and removes the account data we hold. The full list of what we store is in the <a href="{{ site_url('privacy') }}">Privacy Policy</a>.</p>
+        </details>
+      </div>
+    </section>
+
+    <section class="section" id="setup">
+      <h2 class="section-title">How setup actually works</h2>
+      <p class="section-sub">A short walkthrough so you know what you are signing up for — not a sales pitch.</p>
+      <div class="legal" style="padding:24px 0 0;margin:0 auto">
+        <h3>1. Create a Discord bot</h3>
+        <p>In the Discord Developer Portal, create an application, open the Bot tab, and copy the token. Invite that bot to your server with permission to view the status channel, send messages, and read message history. You paste the token into our panel once; it is encrypted before it is stored and is never shown back to you.</p>
+        <h3>2. Point it at your Minecraft server</h3>
+        <p>Enter the public IP or hostname and the port. Java Edition uses 25565 by default; Bedrock uses 19132. We query the public status endpoint only — we never need RCON, FTP, or a plugin on your server.</p>
+        <h3>3. Choose the Discord channel</h3>
+        <p>Paste the guild ID and the channel ID. The first time the engine runs it posts one embed. After that it edits that same message on your refresh interval, so the channel stays a single live card instead of a spam of status posts.</p>
+        <h3>4. Design the card, then start hosting</h3>
+        <p>Colours, title, fields, player-list size, and the wording for online and offline are yours. Save, then start hosting. The engine picks the bot up on the next tick. The full walkthrough — Developer Portal, invite URL, IDs — is on the <a href="{{ site_url('help') }}">help page</a>.</p>
+      </div>
+    </section>
+
+    <section class="section" id="hosting">
+      <h2 class="section-title">Bring your own app</h2>
+      <p class="section-sub">Already wrote something? Host it here for free — six runtimes, deployed from the panel, kept online around the clock. Discord and Telegram bots, web services, scrapers, schedulers, whatever you run.</p>
+      <div class="feature-grid grid3">
+        <div class="feature">
+          <div class="ic ic-svg"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" width="26" height="26"><path d="M16 18 22 12 16 6"/><path d="M8 6 2 12 8 18"/></svg></div>
+          <h3>Six runtimes</h3>
+          <p>Node.js, Python, Ruby, Go, PHP and Bun, each with several versions you can pin. Bring your package.json, requirements.txt, Gemfile or go.mod.</p>
+        </div>
+        <div class="feature">
+          <div class="ic ic-svg"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" width="26" height="26"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg></div>
+          <h3>Token-safe &amp; unattended</h3>
+          <p>Tokens are encrypted at rest and only ever live in memory. Crashes restart on their own, and the panel streams live logs.</p>
+        </div>
+        <div class="feature">
+          <div class="ic ic-svg"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" width="26" height="26"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg></div>
+          <h3>Free, deploy in minutes</h3>
+          <p>No trial clock, no paywall. Paste your code, set a start command, and your bot is live — all from a single console.</p>
+        </div>
+      </div>
+      <div class="section-cta">
+        <a href="{{ site_url('hosting') }}" class="btn btn-primary btn-lg">Explore bot hosting</a>
+        <a href="/panel" class="btn btn-ghost btn-lg">Open the panel</a>
+      </div>
+    </section>
+
+    {% if reviews %}
+
+    <section class="section reviews" id="reviews">
+      <h2 class="section-title">What server owners say</h2>
+      {% if summary and summary.count %}
+      <p class="section-sub">
+        <span class="review-stars-sum" aria-hidden="true">{% for _ in range(summary.average|round(0,'floor')|int) %}★{% endfor %}{% for _ in range(5 - (summary.average|round(0,'floor')|int)) %}☆{% endfor %}</span>
+        {{ summary.average }} out of 5 · {{ summary.count }} review{{ 's' if summary.count != 1 }}
+      </p>
+      {% endif %}
+      <div class="review-grid">
+        {% for r in reviews %}
+        <figure class="review-card">
+          <div class="review-stars" role="img" aria-label="{{ r.rating }} out of 5 stars">{% for _ in range(r.rating) %}★{% endfor %}{% for _ in range(5 - r.rating) %}☆{% endfor %}</div>
+          <blockquote class="review-body">{{ r.body }}</blockquote>
+          <figcaption class="review-meta"><span class="review-author">{{ r.author_name }}</span><span class="review-date"><time datetime="{{ r.created_at[:10] }}">{{ r.created_at[:10] }}</time></span></figcaption>
+        </figure>
+        {% endfor %}
+      </div>
+    </section>
+    {% else %}
+
+    <section class="section reviews" id="reviews">
+      <h2 class="section-title">Be the first to review</h2>
+      <p class="section-sub">Tried the hosting? Tell others what it's like — your review is published once staff approve it.</p>
+      <a class="btn btn-primary btn-lg" href="{{ panel_url('user_login') }}">Leave a review</a>
+    </section>
+    {% endif %}
+
+    <section class="section cta-final" id="get-started">
+      <h2 class="cta-final-title">Your code, online,<br>free.</h2>
+      <p class="section-sub">Join the Discord, grab your bot and go live — most people are set up in under a minute.</p>
+      <a class="btn btn-discord btn-lg" href="{{ discord_invite }}" rel="noopener noreferrer" target="_blank">
+        <svg class="ico" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true" width="22" height="22"><path d="M20.317 4.37a19.79 19.79 0 0 0-4.885-1.515.074.074 0 0 0-.079.037c-.21.375-.444.864-.608 1.25a18.27 18.27 0 0 0-5.487 0 12.64 12.64 0 0 0-.617-1.25.077.077 0 0 0-.079-.037A19.736 19.736 0 0 0 3.677 4.37a.07.07 0 0 0-.032.027C.533 9.046-.32 13.58.099 18.057a.082.082 0 0 0 .031.057 19.9 19.9 0 0 0 5.993 3.03.078.078 0 0 0 .084-.028c.462-.63.874-1.295 1.226-1.994a.076.076 0 0 0-.041-.106 13.107 13.107 0 0 1-1.872-.892.077.077 0 0 1-.008-.128 10.2 10.2 0 0 0 .372-.292.074.074 0 0 1 .077-.01c3.928 1.793 8.18 1.793 12.062 0a.074.074 0 0 1 .078.01c.12.098.246.198.373.292a.077.077 0 0 1-.006.127 12.299 12.299 0 0 1-1.873.892.077.077 0 0 0-.041.107c.36.698.772 1.362 1.225 1.993a.076.076 0 0 0 .084.028 19.839 19.839 0 0 0 6.002-3.03.077.077 0 0 0 .032-.054c.5-5.177-.838-9.674-3.549-13.66a.061.061 0 0 0-.031-.03zM8.02 15.33c-1.183 0-2.157-1.085-2.157-2.419 0-1.333.956-2.419 2.157-2.419 1.21 0 2.176 1.096 2.157 2.42 0 1.333-.956 2.418-2.157 2.418zm7.975 0c-1.183 0-2.157-1.085-2.157-2.419 0-1.333.955-2.419 2.157-2.419 1.21 0 2.176 1.096 2.157 2.42 0 1.333-.946 2.418-2.157 2.418z"/></svg>
+        Join our Discord — it's free
+      </a>
+      <p class="cta-final-note">No trial. No time limit.</p>
+      <p class="cta-final-alt">Rather start straight away? <a href="{{ panel_url('user_register') }}">Create your free account</a>.</p>
+    </section>
+  </main>
+
+  {{ ad_unit('leaderboard') }}
+
+  <footer class="footer">
+    <div class="footer-grid">
+      <div class="footer-col footer-about">
+        <div class="brand"><img class="brand-logo" src="{{ url_for('static', filename='logo-128.png') }}" alt="ENDHOST" width="40" height="40"><span class="brand-lockup"><strong>ENDHOST</strong></span></div>
+        <p class="footer-blurb">Free app hosting — run Node.js, Python, Ruby, Go, PHP or Bun around the clock, plus live Minecraft status embeds for Discord.</p>
+      </div>
+      <div class="footer-col">
+        <h4>Product</h4>
+        <a href="#how">How it works</a>
+        <a href="#features">Features</a>
+        <a href="{{ site_url('help') }}">Help / setup</a>
+        <a href="#faq">FAQ</a>
+        <a href="#reviews">Reviews</a>
+      </div>
+      <div class="footer-col">
+        <h4>Community</h4>
+        <a href="{{ discord_invite }}" rel="noopener noreferrer" target="_blank">Join the Discord</a>
+        <a href="{{ panel_url('user_register') }}">Sign up free</a>
+        <a href="{{ panel_url('user_login') }}">Log in</a>
+      </div>
+      <div class="footer-col">
+        <h4>Company</h4>
+        <a href="{{ site_url('about') }}">About us</a>
+        <a href="{{ site_url('contact') }}">Contact us</a>
+        <a href="{{ site_url('privacy') }}">Privacy Policy</a>
+        <a href="{{ site_url('terms') }}">Terms of Service</a>
+      </div>
+    </div>
+    <div class="footer-bottom">
+      <p class="footer-note">Powered by End × Zairo · Free</p>
+    </div>
+  </footer>
+
+  {{ ad_unit('mobile') }}
+  {{ ad_unit('popunder_entry') }}
+  {{ ad_unit('social_bar') }}
+  {{ ad_scripts() }}
+</body>
+</html>

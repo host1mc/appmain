@@ -1,0 +1,65 @@
+{% extends "base.html" %}
+{% block title %}Account · end host{% endblock %}
+{% block topbar %}Account settings{% endblock %}
+{% block content %}
+  <section class="page-heading">
+    <div>
+      <p class="page-kicker">Your profile</p>
+      <h1>Account</h1>
+      <p>Signed in as <strong>{{ current_user.username }}</strong>.</p>
+    </div>
+  </section>
+
+  <section class="account-summary">
+    <div class="account-identity">
+      <span class="avatar large">{{ current_user.username[:1]|upper }}</span>
+      <div>
+        <strong>{{ current_user.username }}</strong>
+        <small>{% if current_user.created_at %}Member since {{ current_user.created_at[:10] }}{% else %}Panel account{% endif %}</small>
+      </div>
+    </div>
+    <dl class="account-facts">
+      <div>
+        <dt>Servers</dt>
+        <dd>{{ server_count }} / {{ max_servers }}</dd>
+        <div class="quota-meter{% if max_servers and server_count >= max_servers %} full{% endif %}" aria-hidden="true">
+          <i class="quota-fill step-{{ quota_step }}"></i>
+        </div>
+      </div>
+      <div><dt>Memory per server</dt><dd>{{ settings.memory_mb if settings else 300 }} MB</dd></div>
+      <div><dt>CPU per server</dt><dd>{{ settings.cpu_percent if settings else 35 }}% of a core</dd></div>
+      <div><dt>Disk per server</dt><dd>{{ settings.disk_mb if settings else 600 }} MB</dd></div>
+    </dl>
+  </section>
+
+  <section class="panel-section">
+    {% if password_local %}
+      <div class="section-heading"><div><h2>Change password</h2><p>You will be signed out of other sessions when it changes.</p></div></div>
+      <form action="{{ url_for('account_change_password') }}" method="post" class="form-stack panel-form">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+        <label class="field"><span>Current password</span>
+          <input type="password" name="current_password" required autocomplete="current-password">
+        </label>
+        <label class="field"><span>New password</span>
+          <input type="password" name="new_password" required minlength="8" autocomplete="new-password">
+          <small>At least 8 characters.</small>
+        </label>
+        <div class="form-actions">
+          <button class="button button-primary" type="submit">Update password</button>
+        </div>
+      </form>
+    {% else %}
+      {# No form at all rather than a disabled one: this panel cannot change the
+         credential in this mode, so offering the fields — even greyed out — would
+         only suggest the ability exists somewhere on this page. #}
+      <div class="section-heading"><div><h2>Password</h2><p>Managed by the account you sign in with.</p></div></div>
+      <div class="panel-note">
+        <p>Your password belongs to your main site sign-in, so it is changed there rather than in the panel. Signing out here signs you out of that account too.</p>
+        <form action="{{ url_for('logout') }}" method="post">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+          <button class="button button-quiet" type="submit">Sign out</button>
+        </form>
+      </div>
+    {% endif %}
+  </section>
+{% endblock %}

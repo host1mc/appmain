@@ -1,0 +1,101 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  {{ ad_head() }}
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="theme-color" content="#18202f">
+  <title>Discord Formatting Guide - {{ user.display_name }}</title>
+  <meta name="csrf-token" content="{{ csrf_token() }}">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body class="panel-body{% if request.cookies.get('sb_collapsed') == '1' %} sidebar-collapsed{% endif %}" data-guard="{{ guard_mode }}">
+  <a class="skip-link" href="#main">Skip to main content</a>
+  {% if guard_mode == 'gate' %}
+  <div id="script-gate">
+    <div class="js-required"><div><h1>JavaScript Required</h1><p>This site needs JavaScript to function. Please enable JavaScript and disable any script/content blocker, then reload.</p></div></div>
+  </div>
+  {% endif %}
+  {% include "_sidebar.html" %}
+
+  <div class="panel-shell">
+    <header class="topbar">
+      <button class="icon-button mobile-menu" id="mobile-menu" type="button" aria-label="Open navigation">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16M4 12h16M4 17h16"/></svg>
+      </button>
+      <div class="topbar-context">Discord formatting</div>
+    </header>
+
+    <main class="content" id="main">
+    <div class="guide-hero card">
+      <h1 class="section-title" style="margin-top:0">Discord Formatting</h1>
+      <h2>Examples you can copy into your embed builder</h2>
+      <p class="note" style="text-align:left;max-width:760px">This page shows the syntax supported by the builder preview and the widgets. Use these patterns in titles, descriptions, and custom fields for richer embeds.</p>
+    </div>
+
+    <div class="guide-grid">
+      <div class="syntax-card card">
+        <h2>Text Styles</h2>
+        <div class="syntax-row"><div class="syntax-code"><code>**bold**</code></div><div class="syntax-preview"><strong>bold</strong></div></div>
+        <div class="syntax-row"><div class="syntax-code"><code>*italic*</code></div><div class="syntax-preview"><em>italic</em></div></div>
+        <div class="syntax-row"><div class="syntax-code"><code>__underline__</code></div><div class="syntax-preview"><span class="underline">underline</span></div></div>
+        <div class="syntax-row"><div class="syntax-code"><code>~~strike~~</code></div><div class="syntax-preview"><s>strike</s></div></div>
+        <div class="syntax-row"><div class="syntax-code"><code>`inline code`</code></div><div class="syntax-preview"><code>inline code</code></div></div>
+      </div>
+
+      <div class="syntax-card card">
+        <h2>Headings & Quotes</h2>
+        <div class="syntax-row"><div class="syntax-code"><code># Title</code></div><div class="syntax-preview"><div class="md-h1">Title</div></div></div>
+        <div class="syntax-row"><div class="syntax-code"><code>## Section</code></div><div class="syntax-preview"><div class="md-h2">Section</div></div></div>
+        <div class="syntax-row"><div class="syntax-code"><code>### Small Title</code></div><div class="syntax-preview"><div class="md-h3">Small Title</div></div></div>
+        <div class="syntax-row"><div class="syntax-code"><code>&gt; quoted line</code></div><div class="syntax-preview"><span class="quote">&gt; quoted line</span></div></div>
+        <div class="syntax-row"><div class="syntax-code"><code>```code block```</code></div><div class="syntax-preview"><div class="codeblock">code block</div></div></div>
+      </div>
+
+      <div class="syntax-card card">
+        <h2>Links & Emoji</h2>
+        <div class="syntax-row"><div class="syntax-code"><code>[Open site](https://example.com)</code></div><div class="syntax-preview"><a href="https://example.com" target="_blank" rel="noopener noreferrer">Open site</a></div></div>
+        <div class="syntax-row"><div class="syntax-code"><code>:zmc:1038838838383</code></div><div class="syntax-preview">Custom emoji tag syntax</div></div>
+        <div class="syntax-row"><div class="syntax-code"><code>&lt;:name:1234567890&gt;</code></div><div class="syntax-preview">Discord custom emoji format</div></div>
+        <div class="syntax-row"><div class="syntax-code"><code>&lt;a:name:1234567890&gt;</code></div><div class="syntax-preview">Animated custom emoji format</div></div>
+      </div>
+
+      <div class="syntax-card card">
+        <h2>Layout Tips</h2>
+        <ul class="guide-list">
+          <li>Use the widget drag handles to reorder fields any way you want.</li>
+          <li>Switch a player list widget between plain lines, bullets, numbers, code, or code-numbered output.</li>
+          <li>Put markdown in custom values to style text inside fields.</li>
+          <li>Use the Discord emoji picker to insert server emojis into fields and labels.</li>
+        </ul>
+        <div class="syntax-row">
+          <div class="syntax-code"><code>`play.example.com`</code></div>
+          <div class="syntax-preview"><strong>Server IP:</strong> <code>play.example.com</code></div>
+        </div>
+        <div class="syntax-row">
+          <div class="syntax-code"><code>`25565`</code></div>
+          <div class="syntax-preview"><strong>Port:</strong> <code>25565</code></div>
+        </div>
+        <div class="banner" style="margin-top:16px">Tip: the live preview shows formatted titles and text, while Discord embed titles themselves remain text-only in the actual client.</div>
+      </div>
+    </div>
+
+    <div class="ad-pair">
+      {{ ad_unit('native') }}
+      {{ ad_unit('banner_160x300') }}
+      {{ ad_unit('banner_468x60') }}
+    </div>
+
+    {{ ad_unit('leaderboard') }}
+    </main>
+  </div>
+  <div class="sidebar-scrim" id="sidebar-scrim"></div>
+
+{{ ad_unit('mobile') }}
+{{ ad_unit('social_bar') }}
+
+{{ ad_scripts() }}
+<script nonce="{{ csp_nonce }}" src="{{ url_for('static', filename='n3.js') }}" defer></script>
+</body>
+</html>

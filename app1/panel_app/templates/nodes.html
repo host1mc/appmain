@@ -1,0 +1,43 @@
+{% extends "base.html" %}
+{% block title %}Nodes · BotDock{% endblock %}
+{% block topbar %}Infrastructure / Nodes{% endblock %}
+{% block content %}
+  <section class="page-heading compact">
+    <div>
+      <h1>Nodes</h1>
+      <p>Connection status for the backend this panel sends every container operation to. It does not describe any server your account holds outside that backend.</p>
+    </div>
+    <a class="button button-quiet" href="{{ url_for('nodes_page') }}">Refresh status</a>
+  </section>
+
+  <section class="node-status-panel {{ node_status }}">
+    <header>
+      <div class="node-status-title">
+        <span class="node-status-icon"><i></i></span>
+        <div><strong>Container backend</strong><small>{{ node_label }}</small></div>
+      </div>
+      <span class="node-state"><i></i>{{ node_status|capitalize }}</span>
+    </header>
+
+    <div class="node-metrics">
+      <div><span>Mode</span><strong>{{ node_mode }}</strong></div>
+      <div><span>Response time</span><strong>{{ latency_ms }} ms</strong></div>
+      <div><span>Servers per account</span><strong>{{ max_servers }}</strong></div>
+    </div>
+
+    {% if node_error %}
+      <div class="node-error"><strong>Connection failed</strong><span>{{ node_error }}</span></div>
+    {% else %}
+      <div class="node-runtime-list">
+        <div class="node-runtime-heading"><strong>Available runtimes</strong><span>{{ runtimes|length }} configured</span></div>
+        {% for runtime_id, runtime in runtimes.items() %}
+          <div class="node-runtime-row">
+            <span class="runtime-icon {{ runtime_id }}">{{ runtime_badge(runtime_id) }}</span>
+            <span><strong>{{ runtime.label }}</strong><small>{{ runtime.versions|join(', ') }}</small></span>
+            <span>Default {{ runtime.default_version }}</span>
+          </div>
+        {% endfor %}
+      </div>
+    {% endif %}
+  </section>
+{% endblock %}

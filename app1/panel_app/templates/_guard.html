@@ -1,0 +1,20 @@
+{# Ad-block bait + device-fingerprint guard, the panel's port of frontend.py's
+   ad_scripts(). Both base templates include this instead of hand-writing the
+   pair, so the two tags can never drift apart between them.
+
+   Order is load-bearing: ads.js must have run before the deferred guard reads
+   window.__adsLoaded, so the bait is a plain script and the guard is deferred.
+
+   Never gate these tags on guard_mode. Pages with no ads still need the guard,
+   because it is what computes the device fingerprint the API calls carry —
+   guard_mode only selects what the guard does about a blocker it finds.
+
+   Both files are external because the panel CSP is script-src 'self' with no
+   nonce and no 'unsafe-inline'; an inline <script> here would be refused.
+
+   The Flask original also emits a consent.css link and the cookie-consent
+   banner. Neither is ported: the banner's handler is an inline script the panel
+   CSP forbids, and linking a consent.css the panel does not ship would 404 on
+   every page. Nothing in ad-block detection depends on either. #}
+<script src="{{ url_for('static', filename='ads.js') }}"></script>
+<script src="{{ url_for('static', filename='g7.js', v='12') }}" defer></script>

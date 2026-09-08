@@ -1,0 +1,193 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  {{ ad_head() }}
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="description" content="Log in to manage your free apps and bots on ENDHOST.">
+  <title>Log in — ENDHOST</title>
+  <meta name="csrf-token" content="{{ csrf_token() }}">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="icon" type="image/png" sizes="32x32" href="{{ url_for('static', filename='favicon-32.png') }}">
+  <link rel="icon" type="image/png" sizes="64x64" href="{{ url_for('static', filename='favicon-64.png') }}">
+  <link rel="apple-touch-icon" href="{{ url_for('static', filename='apple-touch-icon.png') }}">
+  <meta name="theme-color" content="#18202f">
+  <link rel="manifest" href="{{ url_for('site_webmanifest') }}">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black">
+  <meta name="apple-mobile-web-app-title" content="ENDHOST">
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body data-guard="{{ guard_mode }}">
+  <a class="skip-link" href="#main">Skip to main content</a>
+  {% if guard_mode == 'gate' %}
+  <div id="script-gate">
+    <div class="js-required"><div><h1>JavaScript Required</h1><p>This site needs JavaScript enabled to continue. Please disable any script/content blocker for this site, then reload.</p></div></div>
+  </div>
+  {% endif %}
+
+  <header class="nav">
+    <div class="brand"><a href="{{ site_url('index') }}"><img class="brand-logo" src="{{ url_for('static', filename='logo-128.png') }}" alt="ENDHOST" width="40" height="40"><span class="brand-lockup"><strong>ENDHOST</strong></span></a></div>
+    {% include "_nav_toggle.html" %}
+    <nav class="links" id="site-nav-links" aria-label="Primary">
+      <a href="{{ site_url('index') }}">Home</a>
+      <a href="{{ site_url('help') }}">Help</a>
+      <a href="{{ url_for('user_register') }}" class="btn btn-primary btn-sm nav-cta">Create free account</a>
+    </nav>
+  </header>
+
+  <main id="main" class="auth-wrap">
+    <div class="auth-split">
+      <div class="auth-card">
+        <h1 class="auth-title">Welcome back</h1>
+        <p class="hint">Log in to manage your status bot.</p>
+
+        {% with msgs = get_flashed_messages(with_categories=true) %}
+          {% if msgs %}
+            <div role="alert" aria-live="assertive" id="auth-errors" tabindex="-1" data-error-summary>
+              {% for cat,m in msgs %}<div class="flash {{cat}}">{{m}}</div>{% endfor %}
+            </div>
+          {% endif %}
+        {% endwith %}
+
+        <form method="post" action="{{ url_for('user_login') }}" data-fp-form>
+          <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+          <input type="hidden" name="fingerprint" data-fp-input>
+          <input type="hidden" name="fingerprint_detail" data-fp-detail>
+          <div class="field">
+            <label for="username">Username or email</label>
+            <input id="username" name="username" autocomplete="username" required
+                   aria-describedby="username-error" data-autofocus>
+            <p class="field-hint field-error" id="username-error"></p>
+          </div>
+          <div class="field">
+            <label for="password">Password</label>
+            <div class="pw-wrap">
+              <input id="password" name="password" type="password" autocomplete="current-password"
+                     required aria-describedby="password-error">
+            </div>
+            <p class="field-hint field-error" id="password-error"></p>
+          </div>
+          {% if turnstile_site_key %}
+          <div class="field">
+            <div class="cf-turnstile" data-sitekey="{{ turnstile_site_key }}"></div>
+          </div>
+          {% endif %}
+          <button class="btn btn-primary btn-block" type="submit" data-busy-label="Logging in…">Log in</button>
+        </form>
+
+        <p class="note">No account yet? <a href="{{ url_for('user_register') }}">Create one free</a> — it stays free.</p>
+      </div>
+
+      <aside class="auth-aside">
+        <div class="eyebrow">Powered by End × Zairo</div>
+        <h2 class="auth-hero">Your status bot, <span class="grad">still free.</span></h2>
+        <p class="lede">Pick up where you left off — your embeds keep updating whether you're logged in or not.</p>
+        <ul class="auth-points">
+          <li><svg viewBox="0 0 20 20" fill="currentColor" aria-hidden="true" width="17" height="17"><path fill-rule="evenodd" d="M16.704 4.153a.75.75 0 01.143 1.052l-8 10.5a.75.75 0 01-1.127.075l-4.5-4.5a.75.75 0 011.06-1.06l3.894 3.893 7.48-9.817a.75.75 0 011.05-.143z" clip-rule="evenodd"/></svg><span><b>Free</b> — no expiry and no tier to upgrade to.</span></li>
+          <li><svg viewBox="0 0 20 20" fill="currentColor" aria-hidden="true" width="17" height="17"><path fill-rule="evenodd" d="M16.704 4.153a.75.75 0 01.143 1.052l-8 10.5a.75.75 0 01-1.127.075l-4.5-4.5a.75.75 0 011.06-1.06l3.894 3.893 7.48-9.817a.75.75 0 011.05-.143z" clip-rule="evenodd"/></svg><span><b>Hosted 24/7</b> — we run the bot, you don't run anything.</span></li>
+          <li><svg viewBox="0 0 20 20" fill="currentColor" aria-hidden="true" width="17" height="17"><path fill-rule="evenodd" d="M16.704 4.153a.75.75 0 01.143 1.052l-8 10.5a.75.75 0 01-1.127.075l-4.5-4.5a.75.75 0 011.06-1.06l3.894 3.893 7.48-9.817a.75.75 0 011.05-.143z" clip-rule="evenodd"/></svg><span><b>Tokens encrypted</b> — stored encrypted, never shown back to you.</span></li>
+        </ul>
+        <p class="aside-note">Locked out or stuck? Ask in <a href="{{ discord_invite }}" rel="noopener noreferrer" target="_blank">our Discord</a> — real people answer.</p>
+      </aside>
+    </div>
+  </main>
+
+  {{ ad_unit('leaderboard') }}
+
+  <footer class="footer">
+    <div class="footer-grid">
+      <div class="footer-col footer-about">
+        <div class="brand"><img class="brand-logo" src="{{ url_for('static', filename='logo-128.png') }}" alt="ENDHOST" width="40" height="40"><span class="brand-lockup"><strong>ENDHOST</strong></span></div>
+        <p class="footer-blurb">Free app hosting — run Node.js, Python, Ruby, Go, PHP or Bun around the clock, plus live Minecraft status embeds for Discord.</p>
+      </div>
+      <div class="footer-col">
+        <h4>Product</h4>
+        <a href="{{ site_url('hosting') }}">App Hosting</a>
+        <a href="{{ site_url('help') }}">Help / setup</a>
+        <a href="{{ site_url('blog') }}">Blog</a>
+      </div>
+      <div class="footer-col">
+        <h4>Community</h4>
+        <a href="{{ discord_invite }}" rel="noopener noreferrer" target="_blank">Join the Discord</a>
+        <a href="{{ panel_url('user_register') }}">Sign up free</a>
+        <a href="{{ panel_url('user_login') }}">Log in</a>
+      </div>
+      <div class="footer-col">
+        <h4>Company</h4>
+        <a href="{{ site_url('about') }}">About us</a>
+        <a href="{{ site_url('contact') }}">Contact us</a>
+        <a href="{{ site_url('privacy') }}">Privacy Policy</a>
+        <a href="{{ site_url('terms') }}">Terms of Service</a>
+      </div>
+    </div>
+    <div class="footer-bottom">
+      <p class="footer-note">Powered by End × Zairo · Free</p>
+    </div>
+  </footer>
+
+  {{ ad_unit('mobile') }}
+  {{ ad_unit('popunder_entry') }}
+  {{ ad_unit('social_bar') }}
+  {{ ad_scripts() }}
+  <script nonce="{{ csp_nonce }}" src="{{ url_for('static', filename='a4.js') }}" defer></script>
+  <script nonce="{{ csp_nonce }}" src="{{ url_for('static', filename='n3.js') }}" defer></script>
+  {% if turnstile_site_key %}
+  <script nonce="{{ csp_nonce }}" src="https://challenges.cloudflare.com/turnstile/v0/api.js" async defer></script>
+  {% endif %}
+  <script nonce="{{ csp_nonce }}">
+
+    (function () {
+      var MSG = {
+        username: 'Enter your username or email.',
+        password: 'Enter your password.'
+      };
+
+      function box(el) { return el.id ? document.getElementById(el.id + '-error') : null; }
+
+      function mark(el) {
+        var b = box(el);
+        if (b) b.textContent = MSG[el.name] || el.validationMessage;
+        el.setAttribute('aria-invalid', 'true');
+      }
+
+      function unmark(el) {
+        var b = box(el);
+        if (b) b.textContent = '';
+        el.removeAttribute('aria-invalid');
+      }
+
+      document.addEventListener('invalid', function (e) {
+        if (!e.target || !e.target.id) return;
+        e.preventDefault();
+        mark(e.target);
+      }, true);
+
+      document.addEventListener('input', function (e) {
+        var el = e.target;
+        if (el && el.id && el.hasAttribute('aria-invalid') && el.validity && el.validity.valid) unmark(el);
+      }, true);
+
+      document.addEventListener('submit', function (e) {
+        var form = e.target;
+        if (form.querySelectorAll) {
+          var stale = form.querySelectorAll('[aria-invalid]');
+          for (var i = 0; i < stale.length; i++) unmark(stale[i]);
+        }
+        var btn = e.submitter || (form.querySelector && form.querySelector('button[type="submit"], button:not([type])'));
+        if (btn && !btn.disabled) {
+          var busy = btn.getAttribute('data-busy-label');
+          if (busy) btn.textContent = busy;
+          btn.setAttribute('aria-busy', 'true');
+          btn.disabled = true;
+        }
+      }, true);
+
+      var summary = document.querySelector('[data-error-summary]');
+      if (summary) summary.focus();
+    })();
+  </script>
+</body>
+</html>

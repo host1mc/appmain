@@ -1,0 +1,126 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  {{ ad_head() }}
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="description" content="Contact ENDHOST — how to reach the operators for support, bot problems, account questions, privacy requests, or advertising.">
+  <meta name="robots" content="index, follow">
+  <meta property="og:type" content="website">
+  <meta property="og:site_name" content="ENDHOST">
+  <meta property="og:title" content="Contact Us — ENDHOST">
+  <meta property="og:description" content="Contact ENDHOST — how to reach the operators for support, bot problems, account questions, privacy requests, or advertising.">
+  <meta name="twitter:card" content="summary">
+  {% if site_host %}<meta property="og:url" content="{{ site_url('contact') }}">
+  <meta property="og:image" content="{{ site_host }}{{ url_for('static', filename='apple-touch-icon.png') }}">
+  <meta name="twitter:image" content="{{ site_host }}{{ url_for('static', filename='apple-touch-icon.png') }}">{% endif %}
+  {% if site_host %}<link rel="canonical" href="{{ site_url('contact') }}">{% endif %}
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="icon" type="image/png" sizes="32x32" href="{{ url_for('static', filename='favicon-32.png') }}">
+  <link rel="icon" type="image/png" sizes="64x64" href="{{ url_for('static', filename='favicon-64.png') }}">
+  <link rel="apple-touch-icon" href="{{ url_for('static', filename='apple-touch-icon.png') }}">
+  <meta name="theme-color" content="#18202f">
+  <link rel="manifest" href="{{ url_for('site_webmanifest') }}">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black">
+  <meta name="apple-mobile-web-app-title" content="ENDHOST">
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+  <title>Contact Us — ENDHOST</title>
+</head>
+<body data-guard="{{ guard_mode }}">
+  <a class="skip-link" href="#main">Skip to main content</a>
+  <header class="nav">
+    <div class="brand"><a href="{{ site_url('index') }}"><img class="brand-logo" src="{{ url_for('static', filename='logo-128.png') }}" alt="ENDHOST" width="40" height="40"><span class="brand-lockup"><strong>ENDHOST</strong></span></a></div>
+    {% include "_nav_toggle.html" %}
+    <nav class="links" id="site-nav-links" aria-label="Primary">
+      <a href="{{ site_url('index') }}">Home</a>
+      <a href="{{ site_url('help') }}">Help</a>
+      <a href="{{ site_url('blog') }}">Blog</a>
+      <a href="{{ panel_url('user_login') }}">Log in</a>
+      <a href="{{ panel_url('user_register') }}" class="btn btn-primary btn-sm nav-cta">Get started free</a>
+    </nav>
+  </header>
+
+  {{ ad_unit('leaderboard') }}
+
+  <main id="main">
+    <section class="legal">
+      <h1>Contact Us</h1>
+      <p class="legal-updated">Last updated: <time datetime="2026-08-12">August 12, 2026</time></p>
+
+      <p class="legal-intro">The first place to get help is our Discord server — that is the support desk and the community. Email exists for private or legal mail only, and replies there can be late.</p>
+
+      <h2>Discord — support and community (preferred)</h2>
+      <p>Join <a href="{{ discord_invite }}" rel="noopener noreferrer" target="_blank">our Discord server</a>. Open a support ticket or ask in the community channels. The people who run the service are in that server, so setup help, bot problems, feature requests, and outage notices all land there first.</p>
+      <p>Use Discord for:</p>
+      <ul>
+        <li>Your bot is online but the embed is not updating.</li>
+        <li>Your Minecraft server shows offline when you know it is up.</li>
+        <li>Your own app will not start, or keeps restarting.</li>
+        <li>You are stuck in the builder or on a setting.</li>
+        <li>You want a feature, or something in the panel is confusing.</li>
+      </ul>
+      <p>Do not paste your Discord bot token in any channel. If a token leaked, reset it in the Discord Developer Portal and paste the new one into the panel.</p>
+
+      {% if contact_email %}
+      <h2>Email — replies can be late</h2>
+      <p>For private or formal mail only — account recovery, privacy requests, legal notices, security reports, or advertising — write to <a href="mailto:{{ contact_email }}">{{ contact_email }}</a>. Include the email on your account. Do not send a bot token by email.</p>
+      <p>We read this inbox, but it is not a helpdesk. A reply can take several days. For anything that needs a faster answer, use Discord.</p>
+      {% else %}
+      <h2>Private or account-specific matters</h2>
+      <p>For anything private, message an operator in the <a href="{{ discord_invite }}" rel="noopener noreferrer" target="_blank">Discord server</a> rather than posting it publicly.</p>
+      {% endif %}
+
+      <h2>Reporting abuse</h2>
+      <p>If a bot hosted here is being used to harass, spam, or impersonate, tell us and we will act on it. Include the bot's name, the Discord server where you saw it, and roughly when it happened. Accounts that abuse the platform are suspended under our <a href="{{ site_url('terms') }}">Terms of Service</a>.</p>
+
+      <h2>Security disclosure</h2>
+      <p>If you have found a vulnerability, please report it privately first and give us a chance to fix it before publishing. We will not pursue anyone who reports a genuine issue in good faith, stays within their own account, and does not access, alter, or destroy other people's data. We do not currently run a paid bounty programme.</p>
+
+      <h2>Privacy and data requests</h2>
+      <p>You can change your account details and delete your account — and the data tied to it — from the panel at any time, without asking us. For anything the panel cannot do, such as a copy of your data or a correction request, get in touch using one of the routes above and mention that it is a privacy request. Our <a href="{{ site_url('privacy') }}">Privacy Policy</a> explains what we hold.</p>
+
+      <h2>Response times</h2>
+      <p>We are a free service, not a 24/7 helpdesk, so please give us a couple of days before chasing. Discord messages are usually answered fastest. Anything touching account access or security gets looked at first.</p>
+
+      <h2>Who you are contacting</h2>
+      <p>ENDHOST is operated by <strong>Endevil</strong>. More about the project and the people behind it is on the <a href="{{ site_url('about') }}">About page</a>.</p>
+    </section>
+  </main>
+
+  <footer class="footer">
+    <div class="footer-grid">
+      <div class="footer-col footer-about">
+        <div class="brand"><img class="brand-logo" src="{{ url_for('static', filename='logo-128.png') }}" alt="ENDHOST" width="40" height="40"><span class="brand-lockup"><strong>ENDHOST</strong></span></div>
+        <p class="footer-blurb">Free app hosting — run Node.js, Python, Ruby, Go, PHP or Bun around the clock, plus live Minecraft status embeds for Discord.</p>
+      </div>
+      <div class="footer-col">
+        <h4>Product</h4>
+        <a href="{{ site_url('hosting') }}">App Hosting</a>
+        <a href="{{ site_url('help') }}">Help / setup</a>
+        <a href="{{ site_url('blog') }}">Blog</a>
+      </div>
+      <div class="footer-col">
+        <h4>Community</h4>
+        <a href="{{ discord_invite }}" rel="noopener noreferrer" target="_blank">Join the Discord</a>
+        <a href="{{ panel_url('user_register') }}">Sign up free</a>
+        <a href="{{ panel_url('user_login') }}">Log in</a>
+      </div>
+      <div class="footer-col">
+        <h4>Company</h4>
+        <a href="{{ site_url('about') }}">About us</a>
+        <a href="{{ site_url('contact') }}">Contact us</a>
+        <a href="{{ site_url('privacy') }}">Privacy Policy</a>
+        <a href="{{ site_url('terms') }}">Terms of Service</a>
+      </div>
+    </div>
+    <div class="footer-bottom">
+      <p class="footer-note">Powered by End × Zairo · Free</p>
+    </div>
+  </footer>
+  {{ ad_unit('mobile') }}
+  {{ ad_unit('social_bar') }}
+  {{ ad_scripts() }}
+</body>
+</html>

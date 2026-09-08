@@ -1,0 +1,136 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="csrf-token" content="{{ csrf_token() }}">
+  <meta name="panel-base" content="{{ panel_base }}">
+  <title>{% block title %}end host Panel{% endblock %}</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='app.css') }}">
+</head>
+<body class="panel-body{% if sidebar_collapsed %} sidebar-collapsed{% endif %}" data-guard="{{ guard_mode }}">
+  <a class="skip-link" href="#main">Skip to main content</a>
+  <aside class="sidebar" id="sidebar">
+    <div class="sidebar-head">
+      <a class="brand" href="{{ site_url('/') }}">
+        <img class="brand-logo" src="{{ url_for('static', filename='logo-128.png') }}" alt="end host" width="40" height="40">
+        <span class="brand-lockup"><strong>end host</strong></span>
+      </a>
+      <button class="icon-button sidebar-toggle" id="sidebar-toggle" type="button" aria-label="Collapse navigation" aria-controls="sidebar" aria-expanded="{% if sidebar_collapsed %}false{% else %}true{% endif %}">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 6h.01M12 12h.01M12 18h.01"/></svg>
+      </button>
+    </div>
+
+    <nav class="main-nav" aria-label="Account navigation">
+      <p class="nav-group-label">MC Status Bots</p>
+      <a class="nav-link" href="{{ site_url('/user') }}">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 8h10a2 2 0 0 1 2 2v6a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2v-6a2 2 0 0 1 2-2zM12 8V4M10 13h.01M14 13h.01M2 12v2M22 12v2"/></svg>
+        <span class="nav-label">My bots</span>
+      </a>
+      <a class="nav-link" href="{{ site_url('/user/formatting') }}">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 7V5h14v2M12 5v14M9 19h6"/></svg>
+        <span class="nav-label">Discord formatting</span>
+      </a>
+
+      <p class="nav-group-label">App Hosting</p>
+      <a class="nav-link {% if request.endpoint in ('dashboard', 'server_page') %}active{% endif %}"{% if request.endpoint in ('dashboard', 'server_page') %} aria-current="page"{% endif %} href="{{ url_for('dashboard') }}">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 5h16v5H4zM4 14h16v5H4zM7 7.5h.01M7 16.5h.01"/></svg>
+        <span class="nav-label">Servers</span>
+      </a>
+      <a class="nav-link {% if request.endpoint == 'new_server' %}active{% endif %}"{% if request.endpoint == 'new_server' %} aria-current="page"{% endif %} href="{{ url_for('new_server') }}">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>
+        <span class="nav-label">Deploy server</span>
+      </a>
+      <a class="nav-link {% if request.endpoint == 'activity_page' %}active{% endif %}"{% if request.endpoint == 'activity_page' %} aria-current="page"{% endif %} href="{{ url_for('activity_page') }}">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 20a8 8 0 1 0 0-16 8 8 0 0 0 0 16zM12 8v4l3 2"/></svg>
+        <span class="nav-label">Activity</span>
+      </a>
+
+      <p class="nav-group-label">Account</p>
+      <a class="nav-link {% if request.endpoint == 'account_page' %}active{% endif %}"{% if request.endpoint == 'account_page' %} aria-current="page"{% endif %} href="{{ url_for('account_page') }}">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 12a4 4 0 1 0 0-8 4 4 0 0 0 0 8zM4 20c0-4 3.6-6 8-6s8 2 8 6"/></svg>
+        <span class="nav-label">Account</span>
+      </a>
+    </nav>
+
+    {# The sidebar's own slot, and the one promo that is on every page including the
+       dashboard: it lives in a different region from the closing strip below, so the
+       two never stack. Last in the nav column, after all six links and before the
+       user chip, so a keyboard user reaches every real destination before this one.
+       Same house_ads gate as the strip — the console switch kills both. #}
+    {% if house_ads %}
+      <aside class="house-promo-rail" aria-label="Promotion">
+        <span class="house-promo-eyebrow">Uptime</span>
+        <span class="house-promo-copy">Containers come back automatically after a node reboot — nothing to configure.</span>
+        <a class="house-promo-cta" href="{{ site_url('/hosting') }}">How hosting works <i>&rarr;</i></a>
+      </aside>
+    {% endif %}
+
+    <div class="sidebar-foot">
+      <div class="user-chip">
+        <span class="avatar">{{ current_user.username[:1]|upper }}</span>
+        <span><strong>{{ current_user.username }}</strong></span>
+      </div>
+      <form action="{{ url_for('logout') }}" method="post">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+        <button class="icon-button" type="submit" title="Sign out" aria-label="Sign out">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M10 5H5v14h5M14 8l4 4-4 4M8 12h10"/></svg>
+        </button>
+      </form>
+    </div>
+  </aside>
+
+  <div class="panel-shell">
+    <header class="topbar">
+      <button class="icon-button mobile-menu" id="mobile-menu" type="button" aria-label="Open navigation">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16M4 12h16M4 17h16"/></svg>
+      </button>
+      <div class="topbar-context">{% block topbar %}Control panel{% endblock %}</div>
+      <div class="node-indicator"><span></span>Node allocation: {{ settings.memory_mb if settings else 300 }} MB / {{ settings.cpu_percent if settings else 35 }}%</div>
+    </header>
+
+    <main class="content" id="main">
+      {% if settings and settings.maintenance %}
+        <div class="alert alert-maintenance" role="status" aria-live="polite">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v2M12 19v2M3 12h2M19 12h2M6 6l1.5 1.5M16.5 16.5L18 18M18 6l-1.5 1.5M7.5 16.5L6 18"/><circle cx="12" cy="12" r="3.5"/></svg>
+          <span>{{ settings.maintenance_message }}</span>
+        </div>
+      {% endif %}
+      {% with messages = get_flashed_messages(with_categories=true) %}
+        {% for category, message in messages %}
+          <div class="alert alert-{{ category }}"{% if category == 'error' %} role="alert" aria-live="assertive"{% else %} role="status" aria-live="polite"{% endif %}>{{ message }}</div>
+        {% endfor %}
+      {% endwith %}
+      {% block content %}{% endblock %}
+      {# <aside>, not <div>: a promo is complementary content, so a screen reader
+         can skip past it. It is last in <main>, after the page's own content,
+         because the skip-link targets #main and the notices above hold nothing
+         focusable: placed first, this CTA is what "Skip to main content" lands
+         on, handing keyboard and screen-reader users an advertisement in place
+         of a real control. No guard_mode check is needed here — blocked.html is a
+         standalone document that does not extend this one, so the bar cannot
+         reach the ad-block interstitial. house_ads already folds in both the
+         console's panel switch and the site-wide ads master switch, so there is
+         nothing further to gate on.
+
+         Not on the dashboard: that page ends in .house-promo-card, which shares
+         this one's panel/line/sliver treatment, so the two would stack
+         back-to-back and read as the same box printed twice. The rule is one promo
+         per *region*, not one per page — the sidebar rail and the in-grid slots sit
+         in regions of their own, but nothing else may close <main>. #}
+      {% if house_ads and request.endpoint != 'dashboard' %}
+        <aside class="house-promo-bar" aria-label="Promotion">
+          <span class="house-promo-eyebrow">MC Status</span>
+          <span class="house-promo-copy">Run a Minecraft server? Host a live status embed for your Discord too.</span>
+          <a class="house-promo-cta" href="{{ site_url('/user') }}">Open my bots <i>&rarr;</i></a>
+        </aside>
+      {% endif %}
+    </main>
+  </div>
+
+  <div class="sidebar-scrim" id="sidebar-scrim"></div>
+  <script src="{{ url_for('static', filename='q1.js') }}" defer></script>
+  {% include "_guard.html" %}
+  {% block scripts %}{% endblock %}
+</body>
+</html>

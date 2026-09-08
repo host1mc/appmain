@@ -1,0 +1,119 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  {{ ad_head() }}
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="description" content="About ENDHOST — who runs this free app hosting service, how it works, and why it is free.">
+  <meta name="robots" content="index, follow">
+  <meta property="og:type" content="website">
+  <meta property="og:site_name" content="ENDHOST">
+  <meta property="og:title" content="About Us — ENDHOST">
+  <meta property="og:description" content="About ENDHOST — who runs this free Minecraft status-bot hosting service, how it works, and why it is free.">
+  <meta name="twitter:card" content="summary">
+  {% if site_host %}<meta property="og:url" content="{{ site_url('about') }}">
+  <meta property="og:image" content="{{ site_host }}{{ url_for('static', filename='apple-touch-icon.png') }}">
+  <meta name="twitter:image" content="{{ site_host }}{{ url_for('static', filename='apple-touch-icon.png') }}">{% endif %}
+  {% if site_host %}<link rel="canonical" href="{{ site_url('about') }}">{% endif %}
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="icon" type="image/png" sizes="32x32" href="{{ url_for('static', filename='favicon-32.png') }}">
+  <link rel="icon" type="image/png" sizes="64x64" href="{{ url_for('static', filename='favicon-64.png') }}">
+  <link rel="apple-touch-icon" href="{{ url_for('static', filename='apple-touch-icon.png') }}">
+  <meta name="theme-color" content="#18202f">
+  <link rel="manifest" href="{{ url_for('site_webmanifest') }}">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black">
+  <meta name="apple-mobile-web-app-title" content="ENDHOST">
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+  <title>About Us — ENDHOST</title>
+</head>
+<body data-guard="{{ guard_mode }}">
+  <a class="skip-link" href="#main">Skip to main content</a>
+  <header class="nav">
+    <div class="brand"><a href="{{ site_url('index') }}"><img class="brand-logo" src="{{ url_for('static', filename='logo-128.png') }}" alt="ENDHOST" width="40" height="40"><span class="brand-lockup"><strong>ENDHOST</strong></span></a></div>
+    {% include "_nav_toggle.html" %}
+    <nav class="links" id="site-nav-links" aria-label="Primary">
+      <a href="{{ site_url('index') }}">Home</a>
+      <a href="{{ site_url('help') }}">Help</a>
+      <a href="{{ site_url('blog') }}">Blog</a>
+      <a href="{{ panel_url('user_login') }}">Log in</a>
+      <a href="{{ panel_url('user_register') }}" class="btn btn-primary btn-sm nav-cta">Get started free</a>
+    </nav>
+  </header>
+
+  {{ ad_unit('leaderboard') }}
+
+  <main id="main">
+    <section class="legal">
+      <h1>About ENDHOST</h1>
+      <p class="legal-updated">Last updated: <time datetime="2026-08-12">August 12, 2026</time></p>
+
+      <p class="legal-intro">ENDHOST is a free hosting service. It does two things: it runs code you wrote — Node.js, Python, Ruby, Go, PHP or Bun, in a container we supervise, whether that is a Discord bot, a Telegram bot, a web service or a scheduled job — and it runs a managed status bot for your Minecraft server, keeping a live embed updated in your Discord channel with player count, online or offline state, version, and MOTD. Either way you host nothing yourself.</p>
+
+      <h2>Why we built it</h2>
+      <p>Every Minecraft community ends up answering the same question in chat: "is the server up?" The usual answers are a bot you have to host on a VPS you pay for, a paid status service, or a member refreshing a website. All three cost somebody money or attention.</p>
+      <p>Running one small status bot does not need a server of its own. One process can keep thousands of embeds current, because checking a Minecraft server and editing a Discord message is cheap work. So we built the shared version: you configure your bot in a web panel, we run it on our infrastructure, and the embed in your Discord stays current around the clock.</p>
+
+      <h2>What the service actually does</h2>
+      <ul>
+        <li><strong>Polls your server.</strong> We query your Minecraft server's public status endpoint on a schedule — Java or Bedrock — and read back the live player count, MOTD, version, and reachability.</li>
+        <li><strong>Keeps one embed current.</strong> Instead of spamming a channel, your bot edits a single message in place, so your status channel stays clean and the history is not full of duplicates.</li>
+        <li><strong>Lets you design the card.</strong> Colours, title, thumbnail, field layout, and the wording for the online and offline states are all yours to set in the builder. No template lock-in.</li>
+        <li><strong>Handles auto-replies.</strong> You can set keyword replies so your bot answers common questions ("ip", "version", "how to join") without a moderator having to.</li>
+        <li><strong>Runs unattended.</strong> Once configured, there is nothing to restart, patch, or pay for. If your Minecraft server goes down, the embed flips to offline and flips back on its own.</li>
+      </ul>
+
+      <h2>How it is free</h2>
+      <p>The hosting itself is genuinely free — no trial clock and no paid tier gating the features above. The running costs are covered by advertising on the public pages of this site, which is why you will see ad slots on the marketing and panel pages. That is the entire business model; we do not sell accounts, upsell a premium plan, or sell your personal information. See our <a href="{{ site_url('privacy') }}">Privacy Policy</a> for exactly what advertising partners can and cannot see.</p>
+
+      <h2>How your data is handled</h2>
+      <p>Your Discord bot token is the one credential that genuinely matters, so it is encrypted before it is stored and only ever decrypted in memory by the process that posts your embeds. It is never sent back to your browser, never displayed again after you save it, and never written to a log. The rest of what we store is the minimum needed to run your bot — your Minecraft server address, your Discord channel, your embed design, and your account details.</p>
+      <p>We also record a device fingerprint and IP address at signup. That exists to stop one person from farming hundreds of accounts on a free service, not to profile you. The full detail is in the <a href="{{ site_url('privacy') }}">Privacy Policy</a>.</p>
+
+      <h2>Who runs this</h2>
+      <p>ENDHOST is built and operated by <strong>Endevil</strong>, a small independent project rather than a company with a support department. Support, feature requests, and outage reports all go through the same place: our Discord community, where the people who actually write the code read them. If you would rather not use Discord, the <a href="{{ site_url('contact') }}">contact page</a> lists the alternative.</p>
+
+      <h2>Roadmap and honesty about limits</h2>
+      <p>Because this is a free shared service, there are limits worth stating plainly. We do not promise an uptime figure, we can suspend accounts that abuse the platform, and a very large Minecraft network with unusual requirements is probably better served by hosting its own bot. What we do commit to is that the core hosting stays free, that your token stays encrypted, and that you can delete your account and its data whenever you want.</p>
+
+      <h2>Get started</h2>
+      <p>Creating a bot takes a few minutes: follow the <a href="{{ site_url('help') }}">setup guide</a>, or <a href="{{ panel_url('user_register') }}">make a free account</a> and paste your token. If you get stuck, the FAQ on the home page and the Discord cover the rest.</p>
+    </section>
+  </main>
+
+  <footer class="footer">
+    <div class="footer-grid">
+      <div class="footer-col footer-about">
+        <div class="brand"><img class="brand-logo" src="{{ url_for('static', filename='logo-128.png') }}" alt="ENDHOST" width="40" height="40"><span class="brand-lockup"><strong>ENDHOST</strong></span></div>
+        <p class="footer-blurb">Free app hosting — run Node.js, Python, Ruby, Go, PHP or Bun around the clock, plus live Minecraft status embeds for Discord.</p>
+      </div>
+      <div class="footer-col">
+        <h4>Product</h4>
+        <a href="{{ site_url('hosting') }}">App Hosting</a>
+        <a href="{{ site_url('help') }}">Help / setup</a>
+        <a href="{{ site_url('blog') }}">Blog</a>
+      </div>
+      <div class="footer-col">
+        <h4>Community</h4>
+        <a href="{{ discord_invite }}" rel="noopener noreferrer" target="_blank">Join the Discord</a>
+        <a href="{{ panel_url('user_register') }}">Sign up free</a>
+        <a href="{{ panel_url('user_login') }}">Log in</a>
+      </div>
+      <div class="footer-col">
+        <h4>Company</h4>
+        <a href="{{ site_url('about') }}">About us</a>
+        <a href="{{ site_url('contact') }}">Contact us</a>
+        <a href="{{ site_url('privacy') }}">Privacy Policy</a>
+        <a href="{{ site_url('terms') }}">Terms of Service</a>
+      </div>
+    </div>
+    <div class="footer-bottom">
+      <p class="footer-note">Powered by End × Zairo · Free</p>
+    </div>
+  </footer>
+  {{ ad_unit('mobile') }}
+  {{ ad_unit('social_bar') }}
+  {{ ad_scripts() }}
+</body>
+</html>

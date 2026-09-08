@@ -1,0 +1,50 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Access Paused — Ad Blocker Detected</title>
+  <meta name="robots" content="noindex, nofollow">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body data-guard="blocked">
+
+  <div class="nav">
+    <div class="brand"><a href="{{ site_url('index') }}"><span class="dot"></span> ENDHOST</a></div>
+  </div>
+
+  <main class="auth-wrap">
+    <div class="auth-card guard-card">
+      <div class="guard-icon" aria-hidden="true">&#128737;&#65039;</div>
+      <h1>Ad blocker detected</h1>
+      <p class="hint">We detected an ad blocker, so access to the site is paused. Advertising is what keeps this service free, and the site stays locked until the blocker is switched off for this domain.</p>
+
+      <div class="banner guard-steps">
+        <span class="guard-steps-title">To continue</span>
+        <ol>
+          <li><strong>Turn your ad blocker off for this domain.</strong> In uBlock Origin, AdBlock, AdGuard, Ghostery or Brave Shields, use the extension's "Pause", "Disable on this site" or "Allow this site" control, and allow the whole domain rather than this one page. If you do not use an extension, check your browser's built-in content blocking, and any network-level blocking such as a filtering VPN or DNS, Pi-hole or AdGuard Home.</li>
+          <li><strong>Then reload this page.</strong> Press the button below, or use your browser's reload. Coming back to this tab after turning the blocker off also works: it re-checks and sends you back to where you were.</li>
+        </ol>
+      </div>
+
+      <p class="note guard-status" data-status role="status">
+        <span class="guard-dot" aria-hidden="true"></span>
+        <span>An ad blocker is still detected. Press the button below once you have switched it off for this domain.</span>
+      </p>
+
+      <button type="button" class="btn btn-primary guard-retry">I've disabled it — retry</button>
+    </div>
+  </main>
+
+<script nonce="{{ csp_nonce }}">
+
+document.querySelector('.guard-retry')?.addEventListener('click', function(){
+  if (typeof window.__blockedGuardRetry === 'function') { window.__blockedGuardRetry(); return; }
+  window.location.reload();
+});
+</script>
+
+{{ ad_scripts() }}
+</body>
+</html>

@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="robots" content="noindex, nofollow">
+  {# The page's only way to notice the window has ended: the panel CSP has no
+     nonce and forbids inline script, and this page deliberately links no bundle
+     of its own, so a meta refresh is the whole poll. /maintenance redirects to
+     the dashboard once the flag is off, so a reload lands the visitor back in
+     the panel rather than here again. #}
+  <meta http-equiv="refresh" content="60">
+  <title>Panel in maintenance — end host Panel</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='app.css') }}">
+</head>
+{# Standalone, not an extension of base.html: the sidebar and topbar are links
+   into pages that are closed for as long as this page is the one being served,
+   and the allocation figure in that topbar is exactly the sort of number a
+   maintenance window makes untrue. #}
+<body class="panel-body">
+  <main class="content">
+    <div class="alert alert-maintenance" role="status" aria-live="polite">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v2M12 19v2M3 12h2M19 12h2M6 6l1.5 1.5M16.5 16.5L18 18M18 6l-1.5 1.5M7.5 16.5L6 18"/><circle cx="12" cy="12" r="3.5"/></svg>
+      <div>
+        <h1>Panel in maintenance</h1>
+        {# The operator's own notice, read from the settings table — the text
+           typed into Maintenance Mode on the admin console's Hosting page. It is
+           the entire message on purpose: fixed prose written here would sit next
+           to that field and could contradict it, and only the operator knows
+           what a given window is for or how long it runs.
+
+           No fallback needed. PanelSettings.maintenance_message is never blank —
+           it resolves to PANEL_MAINTENANCE_MESSAGE_DEFAULT when the row is unset
+           and to panel_settings._FALLBACK_MESSAGE when the table cannot be read
+           at all — so this cannot render an empty page. Autoescaped, like every
+           other operator-written string the panel shows. #}
+        <p>{{ settings.maintenance_message }}</p>
+        <a class="button button-quiet" href="{{ site_url('/') }}">Back to the main site</a>
+      </div>
+    </div>
+  </main>
+</body>
+</html>

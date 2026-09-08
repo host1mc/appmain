@@ -1,0 +1,167 @@
+{% extends "base.html" %}
+{% block title %}{{ server.name }} · end host{% endblock %}
+{% block topbar %}Servers / {{ server.name }}{% endblock %}
+{% block content %}
+  <div id="server-app" data-server-id="{{ public_server_id(server.id) }}" data-memory-mb="{{ server.memory_mb }}" data-runtime="{{ server.runtime }}">
+    {% if creating %}
+      <div class="panel-alert panel-alert-info">
+        <strong>Server is being created</strong>
+        <p>The server is still being provisioned. Interactive controls are disabled until creation completes.</p>
+      </div>
+    {% endif %}
+    <section class="server-heading">
+      <div class="server-title-wrap">
+        <span class="runtime-icon large {{ server.runtime }}">{{ runtime_badge(server.runtime) }}</span>
+        <div><a class="back-link" href="{{ url_for('dashboard') }}">Servers</a><h1 id="server-title">{{ server.name }}</h1><p>{{ server.image }} · <span data-server-short>{{ public_server_label(server.id) }}</span><button class="copy-button" type="button" data-copy="{{ public_server_label(server.id) }}" title="Copy server reference" aria-label="Copy server reference">Copy</button></p></div>
+      </div>
+      <div class="power-controls">
+        <button class="button button-success" data-power="start" {% if creating %}disabled{% endif %}>Start</button>
+        <button class="button button-quiet" data-power="restart" {% if creating %}disabled{% endif %}>Restart</button>
+        <button class="button button-danger" data-power="stop" {% if creating %}disabled{% endif %}>Stop</button>
+      </div>
+    </section>
+
+    <nav class="server-tabs" aria-label="Server sections" role="tablist" {% if creating %}hidden{% endif %}>
+      <button class="active" data-tab="console" role="tab" id="tab-console" aria-controls="panel-console" aria-selected="true">Console</button>
+      <button data-tab="files" role="tab" id="tab-files" aria-controls="panel-files" aria-selected="false">Files</button>
+      <button data-tab="startup" role="tab" id="tab-startup" aria-controls="panel-startup" aria-selected="false">Startup</button>
+      <button data-tab="settings" role="tab" id="tab-settings" aria-controls="panel-settings" aria-selected="false">Settings</button>
+    </nav>
+
+    <section class="tab-panel active" data-panel="console" role="tabpanel" id="panel-console" aria-labelledby="tab-console">
+      <div class="stats-grid">
+        <article class="stat-card"><span>Status</span><strong class="server-status"><i class="status-dot pending"></i><b id="server-status">Checking</b></strong><small id="container-id">Connecting to node</small></article>
+        <article class="stat-card"><span>Memory</span><strong id="memory-value">0 MB</strong><div class="meter"><i id="memory-meter"></i></div><svg class="sparkline" id="memory-spark" viewBox="0 0 100 30" preserveAspectRatio="none" aria-hidden="true"><polyline points=""></polyline></svg><small>of {{ server.memory_mb }} MB</small></article>
+        <article class="stat-card"><span>CPU</span><strong id="cpu-value">0%</strong><div class="meter"><i id="cpu-meter"></i></div><svg class="sparkline" id="cpu-spark" viewBox="0 0 100 30" preserveAspectRatio="none" aria-hidden="true"><polyline points=""></polyline></svg><small>of one core</small></article>
+        <article class="stat-card"><span>Storage</span><strong id="storage-value">0 B</strong><div class="meter"><i id="storage-meter"></i></div><small id="storage-total">Checking total space</small></article>
+        <article class="stat-card"><span>Network</span><strong id="network-value" class="network-rate"><b class="net-in">&darr; 0 KB/s</b><b class="net-out">&uarr; 0 KB/s</b></strong><svg class="sparkline" id="network-spark" viewBox="0 0 100 30" preserveAspectRatio="none" aria-hidden="true"><polyline points=""></polyline></svg><small id="network-total">in / out since start</small></article>
+      </div>
+
+      <article class="console-card">
+        <header><span><i></i><i></i><i></i></span><strong>Live console</strong><button class="text-button" id="download-console" type="button">Download</button><button class="text-button" id="clear-console" type="button">Clear view</button></header>
+        <pre id="console-output" role="log" aria-live="polite" aria-label="Console output" tabindex="0">Connecting to node agent…</pre>
+        <form id="command-form" class="console-command" {% if creating %}hidden{% endif %}>
+          <span>$</span><input id="command-input" autocomplete="off" aria-label="Command to run in the container" placeholder="Run a command inside the container"><button type="submit">Send</button>
+        </form>
+      </article>
+    </section>
+
+    <section class="tab-panel" data-panel="files" role="tabpanel" id="panel-files" aria-labelledby="tab-files">
+      <div class="files-toolbar">
+        <div class="breadcrumbs" id="breadcrumbs"><button type="button" data-path="">home</button></div>
+        <div class="file-toolbar-actions">
+          <input id="upload-files-input" type="file" multiple hidden>
+          <input id="upload-folder-input" type="file" webkitdirectory multiple hidden>
+          <input id="upload-zip-input" type="file" accept=".zip" hidden>
+          <button class="button button-quiet button-small" id="upload-files" type="button" {% if creating %}disabled{% endif %}>Upload files</button>
+          <button class="button button-quiet button-small" id="upload-folder" type="button" {% if creating %}disabled{% endif %}>Upload folder</button>
+          <button class="button button-quiet button-small" id="upload-zip" type="button" {% if creating %}disabled{% endif %}>Upload ZIP</button>
+          <button class="button button-quiet button-small" id="new-folder" type="button" {% if creating %}disabled{% endif %}>New folder</button>
+          <button class="button button-primary button-small" id="new-file" type="button" {% if creating %}disabled{% endif %}>New file</button>
+          <label class="button button-quiet button-small file-select-all" id="select-all-tick">
+            <input type="checkbox" id="select-all" {% if creating %}disabled{% endif %}> Select all
+          </label>
+        </div>
+      </div>
+      <div class="selection-bar" id="selection-bar" hidden>
+        <span id="selection-count">0 selected</span>
+        <button class="button button-danger-ghost button-small" id="delete-selected" type="button">Delete selected</button>
+      </div>
+      <div class="upload-progress" id="upload-progress" hidden>
+        <span class="upload-progress-label" id="upload-progress-label">Uploading files…</span>
+        <div class="progress-track" id="upload-progress-track" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0" aria-label="Upload progress"><i class="progress-fill" id="upload-progress-fill"></i></div>
+        <small class="upload-progress-meta" id="upload-progress-meta">0%</small>
+      </div>
+      <div class="file-list" id="file-list"><div class="file-loading">Loading files…</div></div>
+      {% if house_ads %}
+        <aside class="house-promo-tile" aria-label="Promotion">
+          <span class="house-promo-eyebrow">Docs</span>
+          <span class="house-promo-copy">Drag-and-drop uploads, SFTP access and per-file size limits are all covered in the help pages.</span>
+          <a class="house-promo-cta" href="{{ site_url('/help') }}">Open the docs <i>&rarr;</i></a>
+        </aside>
+      {% endif %}
+    </section>
+
+    <section class="tab-panel" data-panel="startup" role="tabpanel" id="panel-startup" aria-labelledby="tab-startup">
+      <div class="panel-alert panel-alert-warning" id="runtime-change-warning" hidden>
+        <strong>Unsaved runtime or startup changes</strong>
+        <p>You are changing the runtime or startup. The server will be stopped and rebuilt if it is running. Start/Stop/Restart are disabled until you apply or cancel.</p>
+      </div>
+      <div class="details-grid">
+        <article class="detail-card"><span>Docker image</span><strong>{{ server.image }}</strong><p>Allowlisted on the backend node.</p></article>
+        <article class="detail-card"><span>Working directory</span><strong>/home/container</strong><p>Your persistent server files are mounted here.</p></article>
+        <article class="detail-card wide" id="runtime-change-card" data-current-startup="{{ server.startup }}">
+          <span>Runtime and startup</span>
+          <p>Changing the runtime version or startup command rebuilds the container. Your files stay untouched. If the server is running it is stopped first; you start it again when the rebuild finishes.</p>
+          <div class="command-input"><span>Runtime</span>
+            <select id="runtime-select" class="runtime-select" aria-label="Runtime version" data-current-runtime="{{ server.runtime }}" data-current-version="{{ server.version }}">
+              {% for runtime_key, runtime_config in runtimes.items() %}
+                {% for version in runtime_config.versions %}
+                  <option value="{{ runtime_key }}|{{ version }}" data-runtime="{{ runtime_key }}" data-version="{{ version }}"
+                          {% if server.runtime == runtime_key and server.version == version %}selected{% endif %}>
+                    {{ runtime_config.label }} {{ version }}
+                  </option>
+                {% endfor %}
+              {% endfor %}
+            </select>
+          </div>
+          <div class="command-input"><span>Startup</span>
+            <input id="startup-input" maxlength="500" aria-label="Startup command" value="{{ server.startup }}">
+          </div>
+          <div class="startup-actions">
+            <button class="button button-quiet button-small" id="cancel-runtime-change" type="button" hidden>Cancel</button>
+            <button class="button button-primary button-small" id="apply-runtime-change" type="button" {% if creating %}disabled{% endif %} disabled>Apply runtime &amp; startup</button>
+            <small id="runtime-apply-status"></small>
+          </div>
+        </article>
+        <article class="detail-card"><span>Memory limit</span><strong>{{ server.memory_mb }} MB</strong><p>Hard Docker memory limit.</p></article>
+        <article class="detail-card"><span>CPU limit</span><strong>{{ server.cpu_percent }}%</strong><p>Share of one CPU core.</p></article>
+        {# The grid is two columns and holds seven cards, one of them .wide, so the
+           cell beside "CPU limit" is empty. Last, and only in this tab: the console
+           tab's grid is full, and the settings tab ends in .danger-zone, where a
+           promo would sit beside the delete button. #}
+        {% if house_ads %}
+          <aside class="house-promo-tile" aria-label="Promotion">
+            <span class="house-promo-eyebrow">Docs</span>
+            <span class="house-promo-copy">Startup commands, dependency installs and file uploads are all covered in the help pages.</span>
+            <a class="house-promo-cta" href="{{ site_url('/help') }}">Open the docs <i>&rarr;</i></a>
+          </aside>
+        {% endif %}
+      </div>
+    </section>
+
+    <section class="tab-panel" data-panel="settings" role="tabpanel" id="panel-settings" aria-labelledby="tab-settings">
+      <article class="detail-card wide stacked-card">
+        <span>Server name</span>
+        <div class="command-input"><input id="rename-input" maxlength="80" aria-label="Server name" value="{{ server.name }}"></div>
+        <div class="startup-actions"><button class="button button-primary button-small" id="save-rename" type="button">Save name</button></div>
+      </article>
+      <article class="detail-card wide stacked-card">
+        <span>Reinstall dependencies</span>
+        <p>Reruns the install step (npm install / pip install -r requirements.txt) without touching your files. Stop the server first.</p>
+        <div class="startup-actions">
+          <button class="button button-quiet button-small" id="reinstall-server" type="button" {% if creating %}disabled{% endif %}>Reinstall dependencies</button>
+          <small id="reinstall-saved" hidden>Reinstalling — watch the console for progress.</small>
+        </div>
+      </article>
+      <article class="danger-zone">
+        <div><h2>Delete server</h2><p>Removes the container from the node and erases all persistent server files.</p></div>
+        <form method="post" action="{{ url_for('delete_server', server_id=server.id) }}" data-confirm="Delete this server? The container and all persistent server files are erased. This cannot be undone." {% if creating %}hidden{% endif %}>
+          <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+          <input type="hidden" name="purge" value="true">
+          <button class="button button-danger" type="submit">Delete server</button>
+        </form>
+      </article>
+    </section>
+
+    <dialog class="editor-dialog" id="editor-dialog">
+      <form method="dialog" class="editor-shell" id="editor-form">
+        <header><div><span>File editor</span><strong id="editor-title">New file</strong></div><button class="icon-button" id="close-editor" type="button" aria-label="Close">×</button></header>
+        <label class="field"><span>Path</span><input id="editor-path" required></label>
+        <label class="editor-field"><span>Contents</span><textarea id="editor-content" spellcheck="false"></textarea></label>
+        <footer><button class="button button-quiet" id="cancel-editor" type="button">Cancel</button><button class="button button-primary" id="save-file" value="default">Save file</button></footer>
+      </form>
+    </dialog>
+  </div>
+{% endblock %}
+{% block scripts %}<script src="{{ url_for('static', filename='q4.js') }}" defer></script>{% endblock %}

@@ -1,0 +1,152 @@
+{% extends "base.html" %}
+{% block title %}Dashboard · end host{% endblock %}
+{% block topbar %}Dashboard{% endblock %}
+{% block content %}
+  <section class="page-heading">
+    <div>
+      <p class="page-kicker">Hosting overview</p>
+      <h1>Your Discord bot servers</h1>
+      <p>Create, start, stop, and inspect every bot container from one place.</p>
+    </div>
+    <a class="button button-primary" href="{{ url_for('new_server') }}">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>
+      Deploy server
+    </a>
+  </section>
+
+  {% if trial and trial.is_trial and trial.renew_open %}
+    <section class="panel-section renew-banner" aria-label="Trial renewal">
+      <div class="renew-copy">
+        <h2>
+          {% if trial.stopped %}
+            Your trial is paused
+          {% elif trial.days_left is not none and trial.days_left <= 0 %}
+            Your trial is due for renewal
+          {% else %}
+            Keep your trial running
+          {% endif %}
+        </h2>
+        <p>
+          Trial servers turn off each cycle unless you renew. Renewing keeps every
+          server running for another cycle and restarts any that were paused.
+          {% if trial.days_left is not none and trial.days_left > 0 %}
+            About {{ trial.days_left }} day{{ '' if trial.days_left == 1 else 's' }} left.
+          {% endif %}
+        </p>
+      </div>
+      <form action="{{ url_for('renew') }}" method="post" class="inline-form">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+        <button class="button button-primary" type="submit">Renew trial</button>
+      </form>
+    </section>
+  {% endif %}
+
+  <section class="stat-cards">
+    <div class="stat-card">
+      <span>Servers</span><strong>{{ stats.total }} / {{ max_servers }}</strong>
+      {# aria-hidden: the bar restates the figure directly above it, so announcing
+         it again only makes the card read twice to a screen reader. #}
+      <div class="quota-meter{% if max_servers and stats.total >= max_servers %} full{% endif %}" aria-hidden="true">
+        <i class="quota-fill step-{{ quota_step }}"></i>
+      </div>
+      <small data-stat-running>{{ stats.running }} running</small>
+    </div>
+    {# The row is a four-column grid holding one card, so the three empty columns are
+       the largest hole in the panel. Inside .stat-cards rather than after it so the
+       filler *is* the empty cells instead of a fourth stacked box. #}
+    {% if house_ads %}
+      <aside class="house-promo-slot" aria-label="Promotion">
+        <span class="house-promo-eyebrow">Included</span>
+        <span class="house-promo-copy">Every slot ships with {{ settings.memory_mb if settings else 300 }} MB RAM, persistent disk and outbound networking — no card required.</span>
+        <a class="house-promo-cta" href="{{ site_url('/hosting') }}">What you get <i>&rarr;</i></a>
+      </aside>
+    {% endif %}
+  </section>
+
+  <section class="panel-section" id="servers">
+    <div class="section-heading">
+      <div><h2>Servers</h2><p>Containers provisioned on your backend node.</p></div>
+      <div class="section-tools">
+        {% if servers %}
+          <input class="search-input" id="server-search" type="search" placeholder="Search servers…" aria-label="Search servers">
+          <form action="{{ url_for('batch_power') }}" method="post" class="inline-form">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+            <button class="button button-ghost" type="submit" name="action" value="start">Start all</button>
+            <button class="button button-danger-ghost" type="submit" name="action" value="stop" data-confirm="Stop every running server?">Stop all</button>
+          </form>
+        {% endif %}
+      </div>
+    </div>
+
+    {% if servers %}
+      <div class="server-list" id="dashboard-server-list">
+        <div class="server-list-head">
+          <span>Server</span><span>Runtime</span><span>Resources</span><span>Status</span><span></span>
+        </div>
+        {% for server in servers %}
+          {% set status = statuses.get(server.id, 'missing') %}
+          {% set installing = node_install.get(server.id) %}
+          <div class="server-row-wrap" data-search-text="{{ (server.name ~ ' ' ~ public_server_label(server.id))|lower }}">
+            <a class="server-row" href="{{ url_for('server_page', server_id=server.id) }}" data-server-id="{{ public_server_key(server.id) }}">
+              <span class="server-identity">
+                <span class="runtime-icon {{ server.runtime }}">{{ runtime_badge(server.runtime) }}</span>
+                <span><strong>{{ server.name }}</strong><small>{{ public_server_label(server.id) }}</small></span>
+              </span>
+              <span><strong>{{ 'Node.js' if server.runtime == 'nodejs' else 'Python' }} {{ server.version }}</strong><small>{{ server.image }}</small></span>
+              <span><strong>{{ server.memory_mb }} MB</strong><small>{{ server.cpu_percent }}% CPU</small></span>
+              <span class="status-cell">
+                {% if installing == 'running' %}
+                  <i class="status-dot installing"></i><strong>Installing</strong>
+                {% elif installing == 'failed' %}
+                  <i class="status-dot failed"></i><strong>Install failed</strong>
+                {% elif status == 'missing' %}
+                  <i class="status-dot missing"></i><strong>Missing on node</strong>
+                {% else %}
+                  <i class="status-dot {{ status }}"></i><strong data-status>{{ status|title }}</strong>
+                {% endif %}
+              </span>
+              <span class="row-arrow">→</span>
+            </a>
+            <form action="{{ url_for('api_power', server_id=server.id) }}" method="post" class="row-power" data-power-form>
+              <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+              {% if installing != 'running' and status == 'running' %}
+                <button class="button button-danger-ghost button-small" type="submit" name="action" value="stop" title="Stop server">Stop</button>
+              {% elif installing != 'running' and status != 'missing' %}
+                <button class="button button-ghost button-small" type="submit" name="action" value="start" title="Start server">Start</button>
+              {% endif %}
+            </form>
+          </div>
+        {% endfor %}
+      </div>
+      <div class="empty-state" id="search-empty" role="status" hidden>
+        <div class="empty-icon" aria-hidden="true">?</div>
+        <h3>No servers match your search</h3>
+        <p>Try a different name or ID.</p>
+      </div>
+    {% else %}
+      <div class="empty-state">
+        <div class="empty-icon" aria-hidden="true">&gt;_</div>
+        <h3>No servers deployed</h3>
+        <p>Choose a runtime and launch your first Discord bot container.</p>
+        <a class="button button-primary" href="{{ url_for('new_server') }}">Deploy first server</a>
+      </div>
+    {% endif %}
+  </section>
+
+  {# Last thing on the page on purpose: the slot count in .stat-cards above is
+     what makes this relevant, so it reads as a follow-on to the quota rather
+     than an interruption between the heading and the server list. #}
+  {% if house_ads %}
+    <section class="house-promo-card">
+      <div class="house-promo-body">
+        <strong>Need room for another bot?</strong>
+        <p>You have {{ stats.total }} of {{ max_servers }} server slots in use. See what a slot includes and how memory and CPU are allocated.</p>
+      </div>
+      <a class="button button-primary" href="{{ site_url('/hosting') }}">Hosting details</a>
+    </section>
+  {% endif %}
+{% endblock %}
+
+{% block scripts %}
+  <script src="{{ url_for('static', filename='q2.js') }}" defer></script>
+{% endblock %}

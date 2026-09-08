@@ -1,0 +1,1797 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  {{ ad_head() }}
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="theme-color" content="#18202f">
+  <title>Embed Builder — {{ user.display_name }}</title>
+  <meta name="csrf-token" content="{{ csrf_token() }}">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body class="panel-body{% if request.cookies.get('sb_collapsed') == '1' %} sidebar-collapsed{% endif %}" data-guard="{{ guard_mode }}">
+  <a class="skip-link" href="#main">Skip to main content</a>
+  {% if guard_mode == 'gate' %}
+  <div id="script-gate">
+    <div class="js-required"><div><h1>JavaScript Required</h1><p>This site needs JavaScript enabled to continue. Please disable any script/content blocker for this site, then reload.</p></div></div>
+  </div>
+  {% endif %}
+  {% include "_sidebar.html" %}
+
+  <div class="panel-shell">
+    <header class="topbar">
+      <button class="icon-button mobile-menu" id="mobile-menu" type="button" aria-label="Open navigation">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16M4 12h16M4 17h16"/></svg>
+      </button>
+      <div class="topbar-context">Bot editor</div>
+      <button type="button" class="btn btn-ghost btn-sm" data-act="open-settings" aria-haspopup="dialog" aria-expanded="false" aria-controls="settings-modal">Settings</button>
+    </header>
+
+    <main class="content" id="main">
+    {% if impersonator %}
+    <div class="imp-banner" role="status">
+      <span class="imp-badge">ADMIN VIEW</span>
+      <span>You are viewing <strong>{{ user.display_name }}</strong>'s account as an impersonator (signed in by {{ impersonator }}).</span>
+      <a href="{{ url_for('user_logout', t=logout_token()) }}">Exit</a>
+    </div>
+    {% endif %}
+
+    <div id="bot-topbar">
+      <div id="bot-topbar-left">
+        <span id="bot-status-dot" style="width:12px;height:12px;border-radius:50%;background:#f23f43;display:inline-block;flex-shrink:0" role="img" aria-label="Stopped" title="Stopped"></span>
+        <h1 id="bot-topbar-name" style="font-size:inherit;font-weight:inherit">{{ bot.name }}</h1>
+      </div>
+      <div id="bot-topbar-right">
+        <a class="btn btn-ghost btn-sm" href="{{ url_for('user_bot_replies', bot_id=bot.id) }}">IP Reply</a>
+        <span style="width:1px;height:20px;background:var(--line)"></span>
+        <span id="bot-lastrun" style="color:var(--muted2);font-size:13px">—</span>
+        <span style="width:1px;height:20px;background:var(--line)"></span>
+        <button class="btn btn-green btn-sm" id="btn-start" data-act="start-bot">Start</button>
+        <button class="btn btn-red btn-sm" id="btn-stop" data-act="stop-bot" disabled>Stop</button>
+        <span style="width:1px;height:20px;background:var(--line)"></span>
+        <button class="btn btn-primary btn-sm" data-act="generate-now">Send</button>
+        <button class="btn btn-ghost btn-sm" data-act="save-config">Save</button>
+        <span class="status-pill" id="save-state" aria-live="polite"></span>
+      </div>
+    </div>
+
+    <div id="bot-error-row" role="alert" style="display:none;margin-bottom:10px;padding:8px 14px;background:rgba(242,63,67,.12);border-radius:8px;font-size:13px;color:var(--red)">
+      <strong>Error:</strong> <span id="bot-error"></span>
+    </div>
+
+    {% if user.account_type == 'trial' and user.renew_open %}
+    <div id="activity-banner" style="display:flex;align-items:center;gap:10px;margin-bottom:10px;padding:8px 14px;background:rgba(155,89,182,.12);border-radius:8px;font-size:13px">
+      <span style="flex:1">Your trial renew window is open. Click <strong>Renew</strong> to keep your trial active for another cycle.</span>
+      <button class="btn btn-primary btn-sm" data-act="renew">Renew</button>
+    </div>
+    {% endif %}
+
+    <div id="builder-split">
+      <div id="builder-left">
+        <div class="card">
+          <h2 class="section-title"><label for="bot_name">Bot Name</label></h2>
+          <div class="field">
+            <input id="bot_name" placeholder="My Bot">
+          </div>
+
+          <h2 class="section-title">Server Connection</h2>
+          <div class="grid2">
+            <div class="field"><label for="server_ip">Server IP / Host</label><input id="server_ip" placeholder="play.example.live"></div>
+            <div class="field"><label for="server_port">Port</label><input id="server_port" type="number" inputmode="numeric" min="1" max="65535" placeholder="25565"></div>
+          </div>
+          <div class="field">
+            <label for="edition">Edition</label>
+            <select id="edition"><option value="java">Java</option><option value="bedrock">Bedrock</option></select>
+          </div>
+
+          <h2 class="section-title">Discord Connection</h2>
+          <div id="delivery-off-warning" role="alert" style="display:none;margin-bottom:10px;padding:8px 14px;background:rgba(240,178,50,.12);border-radius:8px;font-size:13px;color:var(--yellow, #f0b232)">
+            <strong>This bot is turned off.</strong> <span>Nothing is posted to Discord until you start it. The delivery choice below is saved either way.</span>
+          </div>
+          <div class="field">
+            <label for="token">Bot Token <span class="muted">(encrypted at rest)</span></label>
+            <input id="token" type="password" autocomplete="off" placeholder="leave blank to keep existing">
+            <div class="note" style="text-align:left" id="token-state"></div>
+            <div class="asset-row" style="margin-top:6px">
+              <button class="btn btn-ghost btn-sm" type="button" id="use-token-btn" data-mode="token">Post using this bot token</button>
+              <span class="note" id="delivery-token-active" style="display:none">Active</span>
+            </div>
+          </div>
+          <div class="grid2">
+            <div class="field"><label for="guild_id">Guild ID</label><input id="guild_id" inputmode="numeric" maxlength="25" placeholder="server id"></div>
+            <div class="field"><label for="channel_id">Channel ID</label><input id="channel_id" inputmode="numeric" maxlength="25" placeholder="channel id"></div>
+          </div>
+          <div class="field">
+            <label for="webhook_url">Webhook URL <span class="muted">(optional — replaces bot token + channel for posting; encrypted at rest)</span></label>
+            <input id="webhook_url" type="password" autocomplete="off" placeholder="https://discord.com/api/webhooks/... — leave blank to keep existing">
+            <div class="note saved-secret-state" style="text-align:left" id="webhook-state"></div>
+            <div class="asset-row" style="margin-top:6px">
+              <button class="btn btn-ghost btn-sm" type="button" id="use-webhook-btn" data-mode="webhook">Post using this webhook</button>
+              <span class="note" id="delivery-webhook-active" style="display:none">Active</span>
+            </div>
+            <div class="note" id="delivery-state" role="status" aria-live="polite" style="text-align:left"></div>
+          </div>
+          <div class="field"><label for="update_interval">Update Interval (seconds, min 15)</label><input id="update_interval" type="number" value="60" min="15"></div>
+
+          <h2 class="section-title">Discord Assets</h2>
+          <div class="field">
+            <span class="field-caption" id="server-icon-label">Server Icon</span>
+            <div class="asset-row" role="group" aria-labelledby="server-icon-label">
+              <img id="guild-icon-preview" class="guild-icon" alt="Discord guild icon" style="display:none">
+              <button class="btn btn-ghost btn-sm" type="button" id="load-discord-assets-btn">Load Emojis / Icon</button>
+            </div>
+            <div class="note" id="discord-assets-meta" role="status" aria-live="polite" style="text-align:left"></div>
+          </div>
+          <div class="field">
+            <span class="field-caption" id="server-emojis-label">Server Emojis</span>
+            <div id="emoji-grid" class="emoji-grid" role="group" aria-labelledby="server-emojis-label"></div>
+            <div class="note" style="text-align:left">Click an emoji to insert it into the field or widget you last focused.</div>
+          </div>
+          <input type="hidden" id="discord_icon_url">
+
+          <h2 class="section-title">Embed Design</h2>
+          <p class="field-hint" style="margin:0 0 10px;text-align:left">Start from a ready-made template or build from scratch — every field below stays editable either way.</p>
+          <div class="design-mode" role="group" aria-label="Embed design mode">
+            <button type="button" class="btn btn-primary btn-sm" id="use-template-btn">Use a template</button>
+            <button type="button" class="btn btn-ghost btn-sm" id="custom-design-btn">Create custom</button>
+          </div>
+          <div class="tpl-grid">
+            {% for t in embed_templates %}
+            <button type="button" class="tpl-card"
+                    data-template-id="{{ t.id }}" title="{{ t.tagline }}">
+              <span class="tpl-chip" style="background:{{ t.accent }}"></span>
+              <span class="tpl-name">{{ t.name }}</span>
+              <span class="tpl-tag">{{ t.tagline }}</span>
+            </button>
+            {% endfor %}
+          </div>
+          <label class="inline-check"><input type="checkbox" id="render_as_description"> Render entire embed as description (enables full formatting everywhere — title, labels, etc.)</label>
+          <div class="field"><label for="e_title">Title</label><input id="e_title" maxlength="256" placeholder="SERVER STATUS" aria-describedby="e_title_count"><p class="field-hint" id="e_title_count"></p></div>
+          <div class="field"><label for="e_desc">Description (optional)</label><textarea id="e_desc" rows="2" maxlength="4096" placeholder="Optional text under the title" aria-describedby="e_desc_count"></textarea><p class="field-hint" id="e_desc_count"></p></div>
+          <p class="field-hint" style="text-align:left">Placeholders expand before the embed is sent, so a short template can still hit these limits — Discord cuts anything past them.</p>
+          <div class="note markdown-note" style="text-align:left">
+            Discord formatting buttons are available next to each text field. Use <code>**bold**</code> <code>*italic*</code> <code>__underline__</code> <code>~~strike~~</code> <code>`code`</code> <code>```block```</code> <code>[link](https://example.com)</code>
+          </div>
+
+          <div class="field">
+            <label for="e_color">Accent Color</label>
+            <div class="color-row">
+              <input type="color" id="e_color" value="#9b59b6">
+              <input id="e_color_text" value="#9b59b6" maxlength="7" style="flex:1" aria-label="Accent color hex code">
+              <button class="btn btn-ghost btn-sm" type="button" id="random-accent-btn">New color</button>
+            </div>
+            <label class="inline-check"><input type="checkbox" id="rotate_accent_on_update"> Change accent on every update</label>
+          </div>
+          <div class="grid2">
+            <div class="field"><label for="online_text">Online Text</label><input id="online_text" value="ONLINE"></div>
+            <div class="field"><label for="offline_text">Offline Text</label><input id="offline_text" value="OFFLINE"></div>
+          </div>
+          <div class="field"><label for="footer">Footer Text</label><input id="footer" maxlength="2048" value="Powered by ENDHOST" aria-describedby="footer_count"><p class="field-hint" id="footer_count"></p></div>
+          <div class="field"><label for="footer_icon_url">Footer Icon URL</label><input id="footer_icon_url" type="url" placeholder="https://example.com/footer-icon.png"></div>
+
+          <h2 class="section-title">Advanced Embed Options</h2>
+          <div class="field"><label for="e_url">Title URL (clickable link)</label><input id="e_url" type="url" placeholder="https://example.com"></div>
+          <label class="inline-check"><input type="checkbox" id="show_timestamp"> Show timestamp in embed footer</label>
+          <div class="grid2">
+            <div class="field"><label for="thumbnail_size">Thumbnail Size (px)</label><input id="thumbnail_size" type="number" value="62" min="16" max="200"></div>
+            <div class="field"><label for="accent_bar_width">Accent Bar Width (px)</label><input id="accent_bar_width" type="number" value="4" min="1" max="20"></div>
+          </div>
+
+          <h2 class="section-title">Author</h2>
+          <label class="inline-check"><input type="checkbox" id="author_enabled"> Enable author section</label>
+          <div id="author-fields" style="display:none">
+            <div class="grid2">
+              <div class="field"><label for="author_name">Author Name</label><input id="author_name" placeholder="Server name"></div>
+              <div class="field"><label for="author_icon_url">Author Icon URL</label><input id="author_icon_url" type="url" placeholder="https://example.com/icon.png"></div>
+            </div>
+            <div class="field"><label for="author_url">Author URL (clickable)</label><input id="author_url" type="url" placeholder="https://example.com"></div>
+            <div class="field"><label for="author_icon_size">Author Icon Size (px)</label><input id="author_icon_size" type="number" value="22" min="12" max="128"></div>
+          </div>
+
+          <h2 class="section-title">Banner Image</h2>
+          <label class="inline-check"><input type="checkbox" id="image_enabled"> Show banner image at bottom of embed</label>
+          <div class="field" id="image-url-field" style="display:none">
+            <label for="image_url">Image URL</label>
+            <div class="input-btn-row">
+              <input id="image_url" type="url" placeholder="https://example.com/banner.png">
+              <button class="btn btn-ghost btn-sm" type="button" id="use-guild-icon-as-image" title="Use loaded Discord guild icon">Use Guild Icon</button>
+            </div>
+          </div>
+          <div class="field" id="image-max-field" style="display:none"><label for="image_max_height">Max Image Height (px, 0 = auto)</label><input id="image_max_height" type="number" value="0" min="0" max="2000"></div>
+
+          <label class="inline-check"><input type="checkbox" id="use_discord_icon"> Use Discord server icon as thumbnail</label>
+
+          {{ ad_unit('native') }}
+
+          <h2 class="section-title">Widget Builder</h2>
+          <p class="note" style="text-align:left">Drag widgets to reorder them. Each widget is saved in sequence and rendered in that same order in Discord.</p>
+          <div id="widget-list"></div>
+          <div class="widget-toolbar">
+            <select id="widget-type" aria-label="Widget type to add">
+              <option value="separator">── Separator ──</option>
+              <option value="status">Live Status</option>
+              <option value="motd">MOTD</option>
+              <option value="ip">IP &amp; Port</option>
+              <option value="players">Players Online</option>
+              <option value="playerlist">Player List</option>
+              <option value="version">Version</option>
+              <option value="software">Software</option>
+              <option value="plugins">Plugins</option>
+              <option value="mods">Mods</option>
+              <option value="srv_record">SRV Record</option>
+              <option value="ip_address">IP Address</option>
+              <option value="eula_blocked">EULA Blocked</option>
+              <option value="retrieved_at">Retrieved At</option>
+              <option value="expires_at">Expires At</option>
+              <option value="custom">Custom Field</option>
+            </select>
+            <button class="btn btn-ghost btn-sm" type="button" id="add-widget-btn">+ Add Widget</button>
+            <button class="btn btn-ghost btn-sm" type="button" id="reset-widgets-btn">Reset Layout</button>
+          </div>
+        </div>
+      </div>
+
+      <div id="builder-right">
+        <div class="card">
+          <h2 style="margin:0 0 10px 0;font-size:16px">Embed Preview</h2>
+          <p class="field-hint" style="margin:0 0 10px;text-align:left">Live editable preview — template and custom changes appear here immediately.</p>
+          <div class="discord-chat">
+            <div class="discord-head">
+              <div class="avatar">BOT</div>
+              <div>
+                <div class="botname">{{ user.display_name }} <span class="tag">BOT</span>
+                  <span class="time">Today at 12:04 PM</span></div>
+              </div>
+            </div>
+            <div id="embed-mount">
+              <div class="embed">
+                <div class="bar" style="background:#5865f2;width:4px"></div>
+                <div class="body">
+                  <div class="e-title">SURVIVAL STATUS</div>
+                  <div class="e-desc">24/7 online — check the live player count from anywhere.</div>
+                  <div class="fields">
+                    <div class="e-field inline"><div class="fname">Status</div><div class="fval">Online</div></div>
+                    <div class="e-field inline"><div class="fname">Players</div><div class="fval">12 / 100</div></div>
+                    <div class="e-field inline"><div class="fname">Version</div><div class="fval">1.21.1</div></div>
+                    <div class="e-field inline"><div class="fname">IP</div><div class="fval">play.yourserver.com</div></div>
+                  </div>
+                  <div class="e-footer">Powered by ENDHOST &bull; Today at 12:04 PM</div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="ad-pair">
+          {{ ad_unit('banner_160x600') }}
+          {{ ad_unit('banner_160x300') }}
+        </div>
+      </div>
+    </div>
+
+    {{ ad_unit('leaderboard') }}
+    </main>
+  </div>
+  <div class="sidebar-scrim" id="sidebar-scrim"></div>
+
+  <div class="modal-overlay" id="settings-modal">
+    <div class="modal" role="dialog" aria-modal="true" aria-labelledby="settings-title">
+      <button class="modal-close" type="button" data-act="close-settings" aria-label="Close settings">&times;</button>
+      <h2 id="settings-title">Settings</h2>
+      <p class="hint">Update your account password.</p>
+      <div class="field"><label for="s-old-pass">Current Password</label><input id="s-old-pass" type="password" autocomplete="current-password"></div>
+      <div class="field"><label for="s-new-pass">New Password</label><input id="s-new-pass" type="password" autocomplete="new-password" minlength="8" aria-describedby="s-new-pass-hint"></div>
+      <p class="field-hint" id="s-new-pass-hint" style="text-align:left">At least 8 characters.</p>
+      <button class="btn btn-primary" type="button" data-act="save-password" style="width:100%">Save Password</button>
+      <p class="note" id="s-msg" role="status" style="margin-top:12px"></p>
+    </div>
+  </div>
+
+  <div class="toast" id="toast" role="status" aria-live="polite"></div>
+
+<script nonce="{{ csp_nonce }}">
+const BOT_ID = {{ bot.id | tojson }};
+const USER_ID = {{ user.uid | string | tojson }};
+const IS_TRIAL = {{ ('1' if user.account_type == 'trial' else '0') | tojson }};
+const CSRF_TOKEN = {{ csrf_token() | tojson }};
+const $ = s => {
+  try { return document.querySelector(s); } catch(e) { return null; }
+};
+function toast(m, err=false){
+  try {
+    const t = $('#toast');
+    if (!t) return;
+    t.textContent = m;
+    t.className = 'toast show' + (err ? ' err' : '');
+    setTimeout(() => { if (t) t.className = 'toast'; }, 2600);
+  } catch(e) { console.error('toast error:', e); }
+}
+
+let settingsOpener = null;
+function settingsToggle(){ return document.querySelector('[data-act="open-settings"]'); }
+function openSettings(){
+  settingsOpener = document.activeElement;
+  document.getElementById('settings-modal').classList.add('show');
+  const t = settingsToggle(); if (t) t.setAttribute('aria-expanded','true');
+  const first = document.getElementById('s-old-pass');
+  if (first) first.focus();
+}
+function closeSettings(){ document.getElementById('settings-modal').classList.remove('show');
+  const msg=document.getElementById('s-msg'); if(msg) msg.textContent='';
+  const t = settingsToggle(); if (t) t.setAttribute('aria-expanded','false');
+  if (settingsOpener && settingsOpener.focus) settingsOpener.focus();
+  settingsOpener = null; }
+document.addEventListener('keydown', function(e){
+  if (e.key !== 'Escape') return;
+  const modal = document.getElementById('settings-modal');
+  if (modal && modal.classList.contains('show')) closeSettings();
+});
+async function savePassword(){
+  const old=document.getElementById('s-old-pass').value.trim();
+  const nw=document.getElementById('s-new-pass').value.trim();
+  const msg=document.getElementById('s-msg');
+  if(!old||!nw){msg.textContent='Fill in both fields';msg.style.color='var(--red)';return}
+  if(nw.length<8){msg.textContent='New password must be at least 8 characters';msg.style.color='var(--red)';return}
+  msg.textContent='Saving...';msg.style.color='var(--muted2)';
+
+  const btn=document.querySelector('[data-act="save-password"]');
+  if(btn){btn.disabled=true;btn.setAttribute('aria-busy','true')}
+  try {
+    const res=await api('/api/user/'+USER_ID+'/password',{method:'PUT',body:JSON.stringify({old_password:old,new_password:nw})});
+    if(res&&res.ok){
+      msg.textContent='Password updated';msg.style.color='var(--green)';
+      document.getElementById('s-old-pass').value='';document.getElementById('s-new-pass').value='';
+      setTimeout(closeSettings,1200);
+    } else {
+      msg.textContent=res?.error||'Error';msg.style.color='var(--red)';
+    }
+  } finally {
+    if(btn){btn.disabled=false;btn.removeAttribute('aria-busy')}
+  }
+}
+
+function api(url, opts={}){
+  return new Promise(resolve => {
+    try {
+      const xhr = new XMLHttpRequest();
+      xhr.open((opts.method || 'GET'), url, true);
+      xhr.setRequestHeader('Content-Type', 'application/json');
+      xhr.setRequestHeader('X-CSRF-Token', CSRF_TOKEN);
+      if(window.__deviceFingerprint) xhr.setRequestHeader('X-Device-Fingerprint', window.__deviceFingerprint);
+      xhr.timeout = 30000;
+      xhr.onload = () => {
+        try { resolve(JSON.parse(xhr.responseText)); }
+        catch(e) { resolve({ok: false, error: 'Invalid JSON response'}); }
+      };
+      xhr.onerror = () => resolve({ok: false, error: 'Network error'});
+      xhr.ontimeout = () => resolve({ok: false, error: 'Request timed out'});
+      xhr.send(opts.body || null);
+    } catch(e) {
+      console.error('API error:', url, e);
+      resolve({ok: false, error: 'Network error: ' + e.message});
+    }
+  });
+}
+
+let activeEditor = null;
+document.addEventListener('focusin', e => {
+  try {
+    if (e.target && (e.target.matches('input, textarea'))) {
+      activeEditor = e.target;
+    }
+  } catch(_) {}
+});
+
+function insertAtActiveEditor(text){
+  try {
+    if (!activeEditor) return false;
+    const el = activeEditor;
+    if (typeof el.setRangeText === 'function' && typeof el.selectionStart === 'number') {
+      const start = el.selectionStart;
+      const end = el.selectionEnd;
+      el.setRangeText(text, start, end, 'end');
+      el.dispatchEvent(new Event('input', {bubbles:true}));
+      el.focus();
+      return true;
+    }
+    el.value = (el.value || '') + text;
+    el.dispatchEvent(new Event('input', {bubbles:true}));
+    el.focus();
+    return true;
+  } catch(e) {
+    console.error('insertAtActiveEditor error:', e);
+    return false;
+  }
+}
+
+function esc(s){
+  try { return (s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+  catch(e) { return ''; }
+}
+
+function escAttr(s){
+  try { return esc(s).replace(/"/g,'&quot;').replace(/'/g,'&#39;'); }
+  catch(e) { return ''; }
+}
+
+function escQuotes(s){
+  try { return String(s ?? '').replace(/"/g,'&quot;').replace(/'/g,'&#39;'); }
+  catch(e) { return ''; }
+}
+
+function normalizeEmojiSyntax(text){
+  try {
+    return String(text ?? '').replace(/(?<!<):([\w~-]+):(\d{15,25})(?!>)/g, '<:$1:$2>');
+  } catch(e) { return String(text ?? ''); }
+}
+
+function renderEmojiMarkup(text){
+  try {
+    const source = normalizeEmojiSyntax(text);
+    const emojis = [];
+    const prepared = source.replace(/<a?:([A-Za-z0-9_~]+):(\d{15,25})>/g, (match, name, id) => {
+      const animated = match.startsWith('<a:');
+      const url = `https://cdn.discordapp.com/emojis/${id}.${animated ? 'gif' : 'png'}?size=48&quality=lossless`;
+      emojis.push(`<img class="emoji" alt=":${name}:" src="${url}" title=":${name}:" />`);
+      return `@@EMOJI${emojis.length - 1}@@`;
+    });
+    return esc(prepared).replace(/@@EMOJI(\d+)@@/g, (_, idx) => emojis[Number(idx)] || '');
+  } catch(e) { return esc(text); }
+}
+
+function renderDiscordLabel(text){
+  try { return renderDiscordMarkdown(String(text ?? '')); }
+  catch(e) { return esc(text); }
+}
+
+function renderDiscordMarkdown(text){
+  return renderDiscordMarkdownInline(text);
+}
+
+function renderDiscordMarkdownInline(text){
+  try {
+
+    let s = normalizeEmojiSyntax(String(text ?? '')).replace(/<br\s*\/?\s*>/gi, '\n')
+
+      .split(String.fromCharCode(0)).join('');
+    const blocks = [];
+    const emojis = [];
+    s = s.replace(/<a?:([A-Za-z0-9_~]+):(\d{15,25})>/g, (match, name, id) => {
+      const animated = match.startsWith('<a:');
+      const url = `https://cdn.discordapp.com/emojis/${id}.${animated ? 'gif' : 'png'}?size=48&quality=lossless`;
+      emojis.push(`<img class="emoji" alt=":${name}:" src="${url}" title=":${name}:" />`);
+      return `@@EMOJI${emojis.length - 1}@@`;
+    });
+    s = s.replace(/```([\s\S]*?)```/g, (_, code) => {
+      const id = blocks.length;
+      blocks.push(code.trim());
+      return `@@CODEBLOCK${id}@@`;
+    });
+    s = s.replace(/`([^`]+)`/g, '\u0000CODE$1\u0000');
+    s = s.replace(/\*\*(.+?)\*\*/g, '\u0000BOLD$1\u0000');
+    s = s.replace(/__(.+?)__/g, '\u0000UNDER$1\u0000');
+    s = s.replace(/\*(.+?)\*/g, '\u0000ITALIC$1\u0000');
+    s = s.replace(/~~(.+?)~~/g, '\u0000STRIKE$1\u0000');
+    s = s.replace(/\|\|(.+?)\|\|/g, '\u0000SPOIL$1\u0000');
+    s = s.replace(/\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g, '\u0000LINK$1\u0000$2\u0000');
+
+    s = esc(s).replace(/\n/g, '<br>');
+    s = s.replace(/\u0000CODE(.+?)\u0000/g, (_, c) => '<code>' + esc(c) + '</code>');
+    s = s.replace(/\u0000BOLD(.+?)\u0000/g, (_, c) => '<strong>' + esc(c) + '</strong>');
+    s = s.replace(/\u0000UNDER(.+?)\u0000/g, (_, c) => '<span class="underline">' + esc(c) + '</span>');
+    s = s.replace(/\u0000ITALIC(.+?)\u0000/g, (_, c) => '<em>' + esc(c) + '</em>');
+    s = s.replace(/\u0000STRIKE(.+?)\u0000/g, (_, c) => '<s>' + esc(c) + '</s>');
+    s = s.replace(/\u0000SPOIL(.+?)\u0000/g, (_, c) => '<span class="spoiler">' + esc(c) + '</span>');
+    s = s.replace(/\u0000LINK(.+?)\u0000(.+?)\u0000/g, (_, t, u) => '<a href="' + escQuotes(u) + '" target="_blank" rel="noreferrer">' + esc(t) + '</a>');
+    s = s.replace(/@@CODEBLOCK(\d+)@@/g, (_, id) => {
+      const code = esc(blocks[Number(id)] || '').replace(/\n/g, '<br>');
+      return `<div class="codeblock">${code}</div>`;
+    });
+    s = s.replace(/@@EMOJI(\d+)@@/g, (_, idx) => emojis[Number(idx)] || '');
+    return s;
+  } catch(e) { return esc(text); }
+}
+
+function renderDiscordMarkdownFull(text){
+  try {
+
+    let s = normalizeEmojiSyntax(String(text ?? '')).replace(/<br\s*\/?\s*>/gi, '\n')
+      .split(String.fromCharCode(0)).join('');
+    const blocks = [];
+    const emojis = [];
+    s = s.replace(/<a?:([A-Za-z0-9_~]+):(\d{15,25})>/g, (match, name, id) => {
+      const animated = match.startsWith('<a:');
+      const url = `https://cdn.discordapp.com/emojis/${id}.${animated ? 'gif' : 'png'}?size=48&quality=lossless`;
+      emojis.push(`<img class="emoji" alt=":${name}:" src="${url}" title=":${name}:" />`);
+      return `@@EMOJI${emojis.length - 1}@@`;
+    });
+    s = s.replace(/```([\s\S]*?)```/g, (_, code) => {
+      const id = blocks.length;
+      blocks.push(code.trim());
+      return `@@CODEBLOCK${id}@@`;
+    });
+    s = s.replace(/`([^`]+)`/g, '\u0000CODE$1\u0000');
+    s = s.replace(/\*\*(.+?)\*\*/g, '\u0000BOLD$1\u0000');
+    s = s.replace(/__(.+?)__/g, '\u0000UNDER$1\u0000');
+    s = s.replace(/\*(.+?)\*/g, '\u0000ITALIC$1\u0000');
+    s = s.replace(/~~(.+?)~~/g, '\u0000STRIKE$1\u0000');
+    s = s.replace(/\|\|(.+?)\|\|/g, '\u0000SPOIL$1\u0000');
+    s = s.replace(/\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g, '\u0000LINK$1\u0000$2\u0000');
+    s = s.replace(/^###\s+(.+)$/gm, '\u0000H3$1\u0000');
+    s = s.replace(/^##\s+(.+)$/gm, '\u0000H2$1\u0000');
+    s = s.replace(/^#\s+(.+)$/gm, '\u0000H1$1\u0000');
+    s = s.replace(/^> ?(.+)$/gm, '\u0000QUOTE$1\u0000');
+    s = esc(s).replace(/\n/g, '<br>');
+    s = s.replace(/\u0000CODE(.+?)\u0000/g, (_, c) => '<code>' + esc(c) + '</code>');
+    s = s.replace(/\u0000BOLD(.+?)\u0000/g, (_, c) => '<strong>' + esc(c) + '</strong>');
+    s = s.replace(/\u0000UNDER(.+?)\u0000/g, (_, c) => '<span class="underline">' + esc(c) + '</span>');
+    s = s.replace(/\u0000ITALIC(.+?)\u0000/g, (_, c) => '<em>' + esc(c) + '</em>');
+    s = s.replace(/\u0000STRIKE(.+?)\u0000/g, (_, c) => '<s>' + esc(c) + '</s>');
+    s = s.replace(/\u0000SPOIL(.+?)\u0000/g, (_, c) => '<span class="spoiler">' + esc(c) + '</span>');
+    s = s.replace(/\u0000LINK(.+?)\u0000(.+?)\u0000/g, (_, t, u) => '<a href="' + escQuotes(u) + '" target="_blank" rel="noreferrer">' + esc(t) + '</a>');
+    s = s.replace(/\u0000H3(.+?)\u0000/g, (_, c) => '<div class="md-h3">' + esc(c) + '</div>');
+    s = s.replace(/\u0000H2(.+?)\u0000/g, (_, c) => '<div class="md-h2">' + esc(c) + '</div>');
+    s = s.replace(/\u0000H1(.+?)\u0000/g, (_, c) => '<div class="md-h1">' + esc(c) + '</div>');
+    s = s.replace(/\u0000QUOTE(.+?)\u0000/g, (_, c) => '<span class="quote">&gt; ' + esc(c) + '</span>');
+    s = s.replace(/@@CODEBLOCK(\d+)@@/g, (_, id) => {
+      const code = esc(blocks[Number(id)] || '').replace(/\n/g, '<br>');
+      return `<div class="codeblock">${code}</div>`;
+    });
+    s = s.replace(/@@EMOJI(\d+)@@/g, (_, idx) => emojis[Number(idx)] || '');
+    return s;
+  } catch(e) { return esc(text); }
+}
+
+const DEFAULT_WIDGETS = [
+  {type:'motd', label:'MOTD', inline:false, enabled:true},
+  {type:'ip', label:'IP & PORT', inline:false, enabled:true},
+  {type:'players', label:'PLAYERS ONLINE', inline:false, enabled:true},
+  {type:'playerlist', label:'PLAYER LIST', inline:false, enabled:true, max_players_in_list:20},
+  {type:'version', label:'VERSION', inline:false, enabled:true},
+  {type:'software', label:'SOFTWARE', inline:false, enabled:true},
+  {type:'plugins', label:'PLUGINS', inline:false, enabled:true, max_items:10},
+  {type:'mods', label:'MODS', inline:false, enabled:true, max_items:10},
+  {type:'separator', label:'', inline:false, enabled:true},
+];
+const EMBED_TEMPLATES = {{ embed_templates|tojson }};
+
+let widgetSeq = 0;
+function uid(){ try { widgetSeq += 1; return `w-${Date.now().toString(36)}-${widgetSeq}`; } catch(e) { return 'w-' + Math.random().toString(36).slice(2); } }
+
+function widgetDefaults(type){
+  try {
+    const base = {id: uid(), type, label:'Custom Field', inline:false, enabled:true, value:'', max_players_in_list:20, display_style:'auto'};
+    if(type === 'status') return {...base, label:'STATUS'};
+    if(type === 'motd') return {...base, label:'MOTD'};
+    if(type === 'ip') return {...base, label:'IP & PORT', value:'', display_style:'backtick'};
+    if(type === 'players') return {...base, label:'PLAYERS ONLINE'};
+    if(type === 'playerlist') return {...base, label:'PLAYER LIST', playerlist_style:'code_numbered'};
+    if(type === 'version') return {...base, label:'VERSION'};
+    if(type === 'software') return {...base, label:'SOFTWARE'};
+    if(type === 'plugins') return {...base, label:'PLUGINS', max_items:10};
+    if(type === 'mods') return {...base, label:'MODS', max_items:10};
+    if(type === 'srv_record') return {...base, label:'SRV RECORD', display_style:'backtick'};
+    if(type === 'ip_address') return {...base, label:'IP ADDRESS'};
+    if(type === 'eula_blocked') return {...base, label:'EULA BLOCKED'};
+    if(type === 'retrieved_at') return {...base, label:'RETRIEVED AT'};
+    if(type === 'expires_at') return {...base, label:'EXPIRES AT'};
+    if(type === 'separator') return {id: uid(), type:'separator', label:'', inline:false, enabled:true, value:'', display_style:'auto'};
+    return base;
+  } catch(e) { return {id:uid(), type, label:'Custom Field', inline:false, enabled:true, value:''}; }
+}
+
+function normalizeWidget(widget, fallbackType='custom'){
+  try {
+    const allowedTypes = ['separator','status','ip','players','playerlist','version','motd','software','plugins','mods','srv_record','ip_address','eula_blocked','retrieved_at','expires_at','custom'];
+    const type = allowedTypes.includes(widget?.type) ? widget.type : fallbackType;
+    const defaultPlayerlistStyle = type === 'playerlist' ? 'code_numbered' : 'plain';
+    return {
+      id: widget?.id || uid(),
+      type,
+      label: widget?.label || widgetDefaults(type).label,
+      inline: !!widget?.inline,
+      enabled: widget?.enabled !== false,
+      value: widget?.value || '',
+      max_players_in_list: parseInt(widget?.max_players_in_list) || 20,
+      max_items: parseInt(widget?.max_items) || 10,
+      playerlist_style: widget?.playerlist_style || defaultPlayerlistStyle,
+      display_style: widget?.display_style || widget?.ip_style || (type === 'ip' || type === 'srv_record' ? 'backtick' : 'auto'),
+      show_when: widget?.show_when || 'always',
+      prefix: widget?.prefix || '',
+      online_text: widget?.online_text || '',
+      offline_text: widget?.offline_text || '',
+    };
+  } catch(e) {
+    console.error('normalizeWidget error:', e);
+    return {id: uid(), type: fallbackType, label: 'Error', inline: false, enabled: true, value: ''};
+  }
+}
+
+function legacyWidgetsFromEmbed(e){
+  try {
+    const widgets = [];
+    if(!e) return widgets;
+    if(e.show_ip !== false) widgets.push(normalizeWidget({type:'ip', label:e.ip_label}, 'ip'));
+    if(e.show_players !== false) widgets.push(normalizeWidget({type:'players', label:e.players_label}, 'players'));
+    if(e.show_playerlist !== false) widgets.push(normalizeWidget({type:'playerlist', label:e.playerlist_label, max_players_in_list:e.max_players_in_list}, 'playerlist'));
+    if(e.show_version !== false) widgets.push(normalizeWidget({type:'version', label:e.version_label}, 'version'));
+    if(e.show_motd !== false) widgets.push(normalizeWidget({type:'motd', label:e.motd_label}, 'motd'));
+    widgets.unshift(normalizeWidget({type:'status', label:e.status_label}, 'status'));
+    (e.custom_fields || []).forEach(cf => {
+      widgets.push(normalizeWidget({type:'custom', label:cf.name, value:cf.value, inline:cf.inline, enabled:cf.enabled}, 'custom'));
+    });
+    return widgets;
+  } catch(e) { return []; }
+}
+
+function setWidgetTypeOptions(select, selected){
+  try {
+    const labels = {
+      separator: '── Separator ──', status: 'Live Status', motd: 'MOTD', ip: 'IP & Port',
+      players: 'Players Online', playerlist: 'Player List', version: 'Version', software: 'Software',
+      plugins: 'Plugins', mods: 'Mods', srv_record: 'SRV Record', ip_address: 'IP Address',
+      eula_blocked: 'EULA Blocked', retrieved_at: 'Retrieved At', expires_at: 'Expires At', custom: 'Custom Field',
+    };
+    select.textContent = '';
+    ['separator','status','motd','ip','players','playerlist','version','software','plugins','mods','srv_record','ip_address','eula_blocked','retrieved_at','expires_at','custom']
+      .forEach(t => {
+        const opt = document.createElement('option');
+        opt.value = t;
+        opt.textContent = labels[t];
+        if (t === selected) opt.selected = true;
+        select.appendChild(opt);
+      });
+  } catch(e) { console.error('setWidgetTypeOptions error:', e); }
+}
+
+function syncWidgetVisibility(card){
+  try {
+    if (!card) return;
+    const type = card.querySelector('.widget-type')?.value || 'custom';
+    const isSep = type === 'separator';
+    const ds = card.querySelector('.widget-display-style')?.value || 'auto';
+    const labelWrap = card.querySelector('.widget-label-wrap');
+    const inlineWrap = card.querySelector('.widget-inline-wrap');
+    const dsWrap = card.querySelector('.widget-display-style-wrap');
+    const valueWrap = card.querySelector('.widget-value-wrap');
+    const plWrap = card.querySelector('.widget-playerlist-wrap');
+    const maxWrap = card.querySelector('.widget-max-wrap');
+    const advToggleWrap = card.querySelector('.widget-advanced-toggle-wrap');
+    if (labelWrap) labelWrap.style.display = isSep ? 'none' : '';
+    if (inlineWrap) inlineWrap.style.display = isSep ? 'none' : '';
+    if (dsWrap) dsWrap.style.display = isSep ? 'none' : '';
+    if (valueWrap) valueWrap.style.display = !isSep && (type === 'custom' || ds === 'template') ? '' : 'none';
+    if (plWrap) plWrap.style.display = type === 'playerlist' ? '' : 'none';
+    if (maxWrap) maxWrap.style.display = (type === 'playerlist' || type === 'plugins' || type === 'mods') ? '' : 'none';
+    if (advToggleWrap) advToggleWrap.style.display = isSep ? 'none' : '';
+    const adv = card.querySelector('.widget-advanced-body');
+    if (adv) adv.style.display = card.querySelector('.widget-advanced-toggle')?.checked ? 'block' : 'none';
+    const maxLabel = card.querySelector('.widget-max-wrap label');
+    const maxInput = card.querySelector('.widget-max');
+    const valueLabel = card.querySelector('.widget-value-wrap label');
+    const valueInput = card.querySelector('.widget-value');
+    if (type === 'playerlist') {
+      if (maxLabel) maxLabel.textContent = 'Max players in list';
+      if (maxInput) maxInput.value = maxInput.value || '20';
+    } else if (type === 'plugins' || type === 'mods') {
+      if (maxLabel) maxLabel.textContent = 'Max items shown';
+      if (maxInput) maxInput.value = maxInput.value || '10';
+    }
+    const placeholders = widgetPlaceholderHint(type);
+    if (ds === 'template') {
+      if (valueLabel) valueLabel.textContent = 'Template';
+      if (valueInput) valueInput.placeholder = placeholders;
+    } else if (type === 'custom') {
+      if (valueLabel) valueLabel.textContent = 'Custom Value';
+      if (valueInput) valueInput.placeholder = 'Use Discord markdown here';
+    }
+  } catch(e) { console.error('syncWidgetVisibility error:', e); }
+}
+
+function widgetPlaceholderHint(type){
+  const hints = {
+    status: '{value}, {status}', ip: '{value}, {host}, {port}, {ip}, {ip_port}, {edition}',
+    players: '{value}, {online}, {max}', playerlist: '{value}, {players}, {count}',
+    version: '{value}, {version}', motd: '{value}, {motd}, {stripped}',
+    software: '{value}, {software}', plugins: '{value}, {plugins}, {count}',
+    mods: '{value}, {mods}, {count}', srv_record: '{value}, {host}, {port}, {ip_port}',
+    ip_address: '{value}, {ip}', eula_blocked: '{value}, {eula}',
+    retrieved_at: '{value}, {time}, {timestamp}', expires_at: '{value}, {time}, {timestamp}',
+    custom: '{value}',
+  };
+  return (hints[type] || '{value}') + ' — use any Discord markdown';
+}
+
+function moveWidget(card, direction){
+  try {
+    if (!card) return;
+    const parent = card.parentElement;
+    const sibling = direction < 0 ? card.previousElementSibling : card.nextElementSibling;
+    if (!sibling) return;
+    if (direction < 0) parent.insertBefore(card, sibling);
+    else parent.insertBefore(sibling, card);
+    doPreview();
+  } catch(e) { console.error('moveWidget error:', e); }
+}
+
+function widgetCard(widget){
+  try {
+    const w = normalizeWidget(widget);
+    const card = document.createElement('div');
+    card.className = 'widget-card';
+    card.dataset.widgetItem = '1';
+    card.dataset.widgetId = w.id;
+    card.draggable = true;
+
+    const wid = String(w.id || '').replace(/[^A-Za-z0-9_-]/g, '') || uid();
+    card.innerHTML = `
+      <div class="widget-head">
+        <button type="button" class="drag-handle" title="Drag to reorder" aria-label="Drag to reorder widget">⋮⋮</button>
+        <select class="widget-type" id="${wid}-type" aria-label="Widget type"></select>
+        <label class="inline-check widget-enabled"><input type="checkbox" checked> Enabled</label>
+        <div class="widget-actions">
+          <button type="button" class="btn btn-ghost btn-sm widget-up" aria-label="Move widget up">↑</button>
+          <button type="button" class="btn btn-ghost btn-sm widget-down" aria-label="Move widget down">↓</button>
+          <button type="button" class="btn btn-red btn-sm widget-remove">Remove</button>
+        </div>
+      </div>
+      <div class="grid2">
+        <div class="field widget-label-wrap">
+          <label for="${wid}-label">Field Label</label>
+          <input class="widget-label" id="${wid}-label" placeholder="Widget label">
+        </div>
+        <div class="field widget-inline-wrap">
+          <label for="${wid}-inline">Layout</label>
+          <label class="inline-check" style="margin:0"><input type="checkbox" class="widget-inline" id="${wid}-inline"> Inline field</label>
+        </div>
+        <div class="field widget-advanced-toggle-wrap">
+          <label for="${wid}-adv">Deep Options</label>
+          <label class="inline-check" style="margin:0"><input type="checkbox" class="widget-advanced-toggle" id="${wid}-adv"> Show advanced</label>
+        </div>
+        <div class="field widget-playerlist-wrap">
+          <label for="${wid}-plstyle">Player List Style</label>
+          <select class="widget-playerlist-style" id="${wid}-plstyle">
+            <option value="plain">Plain lines</option>
+            <option value="bullets">Bullets</option>
+            <option value="numbered">Numbered</option>
+            <option value="code">Code block</option>
+            <option value="code_numbered">Code block numbered</option>
+          </select>
+        </div>
+        <div class="field widget-max-wrap">
+          <label for="${wid}-max">Max players in list</label>
+          <input class="widget-max" id="${wid}-max" type="number" min="1" value="20">
+        </div>
+        <div class="field widget-display-style-wrap" style="display:none">
+          <label for="${wid}-ds">Display Style</label>
+          <select class="widget-display-style" id="${wid}-ds">
+            <option value="auto">Auto (default)</option>
+            <option value="plain">Plain text</option>
+            <option value="backtick">Backtick</option>
+            <option value="code">Code block</option>
+            <option value="template">Custom template</option>
+          </select>
+        </div>
+        <div class="field widget-value-wrap" style="display:none">
+          <label for="${wid}-value">Custom Value / Template</label>
+          <textarea class="widget-value" id="${wid}-value" rows="2" placeholder="Use Discord markdown here"></textarea>
+        </div>
+      </div>
+      <div class="widget-advanced-body" style="display:none">
+        <div class="section-title" style="margin-top:8px">Deep Widget Options</div>
+        <div class="grid3">
+          <div class="field">
+            <label for="${wid}-showwhen">Show When</label>
+            <select class="widget-show-when" id="${wid}-showwhen">
+              <option value="always">Always</option>
+              <option value="online">Server Online Only</option>
+              <option value="offline">Server Offline Only</option>
+            </select>
+          </div>
+          <div class="field">
+            <label for="${wid}-prefix">Prefix Text</label>
+            <input class="widget-prefix" id="${wid}-prefix" placeholder="e.g. icon">
+          </div>
+          <div class="field">
+            <label for="${wid}-online">Online Text <span class="muted">(overrides value when online)</span></label>
+            <input class="widget-online-text" id="${wid}-online" placeholder="Leave blank for default">
+          </div>
+          <div class="field">
+            <label for="${wid}-offline">Offline Text <span class="muted">(overrides value when offline)</span></label>
+            <input class="widget-offline-text" id="${wid}-offline" placeholder="Leave blank for default">
+          </div>
+        </div>
+      </div>`;
+
+    const wt = card.querySelector('.widget-type');
+    if (wt) { setWidgetTypeOptions(wt, w.type); wt.value = w.type; }
+    const wl = card.querySelector('.widget-label');
+    if (wl) wl.value = w.label || '';
+    const wi = card.querySelector('.widget-inline');
+    if (wi) wi.checked = !!w.inline;
+    const we = card.querySelector('.widget-enabled input');
+    if (we) we.checked = w.enabled !== false;
+    const wps = card.querySelector('.widget-playerlist-style');
+    if (wps) wps.value = w.playerlist_style || 'code_numbered';
+    const wds = card.querySelector('.widget-display-style');
+    if (wds) wds.value = w.display_style || 'auto';
+    const wv = card.querySelector('.widget-value');
+    if (wv) wv.value = w.value || '';
+    const wsw = card.querySelector('.widget-show-when');
+    if (wsw) wsw.value = w.show_when || 'always';
+    const wpf = card.querySelector('.widget-prefix');
+    if (wpf) wpf.value = w.prefix || '';
+    const wont = card.querySelector('.widget-online-text');
+    if (wont) wont.value = w.online_text || '';
+    const woff = card.querySelector('.widget-offline-text');
+    if (woff) woff.value = w.offline_text || '';
+    const wm = card.querySelector('.widget-max');
+    if (wm) {
+      if (w.type === 'playerlist') wm.value = w.max_players_in_list || 20;
+      else if (w.type === 'plugins' || w.type === 'mods') wm.value = w.max_items || 10;
+      else wm.value = w.max_players_in_list || 20;
+    }
+    syncWidgetVisibility(card);
+
+    const rerender = () => { syncWidgetVisibility(card); doPreview(); };
+    const onInput = () => doPreview();
+    if (wt) wt.addEventListener('change', rerender);
+    if (wl) wl.addEventListener('input', onInput);
+    if (wi) wi.addEventListener('change', onInput);
+    if (we) we.addEventListener('change', onInput);
+    if (wps) wps.addEventListener('change', onInput);
+    if (wds) wds.addEventListener('change', rerender);
+    if (wv) wv.addEventListener('input', onInput);
+    if (wm) wm.addEventListener('input', onInput);
+    const advToggle = card.querySelector('.widget-advanced-toggle');
+    if (advToggle) advToggle.addEventListener('change', () => {
+      const body = card.querySelector('.widget-advanced-body');
+      if (body) body.style.display = advToggle.checked ? 'block' : 'none';
+    });
+    if (wsw) wsw.addEventListener('change', onInput);
+    if (wpf) wpf.addEventListener('input', onInput);
+    if (wont) wont.addEventListener('input', onInput);
+    if (woff) woff.addEventListener('input', onInput);
+    const removeBtn = card.querySelector('.widget-remove');
+    if (removeBtn) removeBtn.addEventListener('click', () => { card.remove(); doPreview(); });
+    const upBtn = card.querySelector('.widget-up');
+    if (upBtn) upBtn.addEventListener('click', () => moveWidget(card, -1));
+    const downBtn = card.querySelector('.widget-down');
+    if (downBtn) downBtn.addEventListener('click', () => moveWidget(card, 1));
+
+    card.addEventListener('dragstart', e => { card.classList.add('dragging'); if (e.dataTransfer) e.dataTransfer.effectAllowed = 'move'; });
+    card.addEventListener('dragend', () => card.classList.remove('dragging'));
+    return card;
+  } catch(e) {
+    console.error('widgetCard error:', e);
+    const fallback = document.createElement('div');
+    fallback.className = 'widget-card';
+    fallback.textContent = 'Error loading widget';
+    return fallback;
+  }
+}
+
+function renderWidgets(widgets){
+  try {
+    const mount = $('#widget-list');
+    if (!mount) return;
+    mount.innerHTML = '';
+    const list = Array.isArray(widgets) ? widgets : DEFAULT_WIDGETS;
+    list.forEach(w => mount.appendChild(widgetCard(w)));
+  } catch(e) { console.error('renderWidgets error:', e); }
+}
+
+function collectWidgets(){
+  try {
+    return [...document.querySelectorAll('#widget-list [data-widget-item]')].map(card => {
+      try {
+        const type = card.querySelector('.widget-type')?.value || 'custom';
+        const w = {
+          id: card.dataset.widgetId || uid(),
+          type: type,
+          label: normalizeEmojiSyntax(card.querySelector('.widget-label')?.value || ''),
+          inline: card.querySelector('.widget-inline')?.checked || false,
+          enabled: card.querySelector('.widget-enabled input')?.checked !== false,
+          playerlist_style: card.querySelector('.widget-playerlist-style')?.value || (type === 'playerlist' ? 'code_numbered' : 'plain'),
+          display_style: card.querySelector('.widget-display-style')?.value || 'auto',
+          value: normalizeEmojiSyntax(card.querySelector('.widget-value')?.value || ''),
+          show_when: card.querySelector('.widget-show-when')?.value || 'always',
+          prefix: normalizeEmojiSyntax(card.querySelector('.widget-prefix')?.value || ''),
+          online_text: normalizeEmojiSyntax(card.querySelector('.widget-online-text')?.value || ''),
+          offline_text: normalizeEmojiSyntax(card.querySelector('.widget-offline-text')?.value || ''),
+        };
+        const maxVal = parseInt(card.querySelector('.widget-max')?.value) || 20;
+        if (type === 'playerlist' || type === 'plugins' || type === 'mods') {
+          if (type === 'playerlist') w.max_players_in_list = maxVal;
+          else w.max_items = maxVal;
+        } else {
+          w.max_players_in_list = maxVal;
+        }
+        return w;
+      } catch(e) { return {id: uid(), type: 'custom', label: '', inline: false, enabled: true, value: ''}; }
+    });
+  } catch(e) {
+    console.error('collectWidgets error:', e);
+    return [];
+  }
+}
+
+function setupWidgetDnD(){
+  try {
+    const mount = $('#widget-list');
+    if (!mount) return;
+    mount.addEventListener('dragover', e => {
+      e.preventDefault();
+      const dragging = mount.querySelector('.dragging');
+      if (!dragging) return;
+      const after = getDragAfterElement(mount, e.clientY);
+      if (after == null) mount.appendChild(dragging);
+      else mount.insertBefore(dragging, after);
+    });
+    mount.addEventListener('drop', e => { e.preventDefault(); doPreview(); });
+  } catch(e) { console.error('setupWidgetDnD error:', e); }
+}
+
+function getDragAfterElement(container, y){
+  try {
+    const els = [...container.querySelectorAll('[data-widget-item]:not(.dragging)')];
+    return els.reduce((closest, child) => {
+      const box = child.getBoundingClientRect();
+      const offset = y - box.top - box.height / 2;
+      if (offset < 0 && offset > closest.offset) return { offset, element: child };
+      return closest;
+    }, { offset: Number.NEGATIVE_INFINITY, element: null }).element;
+  } catch(e) { return null; }
+}
+
+function collectEmbed(){
+  try {
+    return {
+      title: normalizeEmojiSyntax($('#e_title')?.value || ''),
+      url: ($('#e_url')?.value || '').trim(),
+      description: normalizeEmojiSyntax($('#e_desc')?.value || ''),
+      render_as_description: $('#render_as_description')?.checked || false,
+      color: $('#e_color_text')?.value || '#9b59b6',
+      rotate_accent_on_update: $('#rotate_accent_on_update')?.checked || false,
+      online_text: normalizeEmojiSyntax($('#online_text')?.value || 'ONLINE'),
+      offline_text: normalizeEmojiSyntax($('#offline_text')?.value || 'OFFLINE'),
+      footer: normalizeEmojiSyntax($('#footer')?.value || ''),
+      footer_icon_url: ($('#footer_icon_url')?.value || '').trim(),
+      thumbnail: true,
+      use_discord_icon: $('#use_discord_icon')?.checked || false,
+      discord_icon_url: $('#discord_icon_url')?.value || '',
+      show_timestamp: $('#show_timestamp')?.checked || false,
+      thumbnail_size: parseInt($('#thumbnail_size')?.value) || 62,
+      author_icon_size: parseInt($('#author_icon_size')?.value) || 22,
+      image_max_height: parseInt($('#image_max_height')?.value) || 0,
+      accent_bar_width: parseInt($('#accent_bar_width')?.value) || 4,
+      author_enabled: $('#author_enabled')?.checked || false,
+      author_name: normalizeEmojiSyntax($('#author_name')?.value || ''),
+      author_icon_url: ($('#author_icon_url')?.value || '').trim(),
+      author_url: ($('#author_url')?.value || '').trim(),
+      image_enabled: $('#image_enabled')?.checked || false,
+      image_url: ($('#image_url')?.value || '').trim(),
+      widgets: collectWidgets(),
+      custom_fields: collectWidgets().filter(w => w.type === 'custom').map(w => ({
+        id: w.id, name: w.label, value: w.value, inline: w.inline, enabled: w.enabled,
+      })),
+    };
+  } catch(e) {
+    console.error('collectEmbed error:', e);
+    toast('Error collecting form data: ' + e.message, true);
+    return {};
+  }
+}
+
+function defaultServerPort(edition){
+  return edition === 'bedrock' ? 19132 : 25565;
+}
+
+function serverPortForEdition(){
+  const edition = $('#edition')?.value || 'java';
+  const value = parseInt($('#server_port')?.value, 10);
+  return value || defaultServerPort(edition);
+}
+
+function syncServerPortDefault(){
+  const editionInput = $('#edition');
+  const portInput = $('#server_port');
+  if (!editionInput || !portInput) return;
+  const edition = editionInput.value || 'java';
+  const previousEdition = editionInput.dataset.previousEdition || edition;
+  const previousDefault = defaultServerPort(previousEdition);
+  const nextDefault = defaultServerPort(edition);
+  const current = parseInt(portInput.value, 10);
+  portInput.placeholder = String(nextDefault);
+  if (!current || current === previousDefault) portInput.value = String(nextDefault);
+  editionInput.dataset.previousEdition = edition;
+}
+
+function collectConfig(){
+  try {
+    return {
+      name: $('#bot_name')?.value || '',
+      server_ip: $('#server_ip')?.value || '',
+      server_port: serverPortForEdition(),
+      edition: $('#edition')?.value || 'java',
+      token: $('#token')?.value || '',
+      guild_id: $('#guild_id')?.value || '',
+      channel_id: $('#channel_id')?.value || '',
+      webhook_url: $('#webhook_url')?.value || '',
+      update_interval: parseInt($('#update_interval')?.value) || 60,
+      embed: collectEmbed(),
+    };
+  } catch(e) {
+    console.error('collectConfig error:', e);
+    toast('Error collecting config: ' + e.message, true);
+    return {};
+  }
+}
+
+function setDiscordAssetsMeta(msg, isError=false){
+  try {
+    const el = $('#discord-assets-meta');
+    if (!el) return;
+    el.textContent = msg || '';
+    el.style.color = isError ? 'var(--red)' : 'var(--muted)';
+  } catch(_) {}
+}
+
+function renderEmojiPicker(emojis){
+  try {
+    const grid = $('#emoji-grid');
+    if (!grid) return;
+    grid.innerHTML = '';
+    if (!Array.isArray(emojis) || !emojis.length) {
+      grid.innerHTML = '<div class="note" style="grid-column:1/-1;text-align:left">No emojis loaded yet.</div>';
+      return;
+    }
+    emojis.forEach(emoji => {
+      try {
+        const btn = document.createElement('button');
+        btn.type = 'button';
+        btn.className = 'emoji-chip';
+        btn.title = `:${emoji.name}:`;
+        btn.innerHTML = `<img src="${escAttr(emoji.url)}" alt=":${escAttr(emoji.name)}:">`;
+        btn.addEventListener('click', () => insertAtActiveEditor(emoji.token || `<:${emoji.name}:${emoji.id}>`));
+        grid.appendChild(btn);
+      } catch(_) {}
+    });
+  } catch(e) { console.error('renderEmojiPicker error:', e); }
+}
+
+function setGuildIcon(url){
+
+  const img = $('#guild-icon-preview');
+  if (!img) return;
+  img.onerror = function(){ img.style.display = 'none'; img.removeAttribute('src'); };
+  img.onload = function(){ img.style.display = 'block'; };
+  if (!url) {
+    img.onload = img.onerror = null;
+    img.style.display = 'none';
+    img.removeAttribute('src');
+    return;
+  }
+  img.style.display = 'none';
+  img.src = url;
+  if (img.complete && img.naturalWidth > 0) img.style.display = 'block';
+}
+
+async function loadDiscordAssets(){
+  const btn = $('#load-discord-assets-btn');
+  if (btn && btn.disabled) return;
+  try {
+    busy(btn, true, 'Loading…');
+    setDiscordAssetsMeta('Loading Discord server assets...');
+    const res = await api(`/api/user/bot/${BOT_ID}/discord/assets`);
+    if (!res || !res.ok) {
+      const guildIcon = $('#guild-icon-preview');
+      if (guildIcon) guildIcon.style.display = 'none';
+      const du = $('#discord_icon_url');
+      if (du) du.value = '';
+      renderEmojiPicker([]);
+      setDiscordAssetsMeta(res?.error || 'Could not load Discord assets', true);
+      return;
+    }
+    const du = $('#discord_icon_url');
+    if (du) du.value = res.guild_icon_url || '';
+    setGuildIcon(res.guild_icon_url || '');
+    setDiscordAssetsMeta(res.guild_name ? `Loaded from ${res.guild_name}` : 'Loaded Discord assets');
+    renderEmojiPicker(res.emojis || []);
+    doPreview();
+  } catch(e) {
+    console.error('loadDiscordAssets error:', e);
+    setDiscordAssetsMeta('Error loading assets: ' + e.message, true);
+  } finally {
+    busy(btn, false);
+  }
+}
+
+function computeWidgetValue(widget, status, cfg){
+  try {
+    if (!widget || !status) return '\u200b';
+    const type = widget.type;
+    let value = '\u200b';
+    if(type === 'status') value = status.online ? (cfg.online_text || 'ONLINE') : (cfg.offline_text || 'OFFLINE');
+    else if(type === 'ip') value = `${status.host || ''}:${status.port ?? ''}`;
+    else if(type === 'players') value = `${status.players_online ?? 0} / ${status.players_max ?? 0}`;
+    else if(type === 'playerlist') {
+      const max = widget.max_players_in_list || 20;
+      const list = (status.player_list || []).slice(0, max);
+      const style = widget.playerlist_style || 'code_numbered';
+      if (!list.length) {
+        value = style === 'code' || style === 'code_numbered' ? '```\nNo players online\n```' : 'No players online';
+      } else if (style === 'bullets') {
+        value = list.map(n => `- ${n}`).join('\n');
+      } else if (style === 'numbered') {
+        value = list.map((n, i) => `${i + 1}. ${n}`).join('\n');
+      } else if (style === 'code') {
+        value = '```\n' + list.join('\n') + '\n```';
+      } else if (style === 'code_numbered') {
+        value = '```\n' + list.map((n, i) => `${i + 1}. ${n}`).join('\n') + '\n```';
+      } else {
+        value = list.join('\n');
+      }
+    }
+    else if(type === 'version') value = status.version || 'Unknown';
+    else if(type === 'motd') value = status.motd || 'No MOTD returned';
+    else if(type === 'software') value = status.software || 'Unknown';
+    else if(type === 'plugins') {
+      const max = widget.max_items || 10;
+      const list = (status.plugins || []).slice(0, max);
+      value = list.length ? list.map((p, i) => `${i + 1}. ${p.name}${p.version ? ' (' + p.version + ')' : ''}`).join('\n') : 'No plugins reported';
+    }
+    else if(type === 'mods') {
+      const max = widget.max_items || 10;
+      const list = (status.mods || []).slice(0, max);
+      value = list.length ? list.map((m, i) => `${i + 1}. ${m.name}${m.version ? ' (' + m.version + ')' : ''}`).join('\n') : 'No mods reported';
+    }
+    else if(type === 'srv_record') {
+      value = status.srv_record ? `${status.srv_record.host}:${status.srv_record.port}` : 'No SRV record found';
+    }
+    else if(type === 'ip_address') value = status.ip_address || 'Unknown';
+    else if(type === 'eula_blocked') value = status.eula_blocked ? 'Yes' : 'No';
+    else if(type === 'retrieved_at') value = status.retrieved_at ? new Date(status.retrieved_at).toLocaleString() : 'Unknown';
+    else if(type === 'expires_at') value = status.expires_at ? new Date(status.expires_at).toLocaleString() : 'Unknown';
+    else if(type === 'custom') value = widget.value || '\u200b';
+
+    if (status.online && widget.online_text) value = widget.online_text;
+    else if (!status.online && widget.offline_text) value = widget.offline_text;
+
+    const ds = widget.display_style || 'auto';
+    if (ds === 'backtick') value = '`' + value + '`';
+    else if (ds === 'code') value = '```\n' + value + '\n```';
+    else if (ds === 'template') {
+      const tpl = String(widget.value || '').trim();
+      if (tpl) {
+        const ph = getPlaceholders(type, status, cfg, widget);
+        let r = tpl.replace(/\{value\}/gi, value);
+        for (const [k, v] of Object.entries(ph)) {
+          r = r.replace(new RegExp('\\{' + k + '\\}', 'gi'), String(v ?? ''));
+        }
+        value = r;
+      }
+    }
+
+    if (widget.prefix) value = widget.prefix + ' ' + value;
+    return value;
+  } catch(e) {
+    console.error('computeWidgetValue error:', e);
+    return '\u200b';
+  }
+}
+
+function renderDiscordField(widget, status, cfg){
+  try {
+    if (!widget) return '';
+    const type = widget.type;
+    const inline = !!widget.inline;
+
+    if (type === 'separator') {
+      return '<div class="e-field block" style="padding:4px 0"><hr class="field-separator"></div>';
+    }
+
+    const showWhen = widget.show_when || 'always';
+    if (showWhen === 'online' && !status.online) return '';
+    if (showWhen === 'offline' && status.online) return '';
+
+    const label = widget.label || widgetDefaults(type).label;
+    const value = computeWidgetValue(widget, status, cfg);
+    const rendered = renderDiscordMarkdown(value);
+    const wcolor = widget.color;
+    const bgColor = widget.bg_color;
+    const txtColor = widget.text_color;
+    let style = '';
+    if (wcolor) style += 'border-left:3px solid ' + escAttr(wcolor) + ';';
+    if (bgColor) style += 'background:' + escAttr(bgColor) + ';border-radius:6px;padding:6px 8px;margin-bottom:4px;';
+    if (txtColor) style += 'color:' + escAttr(txtColor) + ';';
+    return '<div class="e-field ' + (inline ? 'inline' : 'block') + '" style="' + style + '"><div class="fname">' + renderDiscordLabel(label) + '</div><div class="fval">' + rendered + '</div></div>';
+  } catch(e) {
+    console.error('renderDiscordField error:', e);
+    return '';
+  }
+}
+
+function getPlaceholders(type, status, cfg, widget){
+  try {
+    const h = status.host || '';
+    const p = status.port ?? '';
+    const s = status;
+    const w = widget || {};
+    const base = {value:''};
+    const statusText = s.online
+      ? (w.online_text || cfg?.online_text || 'ONLINE')
+      : (w.offline_text || cfg?.offline_text || 'OFFLINE');
+    const byType = {
+      status:     {status: statusText},
+      ip:         {host: h, port: p, ip: s.ip || h, ip_port: h + ':' + p, edition: s.edition || ''},
+      players:    {online: s.players_online, max: s.players_max},
+      playerlist: {players: (s.player_list || []).join(', '), count: (s.player_list || []).length},
+      version:    {version: s.version || 'Unknown'},
+      motd:       {motd: s.motd || '', stripped: (s.motd || '').replace(/§./g, '')},
+      software:   {software: s.software || 'Unknown'},
+      plugins:    {plugins: (s.plugins || []).map(x => x.name).join(', '), count: (s.plugins || []).length},
+      mods:       {mods: (s.mods || []).map(x => x.name).join(', '), count: (s.mods || []).length},
+      srv_record: {host: h, port: p, ip_port: h + ':' + p},
+      ip_address: {ip: s.ip_address || 'Unknown'},
+      eula_blocked: {eula: s.eula_blocked ? 'Yes' : 'No'},
+      retrieved_at: {time: s.retrieved_at || '', timestamp: s.retrieved_at ? new Date(s.retrieved_at).toLocaleString() : ''},
+      expires_at: {time: s.expires_at || '', timestamp: s.expires_at ? new Date(s.expires_at).toLocaleString() : ''},
+      custom:     {},
+    };
+    return {...base, ...(byType[type] || {})};
+  } catch(e) { return {value:''}; }
+}
+
+function renderEmbed(status, cfg){
+  try {
+    const mount = $('#embed-mount');
+    if (!mount || !cfg) return;
+    const color = /^#?[0-9a-fA-F]{6}$/.test(cfg.color || '')
+      ? (cfg.color.startsWith('#') ? cfg.color : '#' + cfg.color) : '#9b59b6';
+    const widgets = Array.isArray(cfg.widgets) ? cfg.widgets : DEFAULT_WIDGETS;
+    const fields = widgets.filter(w => w.enabled !== false)
+      .map(w => renderDiscordField(w, status, cfg)).join('');
+    const author = cfg.author_enabled && cfg.author_name
+      ? '<div class="e-author">' + renderDiscordMarkdown(cfg.author_name) + '</div>' : '';
+    const timestamp = cfg.show_timestamp ? ' &bull; Today at 12:04 PM' : '';
+    mount.innerHTML = '<div class="embed"><div class="bar" style="background:' + esc(color) +
+      ';width:' + (cfg.accent_bar_width || 4) + 'px"></div><div class="body">' + author +
+      '<div class="e-title">' + renderDiscordMarkdown(cfg.title || 'SERVER STATUS') + '</div>' +
+      (cfg.description ? '<div class="e-desc">' + renderDiscordMarkdownFull(cfg.description) + '</div>' : '') +
+      '<div class="fields">' + fields + '</div><div class="e-footer">' +
+      renderDiscordMarkdown(cfg.footer || '') + timestamp + '</div></div></div>';
+  } catch(e) { console.error('renderEmbed error:', e); }
+}
+
+let previewTimer = null;
+
+const LIMITS = [['e_title',256],['e_desc',4096],['footer',2048]];
+function syncCounts(){
+  try {
+    LIMITS.forEach(([id, max]) => {
+      const el = document.getElementById(id);
+      const out = document.getElementById(id + '_count');
+      if (!el || !out) return;
+      const n = (el.value || '').length;
+      out.textContent = n + ' / ' + max + ' characters';
+      out.className = n >= max ? 'field-hint warn-note' : 'field-hint';
+    });
+  } catch(e) { console.error('syncCounts error:', e); }
+}
+function doPreview(){
+  clearTimeout(previewTimer);
+  syncCounts();
+  previewTimer = setTimeout(() => {
+    const config = collectConfig();
+    if ($('#rotate_accent_on_update')?.checked) {
+      const color = randomAccentColor();
+      $('#e_color').value = color;
+      $('#e_color_text').value = color;
+      config.embed.color = color;
+    }
+    renderEmbed({
+      online:true, host:config.server_ip || 'play.yourserver.com',
+      port:config.server_port || defaultServerPort(config.edition), ip:'203.0.113.10', edition:config.edition || 'java',
+      players_online:24, players_max:100,
+      player_list:['Alex','Steve','Builder_01','EndWalker'], version:'1.21.1',
+      motd:'Welcome to our Minecraft world!', software:'Paper',
+      plugins:[{name:'EssentialsX'},{name:'LuckPerms'}], mods:[{name:'Fabric API'}],
+      retrieved_at:new Date().toISOString(), eula_blocked:false
+    }, config.embed || {});
+  }, 40);
+}
+
+function randomAccentColor(){
+  const hues = [145, 175, 205, 240, 270, 300, 330, 15, 35, 55, 80, 115];
+  const hue = hues[Math.floor(Math.random() * hues.length)];
+  const sat = 65 + Math.floor(Math.random() * 20);
+  const light = 45 + Math.floor(Math.random() * 12);
+  const c = (1 - Math.abs(2 * light / 100 - 1)) * sat / 100;
+  const x = c * (1 - Math.abs((hue / 60) % 2 - 1));
+  const m = light / 100 - c / 2;
+  const rgb = hue < 60 ? [c,x,0] : hue < 120 ? [x,c,0] : hue < 180 ? [0,c,x] : hue < 240 ? [0,x,c] : hue < 300 ? [x,0,c] : [c,0,x];
+  return '#' + rgb.map(v => Math.round((v + m) * 255).toString(16).padStart(2, '0')).join('');
+}
+
+function busy(btn, on, label){
+  if(!btn) return;
+  btn.disabled = on;
+  btn.setAttribute('aria-busy', on ? 'true' : 'false');
+  if(on){ btn.dataset.idleLabel = btn.textContent; btn.textContent = label; }
+  else if(btn.dataset.idleLabel){ btn.textContent = btn.dataset.idleLabel; delete btn.dataset.idleLabel; }
+}
+function actBtn(act){ return document.querySelector('[data-act="' + act + '"]'); }
+
+async function saveConfig(){
+  const btn = actBtn('save-config');
+  if (btn && btn.disabled) return;
+  try {
+    const ss = $('#save-state');
+    if (ss) ss.textContent = 'Saving\u2026';
+    const config = collectConfig();
+    if (!config || !config.embed) {
+      toast('Failed to collect form data', true);
+      if (ss) ss.textContent = '';
+      return;
+    }
+    busy(btn, true, 'Saving\u2026');
+    const res = await api('/api/user/bot/' + BOT_ID + '/config', {method:'POST', body:JSON.stringify(config)});
+    if (res && res.ok) {
+      toast(IS_TRIAL === '1' ? "Saved to database — click \"Renew\" to keep your trial active" : 'Saved to database');
+      if (ss) ss.textContent = 'Saved';
+      const errorRow = $('#bot-error-row');
+      if (errorRow) errorRow.style.display = 'none';
+      const errorText = $('#bot-error');
+      if (errorText) errorText.textContent = '';
+      const tk = $('#token');
+      if (tk) tk.value = '';
+      loadConfig();
+    } else {
+      toast(res?.error || 'Save failed', true);
+      if (ss) ss.textContent = '';
+    }
+  } catch(e) {
+    console.error('saveConfig error:', e);
+    toast('Save error: ' + e.message, true);
+    const ss = $('#save-state');
+    if (ss) ss.textContent = '';
+  } finally {
+    busy(btn, false);
+  }
+}
+
+async function startBot(){
+  const btn = $('#btn-start');
+  if (btn && btn.disabled) return;
+  try {
+    busy(btn, true, 'Starting…');
+    if (!await saveConfigSilent()) return;
+    const res = await api('/api/user/bot/' + BOT_ID + '/start', {method:'POST'});
+    if (res && res.ok) { toast('Bot hosting started'); refreshBotStatus(); }
+    else toast(res?.error || 'Error starting bot', true);
+  } catch(e) {
+    console.error('startBot error:', e);
+    toast('Error: ' + e.message, true);
+  } finally {
+    busy(btn, false);
+    refreshBotStatus();
+  }
+}
+
+async function saveConfigSilent(){
+  try {
+    const config = collectConfig();
+    if (!config) return false;
+    const res = await api('/api/user/bot/' + BOT_ID + '/config', {method:'POST', body:JSON.stringify(config)});
+    if (!res || !res.ok) {
+      toast(res?.error || 'Save failed', true);
+      return false;
+    }
+    const tk = $('#token');
+    if (tk) tk.value = '';
+    return true;
+  } catch(e) {
+    console.error('saveConfigSilent error:', e);
+    toast('Save error: ' + e.message, true);
+    return false;
+  }
+}
+
+async function stopBot(){
+  const btn = $('#btn-stop');
+  if (btn && btn.disabled) return;
+  try {
+    busy(btn, true, 'Stopping…');
+    const res = await api('/api/user/bot/' + BOT_ID + '/stop', {method:'POST'});
+    if (res && res.ok) { toast('Bot stopped'); refreshBotStatus(); }
+    else toast(res?.error || 'Error stopping bot', true);
+  } catch(e) {
+    console.error('stopBot error:', e);
+    toast('Error: ' + e.message, true);
+  } finally {
+    busy(btn, false);
+    refreshBotStatus();
+  }
+}
+
+async function renewTrial(){
+  const btn = actBtn('renew');
+  if (btn && btn.disabled) return;
+  try {
+    busy(btn, true, 'Renewing…');
+    const res = await api('/api/user/' + USER_ID + '/renew', {method:'POST'});
+    if (res && res.ok) toast('Trial renewed — your bot keeps running for 7 more days');
+    else if (res && res.code === 'rate_limited') toast(res?.error || 'You can renew once a day closer to your turn-off date.', true);
+    else toast(res?.error || 'Failed to renew', true);
+  } catch(e) {
+    console.error('renewTrial error:', e);
+    toast('Error: ' + e.message, true);
+  } finally {
+    busy(btn, false);
+  }
+}
+
+async function generateNow(){
+  const btn = actBtn('generate-now');
+  if (btn && btn.disabled) return;
+  try {
+    busy(btn, true, 'Sending…');
+    if (!await saveConfigSilent()) return;
+    const res = await api('/api/user/bot/' + BOT_ID + '/generate', {method:'POST'});
+    if (res && res.ok) {
+      toast('Embed posted to Discord channel!');
+      refreshBotStatus();
+    } else {
+      toast(res?.error || 'Generate failed', true);
+    }
+  } catch(e) {
+    console.error('generateNow error:', e);
+    toast('Error: ' + e.message, true);
+  } finally {
+    busy(btn, false);
+  }
+}
+
+async function refreshBotStatus(){
+  try {
+    const s = await api('/api/user/bot/' + BOT_ID + '/status');
+    if (!s) return;
+    const dot = $('#bot-status-dot');
+    if (dot) {
+      dot.style.background = s.running ? '#23a55a' : '#f23f43';
+      dot.title = s.running ? 'Running' : 'Stopped';
+
+      dot.setAttribute('aria-label', s.running ? 'Running' : 'Stopped');
+    }
+    const bl = $('#bot-lastrun');
+    if (bl) bl.textContent = s.last_run ? new Date(s.last_run).toLocaleString() : '\u2014';
+    if (s.last_error) {
+      const er = $('#bot-error-row');
+      if (er) er.style.display = 'flex';
+      const et = $('#bot-error');
+      if (et) et.textContent = s.last_error;
+    } else {
+      const er = $('#bot-error-row');
+      if (er) er.style.display = 'none';
+    }
+    const btnStart = $('#btn-start');
+    const btnStop = $('#btn-stop');
+    if (btnStart) btnStart.disabled = s.running;
+    if (btnStop) btnStop.disabled = !s.running;
+  } catch(e) { console.error('refreshBotStatus error:', e); }
+}
+
+function loadConfig(){
+  try {
+    api('/api/user/bot/' + BOT_ID + '/config').then(res => {
+      try {
+        if (!res || !res.ok) {
+          toast('Failed to load bot config', true);
+          return;
+        }
+        const b = res.bot, e = b.embed || {};
+        const sv = v => { if (v !== undefined && v !== null) return v; return ''; };
+        if ($('#bot_name')) $('#bot_name').value = sv(b.name) || 'My Bot';
+        if ($('#server_ip')) $('#server_ip').value = sv(b.server_ip);
+        if ($('#edition')) {
+          $('#edition').value = b.edition || 'java';
+          $('#edition').dataset.previousEdition = $('#edition').value;
+        }
+        if ($('#server_port')) {
+          const storedPort = parseInt(b.server_port, 10);
+          $('#server_port').value = (b.edition === 'bedrock' && storedPort === 25565)
+            ? 19132 : (storedPort || defaultServerPort(b.edition));
+          $('#server_port').placeholder = String(defaultServerPort(b.edition));
+        }
+        if ($('#guild_id')) $('#guild_id').value = sv(b.guild_id);
+        if ($('#channel_id')) $('#channel_id').value = sv(b.channel_id);
+        if ($('#update_interval')) $('#update_interval').value = b.update_interval || 60;
+        const ts = $('#token-state');
+        if (ts) ts.textContent = b.token_masked ? 'Token saved: ' + b.token_masked : 'No token saved yet';
+        const ws = $('#webhook-state');
+        if (ws) ws.textContent = b.webhook_url_masked ? 'Webhook saved: ' + b.webhook_url_masked + ' — leave blank to keep it' : 'No webhook saved yet';
+        renderDelivery(b);
+        if ($('#e_title')) $('#e_title').value = sv(e.title) || 'SERVER STATUS';
+        if ($('#e_url')) $('#e_url').value = sv(e.url);
+        if ($('#e_desc')) $('#e_desc').value = sv(e.description);
+        if ($('#render_as_description')) $('#render_as_description').checked = !!e.render_as_description;
+        if ($('#e_color')) $('#e_color').value = e.color || '#9b59b6';
+        if ($('#e_color_text')) $('#e_color_text').value = e.color || '#9b59b6';
+        if ($('#rotate_accent_on_update')) $('#rotate_accent_on_update').checked = !!e.rotate_accent_on_update;
+        if ($('#online_text')) $('#online_text').value = sv(e.online_text) || 'ONLINE';
+        if ($('#offline_text')) $('#offline_text').value = sv(e.offline_text) || 'OFFLINE';
+        if ($('#footer')) $('#footer').value = sv(e.footer) || 'Powered by ENDHOST';
+        if ($('#footer_icon_url')) $('#footer_icon_url').value = sv(e.footer_icon_url);
+        if ($('#show_timestamp')) $('#show_timestamp').checked = !!e.show_timestamp;
+        if ($('#thumbnail_size')) $('#thumbnail_size').value = e.thumbnail_size || 62;
+        if ($('#author_icon_size')) $('#author_icon_size').value = e.author_icon_size || 22;
+        if ($('#image_max_height')) $('#image_max_height').value = e.image_max_height || 0;
+        if ($('#accent_bar_width')) $('#accent_bar_width').value = e.accent_bar_width || 4;
+        if ($('#author_enabled')) $('#author_enabled').checked = !!e.author_enabled;
+        if ($('#author_name')) $('#author_name').value = sv(e.author_name);
+        if ($('#author_icon_url')) $('#author_icon_url').value = sv(e.author_icon_url);
+        if ($('#author_url')) $('#author_url').value = sv(e.author_url);
+        if ($('#image_enabled')) $('#image_enabled').checked = !!e.image_enabled;
+        if ($('#image_url')) $('#image_url').value = sv(e.image_url);
+        const af = $('#author-fields');
+        if (af) af.style.display = e.author_enabled ? 'block' : 'none';
+        const iuf = $('#image-url-field');
+        if (iuf) iuf.style.display = e.image_enabled ? 'block' : 'none';
+        const imf = $('#image-max-field');
+        if (imf) imf.style.display = e.image_enabled ? 'block' : 'none';
+        if ($('#use_discord_icon')) $('#use_discord_icon').checked = !!e.use_discord_icon;
+        if ($('#discord_icon_url')) $('#discord_icon_url').value = sv(e.discord_icon_url);
+        setGuildIcon(e.discord_icon_url || '');
+        renderWidgets(Array.isArray(e.widgets) ? e.widgets : legacyWidgetsFromEmbed(e));
+        doPreview();
+      } catch(e) { console.error('loadConfig then error:', e); toast('Error loading config', true); }
+    }).catch(err => {
+      console.error('loadConfig fetch error:', err);
+      toast('Failed to load bot config: ' + err.message, true);
+    });
+  } catch(e) { console.error('loadConfig error:', e); }
+}
+
+// Which stored credential the engine posts through. Both-on and both-off mean
+// the same thing to the engine (webhook wins), so the page never shows two
+// active at once.
+function renderDelivery(b){
+  try {
+    const d = (b && b.delivery) || {};
+    const useToken = d.use_token === 1 || d.use_token === '1';
+    const useHook = d.use_webhook === 1 || d.use_webhook === '1';
+    const explicit = useToken !== useHook;
+    const tokenActive = $('#delivery-token-active');
+    const hookActive = $('#delivery-webhook-active');
+    if (tokenActive) tokenActive.style.display = (explicit && useToken) ? '' : 'none';
+    if (hookActive) hookActive.style.display = (explicit && useHook) ? '' : 'none';
+    const state = $('#delivery-state');
+    if (state) {
+      if (explicit) {
+        state.textContent = useHook
+          ? 'Posting through the webhook. Takes up to a minute to apply.'
+          : 'Posting through the bot token and channel. Takes up to a minute to apply.';
+      } else if (b && b.webhook_url_masked) {
+        state.textContent = 'No choice saved — the webhook is used because one is saved.';
+      } else {
+        state.textContent = 'No choice saved — the bot token and channel are used.';
+      }
+    }
+    const warn = $('#delivery-off-warning');
+    if (warn && b && Object.prototype.hasOwnProperty.call(b, 'running')) {
+      warn.style.display = b.running ? 'none' : '';
+    }
+  } catch(_) {}
+}
+
+(function(){
+  try {
+    const post = async (btn, mode) => {
+      const state = $('#delivery-state');
+      btn.disabled = true;
+      try {
+        // api() resolves with parsed JSON and never rejects; it sets the CSRF
+        // header itself.
+        const data = await api('/api/user/bot/' + BOT_ID + '/delivery', {
+          method: 'POST',
+          body: JSON.stringify({ mode: mode })
+        });
+        if (!data || !data.ok) {
+          const msg = (data && data.error) || 'Could not save the delivery choice';
+          toast(msg, true);
+          if (state) state.textContent = msg;
+          return;
+        }
+        renderDelivery({
+          delivery: { use_token: mode === 'token' ? 1 : 0, use_webhook: mode === 'webhook' ? 1 : 0 }
+        });
+        toast(mode === 'webhook' ? 'Posting through the webhook' : 'Posting through the bot token');
+      } catch (err) {
+        const msg = 'Could not save the delivery choice: ' + (err && err.message ? err.message : 'unknown error');
+        toast(msg, true);
+        if (state) state.textContent = msg;
+      } finally {
+        btn.disabled = false;
+      }
+    };
+    const tokenBtn = $('#use-token-btn');
+    if (tokenBtn) tokenBtn.addEventListener('click', () => post(tokenBtn, 'token'));
+    const hookBtn = $('#use-webhook-btn');
+    if (hookBtn) hookBtn.addEventListener('click', () => post(hookBtn, 'webhook'));
+  } catch(e) { console.error('delivery wiring error:', e); }
+})();
+
+(function(){
+  try {
+    const eColor = $('#e_color');
+    const eColorText = $('#e_color_text');
+    if (eColor && eColorText) {
+      eColor.addEventListener('input', e => { eColorText.value = e.target.value; doPreview(); });
+      eColorText.addEventListener('input', e => {
+        if (/^#?[0-9a-fA-F]{6}$/.test(e.target.value)) {
+          eColor.value = e.target.value.startsWith('#') ? e.target.value : '#' + e.target.value;
+        }
+        doPreview();
+      });
+    }
+    const previewInputs = document.querySelectorAll('#bot_name,#e_title,#e_url,#e_desc,#online_text,#offline_text,#footer,#footer_icon_url,#server_ip,#server_port,#edition,#author_name,#author_icon_url,#author_url,#image_url,#thumbnail_size,#accent_bar_width,#author_icon_size,#image_max_height');
+    previewInputs.forEach(el => { try { el.addEventListener('input', doPreview); } catch(_) {} });
+    const editionInput = $('#edition');
+    if (editionInput) editionInput.addEventListener('change', () => { syncServerPortDefault(); doPreview(); });
+    const previewChanges = document.querySelectorAll('#show_timestamp,#render_as_description,#rotate_accent_on_update');
+    previewChanges.forEach(el => { try { el.addEventListener('change', doPreview); } catch(_) {} });
+    const randomAccentBtn = $('#random-accent-btn');
+    if (randomAccentBtn) randomAccentBtn.addEventListener('click', () => {
+      const color = randomAccentColor();
+      if ($('#e_color')) $('#e_color').value = color;
+      if ($('#e_color_text')) $('#e_color_text').value = color;
+      doPreview();
+    });
+    const templateModeBtn = $('#use-template-btn');
+    const customModeBtn = $('#custom-design-btn');
+    const templateGrid = document.querySelector('.tpl-grid');
+    if (templateModeBtn) templateModeBtn.addEventListener('click', () => {
+      if (templateGrid) templateGrid.style.display = 'grid';
+      templateModeBtn.classList.add('btn-primary'); templateModeBtn.classList.remove('btn-ghost');
+      customModeBtn?.classList.add('btn-ghost'); customModeBtn?.classList.remove('btn-primary');
+    });
+    if (customModeBtn) customModeBtn.addEventListener('click', () => {
+      if (templateGrid) templateGrid.style.display = 'none';
+      customModeBtn.classList.add('btn-primary'); customModeBtn.classList.remove('btn-ghost');
+      templateModeBtn?.classList.add('btn-ghost'); templateModeBtn?.classList.remove('btn-primary');
+      document.querySelectorAll('.tpl-card').forEach(c => c.classList.remove('active'));
+      if (typeof toast === 'function') toast('Custom mode: edit every option below');
+    });
+    document.querySelectorAll('.tpl-card').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const t = EMBED_TEMPLATES.find(item => item.id === btn.dataset.templateId);
+        if (!t || !t.accent) return;
+        if ($('#e_color')) $('#e_color').value = t.accent;
+        if ($('#e_color_text')) $('#e_color_text').value = t.accent;
+        if ($('#e_title')) $('#e_title').value = t.title || '';
+        if ($('#e_desc')) $('#e_desc').value = t.description || '';
+        if ($('#online_text')) $('#online_text').value = t.online || 'ONLINE';
+        if ($('#offline_text')) $('#offline_text').value = t.offline || 'OFFLINE';
+        if ($('#footer')) $('#footer').value = t.footer || '';
+        if ($('#show_timestamp')) $('#show_timestamp').checked = !!t.show_timestamp;
+        if ($('#render_as_description')) $('#render_as_description').checked = !!t.render_as_description;
+        if ($('#accent_bar_width')) $('#accent_bar_width').value = t.accent_bar_width || 4;
+        if ($('#thumbnail_size')) $('#thumbnail_size').value = t.thumbnail_size || 62;
+        if ($('#author_icon_size')) $('#author_icon_size').value = t.author_icon_size || 22;
+        if ($('#author_enabled')) $('#author_enabled').checked = !!t.author_enabled;
+        if ($('#author_name')) $('#author_name').value = t.author_name || '';
+        if ($('#author_icon_url')) $('#author_icon_url').value = t.author_icon_url || '';
+        if ($('#author_url')) $('#author_url').value = t.author_url || '';
+        if ($('#image_enabled')) $('#image_enabled').checked = !!t.image_enabled;
+        if ($('#image_url')) $('#image_url').value = t.image_url || '';
+        if ($('#image_max_height')) $('#image_max_height').value = t.image_max_height || 0;
+        if ($('#use_discord_icon')) $('#use_discord_icon').checked = !!t.use_discord_icon;
+        if ($('#footer_icon_url')) $('#footer_icon_url').value = t.footer_icon_url || '';
+        const authorFields = $('#author-fields');
+        if (authorFields) authorFields.style.display = t.author_enabled ? 'block' : 'none';
+        const imageUrlField = $('#image-url-field');
+        const imageMaxField = $('#image-max-field');
+        if (imageUrlField) imageUrlField.style.display = t.image_enabled ? 'block' : 'none';
+        if (imageMaxField) imageMaxField.style.display = t.image_enabled ? 'block' : 'none';
+        renderWidgets(Array.isArray(t.widgets) ? t.widgets : DEFAULT_WIDGETS);
+        if (templateGrid) templateGrid.style.display = 'grid';
+        document.querySelectorAll('.tpl-card').forEach(c => c.classList.remove('active'));
+        btn.classList.add('active');
+        const bar = document.querySelector('#embed-mount .bar');
+        if (bar) bar.style.background = t.accent;
+        const titleEl = document.querySelector('#embed-mount .e-title');
+        if (titleEl && t.title) titleEl.textContent = t.title;
+        doPreview();
+        if (typeof toast === 'function') toast('Template applied: ' + t.name);
+      });
+    });
+    const authEn = $('#author_enabled');
+    if (authEn) authEn.addEventListener('change', () => {
+      const af = $('#author-fields');
+      if (af) af.style.display = authEn.checked ? 'block' : 'none';
+      doPreview();
+    });
+    const imgEn = $('#image_enabled');
+    if (imgEn) imgEn.addEventListener('change', () => {
+      const show = imgEn.checked;
+      const iuf = $('#image-url-field');
+      const imf = $('#image-max-field');
+      if (iuf) iuf.style.display = show ? 'block' : 'none';
+      if (imf) imf.style.display = show ? 'block' : 'none';
+      doPreview();
+    });
+    const wt = $('#widget-type');
+    if (wt) wt.addEventListener('change', doPreview);
+    const addBtn = $('#add-widget-btn');
+    if (addBtn) addBtn.addEventListener('click', () => {
+      const type = ($('#widget-type')?.value) || 'status';
+      const wl = $('#widget-list');
+      if (wl) wl.appendChild(widgetCard(widgetDefaults(type)));
+      doPreview();
+    });
+    const resetBtn = $('#reset-widgets-btn');
+    if (resetBtn) resetBtn.addEventListener('click', () => {
+      renderWidgets(DEFAULT_WIDGETS);
+      doPreview();
+    });
+    const loadAssetsBtn = $('#load-discord-assets-btn');
+    if (loadAssetsBtn) loadAssetsBtn.addEventListener('click', loadDiscordAssets);
+    const guildIconBtn = $('#use-guild-icon-as-image');
+    if (guildIconBtn) guildIconBtn.addEventListener('click', () => {
+      const url = ($('#discord_icon_url')?.value) || '';
+      if (url) {
+        const iu = $('#image_url');
+        if (iu) iu.value = url;
+        const ie = $('#image_enabled');
+        if (ie) ie.checked = true;
+        const iuf = $('#image-url-field');
+        if (iuf) iuf.style.display = 'block';
+        doPreview();
+        toast('Guild icon set as banner image');
+      } else {
+        toast('Load Discord assets first', true);
+      }
+    });
+    const useDiscIcon = $('#use_discord_icon');
+    if (useDiscIcon) useDiscIcon.addEventListener('change', () => {
+      if (useDiscIcon.checked && !($('#discord_icon_url')?.value)) {
+        loadDiscordAssets();
+        return;
+      }
+      doPreview();
+    });
+    setupWidgetDnD();
+    loadConfig();
+    refreshBotStatus();
+    setInterval(refreshBotStatus, 7000);
+  } catch(e) { console.error('Init error:', e); toast('Error initializing builder', true); }
+})();
+
+document.getElementById('settings-modal')?.addEventListener('click',function(e){if(e.target===this)closeSettings()});
+
+document.addEventListener('click', function(e){
+  const el = e.target.closest('[data-act]');
+  if(!el) return;
+  switch(el.dataset.act){
+    case 'open-settings':  e.preventDefault(); openSettings(); break;
+    case 'close-settings': closeSettings(); break;
+    case 'save-password':  savePassword(); break;
+    case 'start-bot':      startBot(); break;
+    case 'stop-bot':       stopBot(); break;
+    case 'renew':          renewTrial(); break;
+    case 'generate-now':   generateNow(); break;
+    case 'save-config':    saveConfig(); break;
+  }
+});
+</script>
+
+{{ ad_unit('mobile') }}
+{{ ad_unit('social_bar') }}
+
+{{ ad_scripts() }}
+<script nonce="{{ csp_nonce }}" src="{{ url_for('static', filename='n3.js') }}" defer></script>
+</body>
+</html>

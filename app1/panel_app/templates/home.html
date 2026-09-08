@@ -1,0 +1,27 @@
+{% extends "base.html" %}
+{% block title %}Home · BotDock{% endblock %}
+{% block topbar %}Home{% endblock %}
+{% block content %}
+  <section class="home-cards">
+    <a class="home-card" href="{{ url_for('new_server') }}">
+      <span class="home-card-icon code">&lt;/&gt;</span>
+      <span class="home-card-body">
+        <strong>Create a server</strong>
+        <small>Host any Node.js or Python bot. Choose a runtime image, set your startup command, and launch.</small>
+      </span>
+      <span class="home-card-cta">Create <i>→</i></span>
+    </a>
+    {# Second card in the auto-fit grid, which is the shape .home-cards was
+       already written for — the promo is a peer of the real product card. #}
+    {% if house_ads %}
+      <a class="home-card promo-card" href="{{ site_url('/user') }}">
+        <span class="home-card-icon promo">MC</span>
+        <span class="home-card-body">
+          <strong>Minecraft status bots</strong>
+          <small>Post a live player count and server status embed in your Discord. Runs on this same account, with no code to deploy.</small>
+        </span>
+        <span class="home-card-cta">Open <i>&rarr;</i></span>
+      </a>
+    {% endif %}
+  </section>
+{% endblock %}

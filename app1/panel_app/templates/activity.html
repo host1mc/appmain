@@ -1,0 +1,55 @@
+{% extends "base.html" %}
+{% block title %}Activity · end host{% endblock %}
+{% block topbar %}Activity log{% endblock %}
+{% block content %}
+  <section class="page-heading">
+    <div>
+      <p class="page-kicker">Audit trail</p>
+      <h1>Activity log</h1>
+      {% if settings and not settings.activity_log %}
+        <p>Recording is currently switched off for this panel.</p>
+      {% else %}
+        <p>Every action taken in the panel, newest first.</p>
+      {% endif %}
+    </div>
+  </section>
+
+  <section class="panel-section">
+    {% if entries %}
+      <div class="section-heading">
+        {# "Newest N", not "N recorded": list_activity caps at 200 rows, so a busy
+           account's total is not what is on the page. #}
+        <div><h2>Recent actions</h2><p>Newest {{ entries|length }} {{ 'action' if entries|length == 1 else 'actions' }} on this account.</p></div>
+      </div>
+      <div class="activity-list">
+        {% for entry in entries %}
+          <div class="activity-row">
+            <span class="activity-avatar">{{ (entry.username or '?')[:1]|upper }}</span>
+            <span class="activity-main">
+              <strong>{{ entry.username }}</strong>
+              <span class="activity-action">{{ entry.action }}</span>
+              {% if entry.server_id %}<code>{{ public_server_label(entry.server_id) }}</code>{% endif %}
+              {% if entry.detail %}<span class="activity-detail">{{ entry.detail }}</span>{% endif %}
+            </span>
+            <span class="activity-time">{{ entry.created_at }}</span>
+          </div>
+        {% endfor %}
+      </div>
+    {% elif settings and not settings.activity_log %}
+      {# Not the same as an empty log, and saying "no activity yet" here would be
+         untrue: the switch is off, so nothing is being recorded at all and the
+         rows from before it was turned off are deliberately not shown either. #}
+      <div class="empty-state">
+        <div class="empty-icon" aria-hidden="true">OFF</div>
+        <h3>Activity logging is turned off</h3>
+        <p>Your servers are unaffected — actions simply are not being recorded. Ask an operator to turn the audit trail back on if you need it.</p>
+      </div>
+    {% else %}
+      <div class="empty-state">
+        <div class="empty-icon" aria-hidden="true">CLK</div>
+        <h3>No activity yet</h3>
+        <p>Actions like creating, starting, and stopping servers will show up here.</p>
+      </div>
+    {% endif %}
+  </section>
+{% endblock %}

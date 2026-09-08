@@ -1,0 +1,27 @@
+﻿<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Rate Limit Exceeded</title>
+  <meta name="robots" content="noindex, nofollow">
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+
+<body data-guard="off">
+  <div class="nav">
+    <div class="brand"><a href="{{ site_url('index') }}"><span class="dot"></span> ENDHOST</a></div>
+    <div class="links"><a href="{{ url_for('user_login') }}">Login</a></div>
+  </div>
+  <main class="container">
+    <div class="card" style="max-width:500px;margin:80px auto;text-align:center;padding:48px 32px">
+      <div style="font-size:64px;margin-bottom:16px" aria-hidden="true">&#9203;</div>
+      <h1 style="font-size:28px;margin-bottom:8px">Too Many Requests</h1>
+      <p role="status" style="color:var(--muted);font-size:16px;line-height:1.6;margin-bottom:24px">{{ message | default('Rate limit exceeded. Please slow down.', true) }}</p>
+      <p style="color:var(--muted2);font-size:14px">Please wait a moment before trying again.</p>
+      <a href="{{ site_url('index') }}" class="btn btn-primary" style="margin-top:20px;display:inline-block">Back to Home</a>
+    </div>
+  </main>
+  {{ ad_scripts() }}
+</body>
+</html>

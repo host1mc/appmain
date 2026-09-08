@@ -1,0 +1,142 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  {{ ad_head() }}
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="description" content="ENDHOST terms of service — the rules for using the free app hosting service.">
+  <meta name="robots" content="index, follow">
+  <meta property="og:type" content="website">
+  <meta property="og:site_name" content="ENDHOST">
+  <meta property="og:title" content="Terms of Service — ENDHOST">
+  <meta property="og:description" content="ENDHOST terms of service — the rules for using the free app hosting service.">
+  <meta name="twitter:card" content="summary">
+  {% if site_host %}<meta property="og:url" content="{{ site_url('terms') }}">
+  <meta property="og:image" content="{{ site_host }}{{ url_for('static', filename='apple-touch-icon.png') }}">
+  <meta name="twitter:image" content="{{ site_host }}{{ url_for('static', filename='apple-touch-icon.png') }}">{% endif %}
+  {% if site_host %}<link rel="canonical" href="{{ site_url('terms') }}">{% endif %}
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="icon" type="image/png" sizes="32x32" href="{{ url_for('static', filename='favicon-32.png') }}">
+  <link rel="icon" type="image/png" sizes="64x64" href="{{ url_for('static', filename='favicon-64.png') }}">
+  <link rel="apple-touch-icon" href="{{ url_for('static', filename='apple-touch-icon.png') }}">
+  <meta name="theme-color" content="#18202f">
+  <link rel="manifest" href="{{ url_for('site_webmanifest') }}">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black">
+  <meta name="apple-mobile-web-app-title" content="ENDHOST">
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+  <title>Terms of Service — ENDHOST</title>
+</head>
+<body data-guard="{{ guard_mode }}">
+  <a class="skip-link" href="#main">Skip to main content</a>
+  <header class="nav">
+    <div class="brand"><a href="{{ site_url('index') }}"><img class="brand-logo" src="{{ url_for('static', filename='logo-128.png') }}" alt="ENDHOST" width="40" height="40"><span class="brand-lockup"><strong>ENDHOST</strong></span></a></div>
+    {% include "_nav_toggle.html" %}
+    <nav class="links" id="site-nav-links" aria-label="Primary">
+      <a href="{{ site_url('index') }}">Home</a>
+      <a href="{{ site_url('help') }}">Help</a>
+      <a href="{{ site_url('blog') }}">Blog</a>
+      <a href="{{ panel_url('user_login') }}">Log in</a>
+      <a href="{{ panel_url('user_register') }}" class="btn btn-primary btn-sm nav-cta">Get started free</a>
+    </nav>
+  </header>
+
+  <main id="main">
+    <section class="legal">
+      <h1>Terms of Service</h1>
+      <p class="legal-updated">Last updated: <time datetime="2026-08-12">August 12, 2026</time></p>
+
+      <p class="legal-intro">By creating an account or using ENDHOST ("the Service"), you agree to these terms. The Service is provided free of charge by Endevil and its operators.</p>
+
+      <h2>1. The Service</h2>
+      <p>ENDHOST hosts Discord bots for you. Either we run a status bot that posts live embeds for your Minecraft server — you build the status card through the web panel — or you upload an app you wrote yourself — Node.js, Python, Ruby, Go, PHP or Bun — and we run that in a supervised container. Both keep running around the clock without a machine of your own.</p>
+
+      <h2>2. Free</h2>
+      <p>The Service is free and has no trial clock or paid tiers. We reserve the right to change how the Service is funded (for example, advertising), but the core hosting of your bots will remain free.</p>
+
+      <h2>3. Your account</h2>
+      <ul>
+        <li>You must provide accurate registration details. One account per person is expected.</li>
+        <li>You own the code you upload and are responsible for what it does. Do not upload code that breaks these terms, Discord's terms, or the law, and do not use a hosted process for mining, proxying, port scanning, or attacking other systems.</li>
+        <li>You are responsible for keeping your login secure and for everything done through your account.</li>
+        <li>You are responsible for backing up your data. Endevil is not responsible for any data loss, deletion, or corruption of your bot files, databases, or any other data stored through the Service. Always maintain your own independent backups.</li>
+        <li>Accounts may be suspended or banned for abuse, ban evasion, or breaking these terms. If caught running more than one account per user, the additional container(s) will be stopped and/or deleted without notice.</li>
+        <li>You can delete your account at any time; doing so removes your data and stops your bots.</li>
+      </ul>
+
+      <h2>4. Acceptable use</h2>
+      <p>You agree not to:</p>
+      <ul>
+        <li>Use the Service to harass, impersonate, or attack other people or services.</li>
+        <li>Attempt to access another user's account, bots, or data.</li>
+        <li>Exploit, probe, or overload the Service, its infrastructure, or its APIs.</li>
+        <li>Use the Service for anything unlawful.</li>
+        <li>Resell, rebrand, or redistribute the Service without permission.</li>
+      </ul>
+
+      <h2>5. Your bot token</h2>
+      <p>You are responsible for keeping your Discord bot token private before you enter it. Tokens are encrypted at rest and only used by the hosting engine. You are responsible for the behaviour of your bot in your Discord server.</p>
+
+      <h2>6. Uptime and performance</h2>
+      <p>We aim to keep status embeds updating continuously, but the Service is provided "as is" and "as available" without warranties of any kind. We do not guarantee uninterrupted availability, and we are not liable for downtime, missed updates, or any loss arising from use of the Service.</p>
+
+      <h2>7. Data loss and backups</h2>
+      <p>The Service does not guarantee the preservation of any data. Files stored in your container, bot configuration, logs, and any other data may be lost at any time due to hardware failure, maintenance, container deletion, account termination, or any other reason. <strong>You are solely responsible for maintaining your own backups.</strong> Endevil and its operators bear no responsibility whatsoever for any data loss, however caused.</p>
+
+      <h2>8. One account per user</h2>
+      <p>Each person may hold only one account. Creating or operating multiple accounts — whether to circumvent limits, evade a ban, or for any other reason — is prohibited. If we detect multiple accounts belonging to the same person, we will:</p>
+      <ul>
+        <li>Stop any running containers on the duplicate account(s);</li>
+        <li>Delete the duplicate container(s) and associated data; and</li>
+        <li>Ban the duplicate account(s), and where appropriate the original account as well.</li>
+      </ul>
+      <p>No warning is required before taking these actions. Banned accounts may not re-register.</p>
+
+      <h2>9. Limitation of liability</h2>
+      <p>To the maximum extent permitted by law, the operators of ENDHOST are not liable for any indirect, incidental, special, or consequential damages — including lost data, lost Discord messages, or lost revenue — arising from your use of the Service. This includes any loss resulting from container stoppage or deletion.</p>
+
+      <h2>10. Changes to the Service or these terms</h2>
+      <p>We may change the Service or these terms at any time. Material changes will be announced in the Discord community. Continued use of the Service after changes take effect means you accept them.</p>
+
+      <h2>11. Termination</h2>
+      <p>We may suspend or terminate accounts that violate these terms, at our discretion and without notice where required to protect the Service or its users.</p>
+
+      <h2>12. Contact</h2>
+      <p>Questions about these terms can be sent through our <a href="{{ discord_invite }}" rel="noopener noreferrer" target="_blank">Discord community</a>{% if contact_email %}, or by emailing <a href="mailto:{{ contact_email }}">{{ contact_email }}</a>{% endif %}. Powered by End × Zairo.</p>
+    </section>
+  </main>
+
+  <footer class="footer">
+    <div class="footer-grid">
+      <div class="footer-col footer-about">
+        <div class="brand"><img class="brand-logo" src="{{ url_for('static', filename='logo-128.png') }}" alt="ENDHOST" width="40" height="40"><span class="brand-lockup"><strong>ENDHOST</strong></span></div>
+        <p class="footer-blurb">Free app hosting — run Node.js, Python, Ruby, Go, PHP or Bun around the clock, plus live Minecraft status embeds for Discord.</p>
+      </div>
+      <div class="footer-col">
+        <h4>Product</h4>
+        <a href="{{ site_url('hosting') }}">App Hosting</a>
+        <a href="{{ site_url('help') }}">Help / setup</a>
+        <a href="{{ site_url('blog') }}">Blog</a>
+      </div>
+      <div class="footer-col">
+        <h4>Community</h4>
+        <a href="{{ discord_invite }}" rel="noopener noreferrer" target="_blank">Join the Discord</a>
+        <a href="{{ panel_url('user_register') }}">Sign up free</a>
+        <a href="{{ panel_url('user_login') }}">Log in</a>
+      </div>
+      <div class="footer-col">
+        <h4>Company</h4>
+        <a href="{{ site_url('about') }}">About us</a>
+        <a href="{{ site_url('contact') }}">Contact us</a>
+        <a href="{{ site_url('privacy') }}">Privacy Policy</a>
+        <a href="{{ site_url('terms') }}">Terms of Service</a>
+      </div>
+    </div>
+    <div class="footer-bottom">
+      <p class="footer-note">Powered by End × Zairo · Free</p>
+    </div>
+  </footer>
+  {{ ad_scripts() }}
+</body>
+</html>

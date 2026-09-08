@@ -1,0 +1,133 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="description" content="Privacy Policy for ENDHOST — what we collect, how we use it, cookies, and advertising.">
+  <meta name="robots" content="index, follow">
+  <meta property="og:type" content="website">
+  <meta property="og:site_name" content="ENDHOST">
+  <meta property="og:title" content="Privacy Policy — ENDHOST">
+  <meta property="og:description" content="Privacy Policy for ENDHOST — what we collect, how we use it, cookies, and advertising.">
+  <meta name="twitter:card" content="summary">
+  {% if site_host %}<meta property="og:url" content="{{ site_url('privacy') }}">
+  <meta property="og:image" content="{{ site_host }}{{ url_for('static', filename='apple-touch-icon.png') }}">
+  <meta name="twitter:image" content="{{ site_host }}{{ url_for('static', filename='apple-touch-icon.png') }}">{% endif %}
+  {% if site_host %}<link rel="canonical" href="{{ site_url('privacy') }}">{% endif %}
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="icon" type="image/png" sizes="32x32" href="{{ url_for('static', filename='favicon-32.png') }}">
+  <link rel="icon" type="image/png" sizes="64x64" href="{{ url_for('static', filename='favicon-64.png') }}">
+  <link rel="apple-touch-icon" href="{{ url_for('static', filename='apple-touch-icon.png') }}">
+  <meta name="theme-color" content="#18202f">
+  <link rel="manifest" href="{{ url_for('site_webmanifest') }}">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black">
+  <meta name="apple-mobile-web-app-title" content="ENDHOST">
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+  <title>Privacy Policy — ENDHOST</title>
+</head>
+<body data-guard="{{ guard_mode }}">
+  <a class="skip-link" href="#main">Skip to main content</a>
+  <header class="nav">
+    <div class="brand"><a href="{{ site_url('index') }}"><img class="brand-logo" src="{{ url_for('static', filename='logo-128.png') }}" alt="ENDHOST" width="40" height="40"><span class="brand-lockup"><strong>ENDHOST</strong></span></a></div>
+    {% include "_nav_toggle.html" %}
+    <nav class="links" id="site-nav-links" aria-label="Primary">
+      <a href="{{ site_url('index') }}">Home</a>
+      <a href="{{ site_url('help') }}">Help</a>
+      <a href="{{ site_url('blog') }}">Blog</a>
+      <a href="{{ site_url('about') }}">About</a>
+      <a href="{{ site_url('contact') }}">Contact</a>
+      <a href="{{ site_url('terms') }}">Terms</a>
+    </nav>
+  </header>
+
+  <main id="main">
+    <section class="legal">
+      <h1>Privacy Policy</h1>
+      <p class="legal-updated">Last updated: <time datetime="2026-08-12">August 12, 2026</time></p>
+
+      <p class="legal-intro">This policy describes how ENDHOST (“we”, “us”) collects and uses information when you use our website and the app hosting service. It applies to the public site, the user panel, and the engine that posts status embeds to Discord.</p>
+
+      <h2>1. Who we are</h2>
+      <p>ENDHOST is operated by Endevil. Questions about this policy: use the <a href="{{ site_url('contact') }}">contact page</a> or our <a href="{{ discord_invite }}" rel="noopener noreferrer" target="_blank">Discord community</a>{% if contact_email %}, or email <a href="mailto:{{ contact_email }}">{{ contact_email }}</a>{% endif %}.</p>
+
+      <h2>2. Information we collect</h2>
+      <ul>
+        <li><strong>Account.</strong> Username, email address, optional display name, and a password hash. Registration is limited to Gmail and Outlook addresses.</li>
+        <li><strong>Service.</strong> Minecraft server address and port, Discord guild and channel IDs, embed design settings, and your encrypted Discord bot token.</li>
+        <li><strong>Code you upload.</strong> If you host your own app, the files you upload, your dependency manifest, and the runtime logs your bot writes. We store these to run your bot and do not read them except to investigate abuse or a fault you report.</li>
+        <li><strong>Security.</strong> Device fingerprint and IP address, used only to detect abuse, enforce bans, and bind an account to the device that registered it.</li>
+        <li><strong>Logs.</strong> Request paths, error events, and timestamps needed to run and debug the service.</li>
+      </ul>
+
+      <h2>3. Bot tokens</h2>
+      <p>Your Discord bot token is encrypted before it is stored. It is decrypted only in memory by the hosting engine when a status embed is posted or edited, or when your own app process is started. It is never sent to the browser, never shown after you save it, and never written to logs.</p>
+
+      <h2>4. How we use information</h2>
+      <ul>
+        <li>To run the service: host your bot, keep embeds current, and let you manage your account.</li>
+        <li>To keep the platform safe: abuse, ban evasion, and fraud prevention.</li>
+        <li>To reply when you contact us or when the service requires it (for example, email verification).</li>
+      </ul>
+      <p>We do not sell personal information. We do not use your account data, email, or bot token to build advertising profiles.</p>
+
+      <h2>5. Cookies we set ourselves</h2>
+      <ul>
+        <li>A session cookie is set when you use the user panel so you stay signed in.</li>
+        <li>The browser may store small UI preferences in local storage (for example, dismissing a notice).</li>
+        <li>You can block or delete cookies in your browser. Blocking advertising cookies does not stop you using the service; the panel needs only its session cookie.</li>
+      </ul>
+
+      <h2>6. Advertising and third-party services</h2>
+      <p>We use Discord to authenticate bots and post embeds, and Google Fonts to load site typography. When advertising is enabled, third-party advertising partners may serve ads on this site and may use cookies or similar technologies to measure and personalise those ads. These partners may collect information such as your IP address, device and browser details, and the pages you view here.</p>
+      <p>Third-party vendors, including Google, use cookies to serve ads based on your prior visits to this website or other websites. Google's use of advertising cookies enables it and its partners to serve ads to you based on your visit to this site and/or other sites on the internet. You can opt out of personalised advertising by visiting <a href="https://www.google.com/settings/ads" rel="noopener noreferrer" target="_blank">Google Ads Settings</a>, or opt out of a third-party vendor's use of cookies for personalised advertising at <a href="https://optout.aboutads.info/" rel="noopener noreferrer" target="_blank">aboutads.info</a>.</p>
+      <p>You can control or disable advertising cookies through your browser settings, and you can opt out of personalised advertising through your device or browser privacy controls. Blocking advertising cookies does not affect your ability to use the service. Each provider processes data under its own privacy policy.</p>
+
+      <h2>7. How long we keep data</h2>
+      <p>Account and bot data is kept while the account is active and is deleted when you delete the account. Session records expire automatically. Backups are kept only as long as we need them for security and recovery.</p>
+
+      <h2>8. Children</h2>
+      <p>The service is not directed at children under 13. We do not knowingly collect personal information from anyone under 13. If you believe a child has given us personal information, contact us and we will delete it.</p>
+
+      <h2>9. Your rights</h2>
+      <p>You can update your account details in the panel and delete your account (and the data tied to it) at any time. For access, correction, erasure, or a copy of your data, use the <a href="{{ site_url('contact') }}">contact page</a>.</p>
+
+      <h2>10. Changes</h2>
+      <p>If we change this policy we will update the date at the top of this page. Material changes will be announced in the Discord community.</p>
+    </section>
+  </main>
+
+  <footer class="footer">
+    <div class="footer-grid">
+      <div class="footer-col footer-about">
+        <div class="brand"><img class="brand-logo" src="{{ url_for('static', filename='logo-128.png') }}" alt="ENDHOST" width="40" height="40"><span class="brand-lockup"><strong>ENDHOST</strong></span></div>
+        <p class="footer-blurb">Free app hosting — run Node.js, Python, Ruby, Go, PHP or Bun around the clock, plus live Minecraft status embeds for Discord.</p>
+      </div>
+      <div class="footer-col">
+        <h4>Product</h4>
+        <a href="{{ site_url('hosting') }}">App Hosting</a>
+        <a href="{{ site_url('help') }}">Help / setup</a>
+        <a href="{{ site_url('blog') }}">Blog</a>
+      </div>
+      <div class="footer-col">
+        <h4>Community</h4>
+        <a href="{{ discord_invite }}" rel="noopener noreferrer" target="_blank">Join the Discord</a>
+        <a href="{{ panel_url('user_register') }}">Sign up free</a>
+        <a href="{{ panel_url('user_login') }}">Log in</a>
+      </div>
+      <div class="footer-col">
+        <h4>Company</h4>
+        <a href="{{ site_url('about') }}">About us</a>
+        <a href="{{ site_url('contact') }}">Contact us</a>
+        <a href="{{ site_url('privacy') }}">Privacy Policy</a>
+        <a href="{{ site_url('terms') }}">Terms of Service</a>
+      </div>
+    </div>
+    <div class="footer-bottom">
+      <p class="footer-note">Powered by End × Zairo · Free</p>
+    </div>
+  </footer>
+  {{ ad_scripts() }}
+</body>
+</html>

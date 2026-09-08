@@ -1,0 +1,113 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  {{ ad_head() }}
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="description" content="Guides, how-tos and under-the-hood explainers for developers shipping small apps, bots and services — written by the team behind ENDHOST.">
+  <meta name="robots" content="index, follow">
+  <meta property="og:type" content="website">
+  <meta property="og:site_name" content="ENDHOST">
+  <meta property="og:title" content="Blog — Hosting guides from ENDHOST">
+  <meta property="og:description" content="Guides, how-tos and under-the-hood explainers for developers shipping small apps, bots and services — written by the team behind ENDHOST.">
+  <meta name="twitter:card" content="summary">
+  {% if site_host %}<meta property="og:url" content="{{ site_url('blog') }}">
+  <meta property="og:image" content="{{ site_host }}{{ url_for('static', filename='apple-touch-icon.png') }}">
+  <meta name="twitter:image" content="{{ site_host }}{{ url_for('static', filename='apple-touch-icon.png') }}">
+  <link rel="canonical" href="{{ site_url('blog') }}">{% endif %}
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="icon" type="image/png" sizes="32x32" href="{{ url_for('static', filename='favicon-32.png') }}">
+  <link rel="icon" type="image/png" sizes="64x64" href="{{ url_for('static', filename='favicon-64.png') }}">
+  <link rel="apple-touch-icon" href="{{ url_for('static', filename='apple-touch-icon.png') }}">
+  <meta name="theme-color" content="#18202f">
+  <link rel="manifest" href="{{ url_for('site_webmanifest') }}">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black">
+  <meta name="apple-mobile-web-app-title" content="ENDHOST">
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+  <title>Blog — Hosting guides from ENDHOST</title>
+  <link rel="alternate" type="application/rss+xml" title="ENDHOST blog" href="{{ url_for('blog_feed') }}">
+</head>
+<body data-guard="{{ guard_mode }}">
+  <a class="skip-link" href="#main">Skip to main content</a>
+  <header class="nav">
+    <div class="brand"><a href="{{ site_url('index') }}"><img class="brand-logo" src="{{ url_for('static', filename='logo-128.png') }}" alt="ENDHOST" width="40" height="40"><span class="brand-lockup"><strong>ENDHOST</strong></span></a></div>
+    {% include "_nav_toggle.html" %}
+    <nav class="links" id="site-nav-links" aria-label="Primary">
+      <a href="{{ site_url('index') }}">Home</a>
+      <a href="{{ site_url('help') }}">Help</a>
+      <a href="{{ site_url('blog') }}" aria-current="page">Blog</a>
+      <a href="{{ site_url('about') }}">About</a>
+      <a href="{{ site_url('contact') }}">Contact</a>
+    </nav>
+  </header>
+
+  {{ ad_unit('leaderboard') }}
+
+  <main id="main">
+    <section class="blog-list">
+      <p class="blog-kicker">About the service</p>
+      <h1 class="blog-title">How ENDHOST works — and how to get the most out of it</h1>
+      <p class="blog-lead">Written by the team that runs the platform: deploying your own app in one of six runtimes, the status engine and its embed builder, and the honest limits of both.</p>
+
+      <div class="ad-pair blog-ad-pair">
+        {{ ad_unit('banner_468x60') }}
+        {{ ad_unit('banner_300x250') }}
+      </div>
+
+      {% for post in posts %}
+      <article class="blog-card">
+        <div class="blog-meta">
+          <span class="blog-cat">{{ post.category }}</span>
+          <time datetime="{{ post.date }}">{{ post.date_display }}</time>
+          <span>{{ post.read_minutes }} min read</span>
+        </div>
+        <h2><a href="{{ site_url('blog_post', slug=post.slug) }}">{{ post.title }}</a></h2>
+        <p>{{ post.description }}</p>
+        <a class="blog-more" href="{{ site_url('blog_post', slug=post.slug) }}" aria-label="Read the article: {{ post.title }}">Read the article →</a>
+      </article>
+      {% else %}
+      <article class="blog-card">
+        <h2>No articles published yet</h2>
+        <p>New guides and explainers land here as they are written. In the meantime, the <a href="{{ site_url('help') }}">help pages</a> cover setting up your bot end to end.</p>
+      </article>
+      {% endfor %}
+    </section>
+  </main>
+
+  <footer class="footer">
+    <div class="footer-grid">
+      <div class="footer-col footer-about">
+        <div class="brand"><img class="brand-logo" src="{{ url_for('static', filename='logo-128.png') }}" alt="ENDHOST" width="40" height="40"><span class="brand-lockup"><strong>ENDHOST</strong></span></div>
+        <p class="footer-blurb">Free app hosting — run Node.js, Python, Ruby, Go, PHP or Bun around the clock, plus live Minecraft status embeds for Discord.</p>
+      </div>
+      <div class="footer-col">
+        <h4>Product</h4>
+        <a href="{{ site_url('hosting') }}">App Hosting</a>
+        <a href="{{ site_url('help') }}">Help / setup</a>
+        <a href="{{ site_url('blog') }}">Blog</a>
+      </div>
+      <div class="footer-col">
+        <h4>Community</h4>
+        <a href="{{ discord_invite }}" rel="noopener noreferrer" target="_blank">Join the Discord</a>
+        <a href="{{ panel_url('user_register') }}">Sign up free</a>
+        <a href="{{ panel_url('user_login') }}">Log in</a>
+      </div>
+      <div class="footer-col">
+        <h4>Company</h4>
+        <a href="{{ site_url('about') }}">About us</a>
+        <a href="{{ site_url('contact') }}">Contact us</a>
+        <a href="{{ site_url('privacy') }}">Privacy Policy</a>
+        <a href="{{ site_url('terms') }}">Terms of Service</a>
+      </div>
+    </div>
+    <div class="footer-bottom">
+      <p class="footer-note">Powered by End × Zairo · Free</p>
+    </div>
+  </footer>
+  {{ ad_unit('mobile') }}
+  {{ ad_unit('social_bar') }}
+  {{ ad_scripts() }}
+</body>
+</html>

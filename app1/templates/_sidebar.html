@@ -1,0 +1,90 @@
+{% set _panel_state = panel_live | default(true) %}
+{% set panel_ok = true if _panel_state is none else _panel_state %}
+
+{% set mc_active = request.endpoint in ('user_dashboard', 'user_bot_editor', 'user_bot_replies') %}
+
+{% set sb_collapsed = sidebar_collapsed if sidebar_collapsed is defined else request.cookies.get('sb_collapsed') == '1' %}
+<aside class="sidebar" id="sidebar">
+  <div class="sidebar-head">
+    <a class="brand" href="{{ url_for('index') }}">
+      <img class="brand-logo" src="{{ url_for('static', filename='logo-128.png') }}" alt="end host" width="40" height="40">
+      <span class="brand-lockup"><strong>end host</strong></span>
+    </a>
+    <button class="icon-button sidebar-toggle" id="sidebar-toggle" type="button" aria-label="Collapse navigation" aria-controls="sidebar" aria-expanded="{{ 'false' if sb_collapsed else 'true' }}">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 6h.01M12 12h.01M12 18h.01"/></svg>
+    </button>
+  </div>
+
+  <nav class="main-nav" aria-label="Account navigation">
+    <p class="nav-group-label">MC Status Bots</p>
+    <a class="nav-link{% if mc_active %} active{% endif %}"{% if mc_active %} aria-current="page"{% endif %} href="{{ url_for('user_dashboard') }}">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v3M6 6h12a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2zM9 12h.01M15 12h.01M9.5 15.5h5"/></svg>
+      <span class="nav-label">My bots</span>
+    </a>
+    <a class="nav-link{% if request.endpoint == 'user_formatting' %} active{% endif %}"{% if request.endpoint == 'user_formatting' %} aria-current="page"{% endif %} href="{{ url_for('user_formatting') }}">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6V4h16v2M12 4v16M9 20h6"/></svg>
+      <span class="nav-label">Discord formatting</span>
+    </a>
+
+    <p class="nav-group-label">App Hosting</p>
+    <a class="nav-link{% if not panel_ok %} is-down{% endif %}"{% if not panel_ok %} aria-disabled="true" title="Hosting panel is offline"{% endif %} data-no-mask href="/panel/dashboard">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 5h16v5H4zM4 14h16v5H4zM7 7.5h.01M7 16.5h.01"/></svg>
+      <span class="nav-label">Servers</span>
+    </a>
+    <a class="nav-link{% if not panel_ok %} is-down{% endif %}"{% if not panel_ok %} aria-disabled="true" title="Hosting panel is offline"{% endif %} data-no-mask href="/panel/servers/new">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>
+      <span class="nav-label">Deploy server</span>
+    </a>
+    <a class="nav-link{% if not panel_ok %} is-down{% endif %}"{% if not panel_ok %} aria-disabled="true" title="Hosting panel is offline"{% endif %} data-no-mask href="/panel/activity">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 20a8 8 0 1 0 0-16 8 8 0 0 0 0 16zM12 8v4l3 2"/></svg>
+      <span class="nav-label">Activity</span>
+    </a>
+
+    <p class="nav-group-label">Account</p>
+    <a class="nav-link{% if not panel_ok %} is-down{% endif %}"{% if not panel_ok %} aria-disabled="true" title="Hosting panel is offline"{% endif %} data-no-mask href="/panel/account">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 12a4 4 0 1 0 0-8 4 4 0 0 0 0 8zM4 20c0-4 3.6-6 8-6s8 2 8 6"/></svg>
+      <span class="nav-label">Account</span>
+    </a>
+  </nav>
+
+  <div class="sidebar-foot">
+    <div class="user-chip">
+      <span class="avatar">{{ user.display_name[:1]|upper }}</span>
+      <span><strong>{{ user.display_name }}</strong></span>
+    </div>
+
+    <a class="icon-button" href="{{ url_for('user_logout', t=logout_token()) }}" title="Sign out" aria-label="Sign out">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M10 5H5v14h5M14 8l4 4-4 4M8 12h10"/></svg>
+    </a>
+  </div>
+</aside>
+<script nonce="{{ csp_nonce }}">
+
+  document.addEventListener('DOMContentLoaded', function () {
+    var sidebar = document.getElementById('sidebar');
+    var menu = document.getElementById('mobile-menu');
+    var scrim = document.getElementById('sidebar-scrim');
+    if (!sidebar) return;
+    function setOpen(open) {
+      document.body.classList.toggle('nav-open', open);
+      if (menu) menu.setAttribute('aria-expanded', open ? 'true' : 'false');
+    }
+    if (menu) menu.addEventListener('click', function () { setOpen(!document.body.classList.contains('nav-open')); });
+    if (scrim) scrim.addEventListener('click', function () { setOpen(false); });
+    document.addEventListener('keydown', function (e) {
+      if (e.key === 'Escape' && document.body.classList.contains('nav-open')) setOpen(false);
+    });
+
+    var toggle = document.getElementById('sidebar-toggle');
+    if (toggle) {
+
+      var collapsed = document.body.classList.contains('sidebar-collapsed');
+      toggle.addEventListener('click', function () {
+        collapsed = !collapsed;
+        document.body.classList.toggle('sidebar-collapsed', collapsed);
+        toggle.setAttribute('aria-expanded', collapsed ? 'false' : 'true');
+        document.cookie = 'sb_collapsed=' + (collapsed ? '1' : '0') + '; path=/; max-age=31536000; SameSite=Lax' + (location.protocol === 'https:' ? '; Secure' : '');
+      });
+    }
+  });
+</script>

@@ -1,0 +1,110 @@
+{% extends "base.html" %}
+{% block title %}Deploy server · end host{% endblock %}
+{% block topbar %}Servers / Deploy{% endblock %}
+{% block content %}
+  <section class="page-heading compact">
+    <div>
+      <a class="back-link" href="{{ url_for('dashboard') }}">← Back to servers</a>
+      <h1>Deploy a Discord bot</h1>
+      <p>Select the container image, version, and command the node will run.</p>
+    </div>
+  </section>
+
+  {% if current_count >= max_servers %}
+    <div class="alert alert-error">Your account has reached its {{ max_servers }} server limit.</div>
+  {% endif %}
+  {% if settings and not settings.maintenance and not settings.deploys %}
+    {# Maintenance already shows its own banner from base.html, so this only
+       speaks when deploys alone are the thing that is off. #}
+    <div class="alert alert-error">New deployments are paused right now. Your existing servers are unaffected.</div>
+  {% endif %}
+
+  <form action="{{ url_for('create_server') }}" method="post" class="deploy-layout" id="deploy-form">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+    <section class="form-panel">
+      <div class="form-section-heading"><span>01</span><div><h2>Server details</h2><p>Name the container shown in your panel.</p></div></div>
+      <label class="field">
+        <span>Server name</span>
+        <input name="name" maxlength="80" placeholder="Music Bot" required>
+      </label>
+    </section>
+
+    <section class="form-panel">
+      <div class="form-section-heading"><span>02</span><div><h2>Runtime image</h2><p>Images are allowlisted by the backend node.</p></div></div>
+      <div class="runtime-grid" id="runtime-grid">
+        {% for runtime_id, runtime in runtimes.items() %}
+          <label class="runtime-choice">
+            <input type="radio" name="runtime" value="{{ runtime_id }}" {% if loop.first %}checked{% endif %} required>
+            <span class="runtime-card">
+              <span class="runtime-icon large {{ runtime_id }}">{{ runtime_badge(runtime_id) }}</span>
+              <span><strong>{{ runtime.label }}</strong><small>{{ runtime.versions|length }} supported versions</small></span>
+              <i></i>
+            </span>
+          </label>
+        {% endfor %}
+      </div>
+      <label class="field">
+        <span>Version</span>
+        <select name="version" id="runtime-version" required></select>
+      </label>
+    </section>
+
+    <section class="form-panel">
+      <div class="form-section-heading"><span>03</span><div><h2>Startup command</h2><p>This command runs inside <code>/home/container</code>.</p></div></div>
+      <label class="field">
+        <span>Command</span>
+        <div class="command-input"><span>$</span><input name="startup" id="startup-command" maxlength="500" required></div>
+        <small>You can edit files and install packages from the server console after deployment.</small>
+      </label>
+    </section>
+
+    <aside class="allocation-card">
+      <h2>Allocation summary</h2>
+      <div class="allocation-runtime" id="allocation-runtime">Select a runtime</div>
+      <dl>
+        <div><dt>Memory</dt><dd>{{ settings.memory_mb if settings else 300 }} MB</dd></div>
+        <div><dt>CPU limit</dt><dd>{{ settings.cpu_percent if settings else 35 }}% · of 1 core</dd></div>
+        <div><dt>Disk</dt><dd>{{ settings.disk_mb if settings else 600 }} MB persistent</dd></div>
+        <div><dt>Network</dt><dd>Outbound enabled</dd></div>
+      </dl>
+      {% if turnstile_site_key %}
+        <div class="allocation-turnstile">
+          <div class="allocation-turnstile-label">
+            <span class="allocation-turnstile-eyebrow">Security check</span>
+            <span class="allocation-turnstile-help">Confirm you're human before deploying.</span>
+          </div>
+          <div class="cf-turnstile" data-sitekey="{{ turnstile_site_key }}" data-size="flexible" data-theme="auto"></div>
+        </div>
+      {% endif %}
+      <button class="button button-primary button-wide" type="submit" {% if not runtimes or current_count >= max_servers or (settings and (settings.maintenance or not settings.deploys)) %}disabled{% endif %}>Create and start server</button>
+      <p>The container is created immediately on the configured backend VPS.</p>
+      {# Inside the aside, so it stays in the sticky right rail with the summary
+         instead of sitting under a three-section form the reader has scrolled past.
+         After the submit button on purpose: nothing may come between the form's
+         primary action and the reader. #}
+      {% if house_ads %}
+        <aside class="house-promo-tile" aria-label="Promotion">
+          <span class="house-promo-eyebrow">Guides</span>
+          <span class="house-promo-copy">Worked examples for discord.js and discord.py, from an empty container to a running bot.</span>
+          <a class="house-promo-cta" href="{{ site_url('/blog') }}">Read the guides <i>&rarr;</i></a>
+        </aside>
+      {% endif %}
+    </aside>
+  </form>
+  <div class="deploy-modal" id="deploy-modal" hidden role="dialog" aria-modal="true" aria-labelledby="deploy-modal-title">
+    <div class="deploy-modal-backdrop" data-deploy-close></div>
+    <section class="deploy-modal-card">
+      <button class="deploy-modal-close" type="button" aria-label="Close" data-deploy-close>&times;</button>
+      <div class="deploy-modal-icon" id="deploy-modal-icon">&#8635;</div>
+      <h2 id="deploy-modal-title">Creating your server</h2>
+      <p id="deploy-modal-message">Starting the container on the hosting node...</p>
+      <div class="deploy-progress" id="deploy-progress"><span></span></div>
+      <p class="deploy-live" id="deploy-live">Waiting for live updates...</p>
+      <div class="deploy-modal-actions" id="deploy-modal-actions" hidden>
+        <button class="button button-quiet" type="button" data-deploy-close>Close</button>
+      </div>
+    </section>
+  </div>
+  <script id="runtime-data" type="application/json">{{ runtimes|tojson }}</script>
+{% endblock %}
+{% block scripts %}<script src="{{ url_for('static', filename='q3.js') }}" defer></script>{% if turnstile_site_key %}<script src="https://challenges.cloudflare.com/turnstile/v0/api.js" async defer></script>{% endif %}{% endblock %}

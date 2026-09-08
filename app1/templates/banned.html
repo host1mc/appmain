@@ -1,0 +1,28 @@
+﻿<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Account Banned</title>
+  <meta name="robots" content="noindex, nofollow">
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+
+<body data-guard="off">
+  <div class="nav">
+    <div class="brand"><a href="{{ site_url('index') }}"><span class="dot"></span> ENDHOST</a></div>
+  </div>
+  <main class="container">
+    <div class="card" style="max-width:500px;margin:80px auto;text-align:center;padding:48px 32px">
+      <div style="font-size:64px;margin-bottom:16px" aria-hidden="true">&#128683;</div>
+      <h1 style="font-size:28px;margin-bottom:8px">Account Banned</h1>
+      <p style="color:var(--muted);font-size:16px;line-height:1.6;margin-bottom:24px">{{ reason | default('Your account has been banned.', true) }}</p>
+      <p style="color:var(--muted2);font-size:14px">If you believe this is a mistake, please contact support.</p>
+      <a href="{{ url_for('user_login') }}" class="btn btn-primary" style="margin-top:20px;display:inline-block">Back to Login</a>
+
+      <a href="{{ url_for('user_logout', t=csrf_token()) }}" class="btn btn-ghost" style="margin-top:20px;display:inline-block">Sign out</a>
+    </div>
+  </main>
+  {{ ad_scripts() }}
+</body>
+</html>

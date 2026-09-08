@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="robots" content="noindex, nofollow">
+  <meta name="panel-base" content="{{ panel_base }}">
+  <title>Ad blocker detected — end host Panel</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='app.css') }}">
+</head>
+{# data-guard="blocked" puts g7.js into its poll-and-forward boot: it
+   re-runs the ad-block check every 5 s and sends the visitor back to the page
+   they were on (sessionStorage, set by the redirect that brought them here)
+   the moment the blocker is off. No inline script or style is possible — the
+   panel CSP has no nonce and forbids both — so the retry button's handler lives
+   in q1.js, linked below, instead of in an inline script or an on* attribute. #}
+<body class="panel-body" data-guard="blocked">
+  <main class="content">
+    <div class="alert alert-error">
+      <h1>Ad blocker detected</h1>
+      <p>This site is free because of advertising. A script or content blocker
+         is stopping the page from working. Turn it off for this domain in your
+         browser's content-blocking settings, then the page forwards you back
+         automatically — or reload once it is off.</p>
+      <button class="button button-primary" id="guard-retry" type="button">I've disabled it — retry</button>
+      {# The only escape hatch that survives q1.js failing to load, a JS error,
+         or scripting being restricted: without it the retry button above is the
+         page's sole affordance, and the redirect here used location.replace(),
+         which writes no history entry, so Back does not reliably work either.
+         Plain <a> with a class attribute only — see the CSP note above. #}
+      <a class="button button-quiet" href="{{ panel_base }}/">Back to the panel</a>
+    </div>
+  </main>
+  <script src="{{ url_for('static', filename='q1.js') }}" defer></script>
+  {% include "_guard.html" %}
+</body>
+</html>
