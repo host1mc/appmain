@@ -839,8 +839,7 @@ def build_routes(runtime, config):
                 return await run_in_threadpool(
                     lambda: runtime.get_node_servers(blocking=blocking)
                 )
-            except NodeClientError as exc:
-                _log.warning("status map unavailable: %s", exc)
+            except NodeClientError:
                 return {}
         merged = {}
         for cache_key, node_id in keys.items():

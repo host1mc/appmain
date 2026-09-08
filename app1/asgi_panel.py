@@ -311,10 +311,21 @@ def serve():
             "(and NODE_URL to its address) before starting the tier.",
             file=sys.stderr,
         )
+    try:
+        import logging
+        import reviews_db
+        quiet = not reviews_db.is_console_debug_enabled()
+    except Exception:
+        quiet = True
+    if quiet:
+        import logging
+        for name in ("uvicorn", "uvicorn.error", "uvicorn.access", "panel_app"):
+            logging.getLogger(name).setLevel(logging.ERROR)
     uvicorn.run(
         application,
         host=host,
         port=port,
+        log_level="error" if quiet else "info",
         # Pinned rather than left to default. uvicorn reads WEB_CONCURRENCY from
         # the environment whenever this is None, and the shared .env every tier
         # reads is already loaded by the time serve() runs. A WEB_CONCURRENCY set
