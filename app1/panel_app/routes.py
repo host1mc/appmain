@@ -17,10 +17,11 @@ import json
 import logging
 import re
 import time
+import traceback
 import uuid
 import zipfile
 from http import client as http_client
-from pathlib import PurePosixPath
+from pathlib import Path, PurePosixPath
 from urllib import error as urllib_error, parse, request as urlrequest
 from urllib.parse import quote
 
@@ -1039,6 +1040,7 @@ def build_routes(runtime, config):
                 total = (exp - datetime.now(timezone.utc)).total_seconds()
                 days_left = max(0, math.ceil(total / 86400))
             except Exception:
+                days_l
                 days_left = None
         stopped = bool(row.get("bot_stopped_at"))
         # Renew only opens inside the window before the turn-off date (an
@@ -1488,44 +1490,12 @@ def build_routes(runtime, config):
         if not _throttle(user["id"], "delete_server"):
             templating.flash(request, "Too many delete requests — try again in a few minutes", "error")
             return redirect_to("server_page", server_id=server_id)
-        # A down VPS must not trap the user's server undeletable. We drop the DB
-        # row now (reclaiming the slot and removing the id from the reconcile
-        # allowlist), and queue the physical delete as a HeatWave tombstone
-        # carrying the container id and the node's address. Deletion from there
-        # is manual — an admin confirms it in the admin panel — and the
-        # reconcile sweep is told to skip tombstoned ids, so nothing is removed
-        # automatically. node_reached distinguishes a confirmed physical delete
-        # from a deferred one for the user-facing message.
-        node_reached = False
-        try:
-            server_node = await client_for_server(server)
-        except NodeClientError as exc:
-            _log.warning(
-                "server %s: node unavailable at delete, deferring physical cleanup to the admin panel: %s",
-                server_id, exc,
-            )
-            server_node = None
-        if server_node is not None:
-            try:
-                await run_in_threadpool(lambda: server_node.delete_server(server_id, purge=True))
-                node_reached = True
-            except NodeClientError as exc:
-                # 404 = already gone on the node (also a success). Any other
-                # node error (unreachable mid-call, 5xx) is deferred to the
-                # admin panel rather than blocking the delete.
-                if exc.status == 404:
-                    node_reached = True
-                else:
-                    _log.warning(
-                        "server %s: node delete failed (status=%s), deferring to the admin panel: %s",
-                        server_id, exc.status, exc,
-                    )
+        # Slot first: a down agent must not trap the account. Drop the DB row
+        # (quota + reconcile allowlist) before any node round-trip, then try a
+        # quick physical delete. If the node does not answer, queue HeatWave.
         try:
             await db.delete_server_for_user(server_id, user["id"])
         except Exception as exc:
-            # The row is the source of truth for the reconcile allowlist. If it
-            # survives, reconcile will NOT reap the container, so we must not
-            # claim any kind of success — surface the failure and stop.
             _log.warning(
                 "server %s row left behind after a delete (%s)",
                 server_id, type(exc).__name__,
@@ -1537,13 +1507,28 @@ def build_routes(runtime, config):
             )
             return redirect_to("server_page", server_id=server_id)
         await log_activity(user["id"], "server_deleted", server_id=server_id)
+
+        node_reached = False
+        try:
+            server_node = await client_for_server(server)
+            alive = await run_in_threadpool(server_node.ping)
+            if alive:
+                await run_in_threadpool(lambda: server_node.delete_server(server_id, purge=True))
+                node_reached = True
+        except NodeClientError as exc:
+            if getattr(exc, "status", None) == 404:
+                node_reached = True
+            else:
+                _log.warning(
+                    "server %s: node unavailable at delete, deferring to the admin panel: %s",
+                    server_id, exc,
+                )
+        except Exception as exc:
+            _log.warning("server %s: node delete skipped (%s)", server_id, type(exc).__name__)
+
         if node_reached:
             templating.flash(request, "Server deleted", "success")
         else:
-            # Node offline: the row (and reconcile allowlist entry) is gone, so
-            # record a tombstone with the node label and address so the admin
-            # panel can show which host still holds the container, and an admin
-            # can confirm its removal there. Nothing deletes it automatically.
             try:
                 import reviews_db
                 reviews_db.enqueue_container_deletion(
@@ -1916,7 +1901,13 @@ def build_routes(runtime, config):
         was_running = False
         try:
             server_info = await run_in_threadpool(lambda: server_node.server_state(server_id))
-            was_running = isinstance(server_info, dict) and server_info.get("state") == "running"
+            live = server_info.get("server") if isinstance(server_info, dict) else None
+            status = ""
+            if isinstance(live, dict):
+                status = str(live.get("status") or "")
+            elif isinstance(server_info, dict):
+                status = str(server_info.get("status") or server_info.get("state") or "")
+            was_running = status.lower() == "running"
         except Exception:
             # If we can't determine state, assume not running to be safe
             pass
