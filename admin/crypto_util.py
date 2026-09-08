@@ -467,7 +467,12 @@ def decrypt(token: str, context: str = "") -> str:
         preview = token[:12] if isinstance(token, str) else f"<{type(token).__name__}>"
         try:
             import reviews_db
-            reviews_db.log_app_error("CryptoDecryptFailed", f"decrypt failed for {preview}... key {key_fingerprint()}: {exc}", module="crypto_util", flagged=1)
+            reviews_db.log_app_error(
+                "CryptoDecryptFailed",
+                f"decrypt failed (InvalidToken or similar) under key {key_fingerprint()}",
+                module="crypto_util",
+                flagged=0,
+            )
         except Exception:
             pass
         _debug_print(f"[crypto] decrypt failed for {preview}... - this process holds "
