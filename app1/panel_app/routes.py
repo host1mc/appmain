@@ -2256,8 +2256,8 @@ def build_routes(runtime, config):
         # driver error rather than a miss. owned_server is not reused because it
         # signals a miss with HTTPException, and the exception middleware answers
         # that with an HTTP response — which cannot be sent on a WebSocket scope.
-        server_id = websocket.path_params.get("server_id")
-        if not isinstance(server_id, str) or not _SERVER_ID_RE.match(server_id):
+        server_id = id_mask.unmask_server_id(websocket.path_params.get("server_id", ""))
+        if not server_id:
             await websocket.close(code=4003, reason="missing server id")
             return
         srv = await db.get_server_for_user(server_id, user["id"])
