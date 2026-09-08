@@ -2213,6 +2213,23 @@ def _inject_guard_mode():
     return dict(guard_mode="gate")
 
 
+def _skip_intrusive_ads():
+    """Push + vignette ads spam the console, request notifications, and
+    register a third-party service worker. Skip them on localhost (they
+    never fill anyway) and on the logged-in dashboard (/user…)."""
+    host = (request.host or "").split(":")[0].lower()
+    if host in {"localhost", "127.0.0.1", "0.0.0.0", "::1"} or host.endswith(".localhost"):
+        return True
+    path = request.path or ""
+    if path == "/user" or path.startswith("/user/"):
+        return True
+    if path == "/" or path.startswith("/user/login") or path.startswith("/user/register"):
+        return True
+    if path.startswith("/api/auth/") or path.startswith("/otp") or path.startswith("/user/otp"):
+        return True
+    return False
+
+
 @app.context_processor
 def _inject_ad_enabled():
 
@@ -2225,6 +2242,8 @@ def _inject_ad_enabled():
     def ad_zone(key):
 
 
+        if _is_local_dev_host():
+            return False
         if not _ads_permitted() or not enabled:
             return False
         if zones is None:
@@ -2234,20 +2253,11 @@ def _inject_ad_enabled():
     def ad_head():
 
 
-        if not _ads_permitted() or not enabled:
+        if not _ads_permitted() or not enabled or _is_local_dev_host():
             return Markup("")
         is_mobile = bool(request.user_agent and request.user_agent.is_mobile)
-        is_auth_or_home = (
-            request.path == "/"
-            or request.path.startswith("/") and request.path.endswith("/")
-            or request.path.startswith("/user/login")
-            or request.path.startswith("/user/register")
-            or request.path.startswith("/api/auth/")
-            or request.path.startswith("/otp")
-            or request.path.startswith("/user/otp")
-        )
         effective_networks = dict(networks) if networks is not None else {k: v for k, v in ads_config.AD_NETWORKS.items() if v.get("default_on", True)}
-        if is_mobile or is_auth_or_home:
+        if is_mobile or _skip_intrusive_ads():
             effective_networks["vignette"] = False
         return Markup(ads_config.ad_head_html(
             getattr(request, "csp_nonce", ""), effective_networks))
