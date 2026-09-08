@@ -285,7 +285,10 @@ class ServerManager:
         if container is None:
             raise ServerNotFoundError("server container does not exist")
         if hasattr(container, "reload"):
-            container.reload()
+            try:
+                container.reload()
+            except Exception as exc:
+                raise ValueError("this node could not inspect the container") from exc
         return container
 
     @staticmethod
@@ -844,19 +847,45 @@ class ServerManager:
                         f"installation failed: {install.get('error') or 'unknown error'} — fix the files and reinstall"
                     )
                 self._validate_startable(normalized_id, container)
-                container.start()
+                if getattr(container, "status", "") != "running":
+                    self._docker_action(container.start, "start the container")
             elif action == "stop":
-                container.stop(timeout=10)
+                if getattr(container, "status", "") not in {"exited", "dead", "stopped"}:
+                    self._docker_action(lambda: container.stop(timeout=10), "stop the container")
             elif action == "restart":
-                container.restart(timeout=10)
+                self._docker_action(lambda: container.restart(timeout=10), "restart the container")
             else:
-                container.kill()
+                if getattr(container, "status", "") not in {"exited", "dead", "stopped", "created"}:
+                    self._docker_action(container.kill, "kill the container")
             if hasattr(container, "reload"):
-                container.reload()
+                try:
+                    container.reload()
+                except Exception:
+                    pass
             status = getattr(container, "status", None) or (
                 "running" if action in {"start", "restart"} else "stopped"
             )
             return {"ok": True, "status": status}
+
+    @staticmethod
+    def _docker_action(fn, verb):
+        """Run a Docker SDK call; turn daemon errors into a 400 the panel can show.
+
+        Uncaught docker.errors.APIError (already-running start, daemon timeout)
+        used to fall through Flask's catch-all as 500 \"node operation failed\" —
+        which the panel logs and never shows the owner.
+        """
+        try:
+            fn()
+        except ValueError:
+            raise
+        except Exception as exc:
+            message = str(exc).lower()
+            if "already started" in message or "not modified" in message:
+                return
+            if "is not running" in message or "not running" in message:
+                return
+            raise ValueError(f"this node could not {verb}") from exc
 
     def logs(self, server_id, tail=200):
         container = self._container(server_id)
@@ -925,7 +954,7 @@ class ServerManager:
         with self._server_lock(normalized_id):
             container = self._container(normalized_id)
             if getattr(container, "status", "") in {"running", "restarting", "paused"}:
-                container.stop(timeout=10)
+                self._docker_action(lambda: container.stop(timeout=10), "stop the container")
             self.runtime.remove(container, force=bool(purge))
             if purge:
                 # A purge whose data directory is already gone still has a

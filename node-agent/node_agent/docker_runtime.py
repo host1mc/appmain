@@ -71,42 +71,70 @@ class DockerRuntime:
         try:
             self.client.images.get(image)
         except Exception:
-            self.client.images.pull(image)
-        if "log_config" in spec:
             try:
-                return self.client.containers.create(**spec)
-            except Exception:
-                # Retry without the log driver, but against a copy. The caller
-                # keeps this spec to rebuild the container later, and deleting
-                # the key in place dropped the setting from every later create.
-                retry = {key: value for key, value in spec.items() if key != "log_config"}
-                return self.client.containers.create(**retry)
-        return self.client.containers.create(**spec)
+                self.client.images.pull(image)
+            except Exception as exc:
+                raise ValueError("this node could not pull the runtime image") from exc
+        try:
+            if "log_config" in spec:
+                try:
+                    return self.client.containers.create(**spec)
+                except Exception:
+                    # Retry without the log driver, but against a copy. The caller
+                    # keeps this spec to rebuild the container later, and deleting
+                    # the key in place dropped the setting from every later create.
+                    retry = {key: value for key, value in spec.items() if key != "log_config"}
+                    return self.client.containers.create(**retry)
+            return self.client.containers.create(**spec)
+        except ValueError:
+            raise
+        except Exception as exc:
+            raise ValueError("this node could not create the container") from exc
 
     def get(self, server_id):
-        matches = self.client.containers.list(
-            all=True,
-            filters={"label": f"dchost.server_id={server_id}"},
-        )
+        try:
+            matches = self.client.containers.list(
+                all=True,
+                filters={"label": f"dchost.server_id={server_id}"},
+            )
+        except Exception as exc:
+            raise ValueError("this node could not talk to its Docker daemon") from exc
         return matches[0] if matches else None
 
     def list(self):
+        try:
+            containers = self.client.containers.list(
+                all=True,
+                filters={"label": "dchost.managed=true"},
+            )
+        except Exception as exc:
+            raise ValueError("this node could not talk to its Docker daemon") from exc
         servers = []
-        for container in self.client.containers.list(
-            all=True,
-            filters={"label": "dchost.managed=true"},
-        ):
+        for container in containers:
+            labels = container.labels or {}
             servers.append(
                 {
-                    "id": (container.labels or {}).get("dchost.server_id", ""),
-                    "name": (container.labels or {}).get("dchost.display_name", ""),
+                    "id": labels.get("dchost.server_id", ""),
+                    "name": labels.get("dchost.display_name", ""),
                     "status": getattr(container, "status", "unknown"),
+                    "runtime": labels.get("dchost.runtime", ""),
+                    "version": labels.get("dchost.version", ""),
+                    "memory_mb": labels.get("dchost.memory_mb"),
+                    "cpu_percent": labels.get("dchost.cpu_percent"),
+                    "desired_state": labels.get("dchost.desired_state", ""),
+                    "created_at": (getattr(container, "attrs", None) or {}).get("Created", ""),
                 }
             )
         return [server for server in servers if server["id"]]
 
     def remove(self, container, force=False):
-        container.remove(force=force, v=True)
+        try:
+            container.remove(force=force, v=True)
+        except Exception as exc:
+            message = str(exc).lower()
+            if "no such" in message or "not found" in message:
+                return
+            raise ValueError("this node could not remove the container") from exc
 
     def logs(self, container, tail=200):
         try:
