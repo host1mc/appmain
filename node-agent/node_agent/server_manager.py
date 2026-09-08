@@ -226,8 +226,15 @@ class ServerManager:
     def _save_install_state(self, server_id, state):
         state_path = self._install_state_path(server_id)
         temporary = state_path.with_suffix(".tmp")
-        temporary.write_text(json.dumps({**state, "id": server_id}, indent=2), encoding="utf-8")
-        temporary.replace(state_path)
+        try:
+            state_path.parent.mkdir(parents=True, exist_ok=True)
+            temporary.write_text(json.dumps({**state, "id": server_id}, indent=2), encoding="utf-8")
+            temporary.replace(state_path)
+        except OSError:
+            # Install threads can still be writing after the data root is gone
+            # (tests, or a purge racing a finishing install). Never crash the
+            # daemon thread over a missing directory.
+            _LOGGER.warning("could not persist install state for %s", server_id)
 
     def _install_state(self, server_id):
         with self._state_lock:

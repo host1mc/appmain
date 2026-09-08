@@ -1,4 +1,4 @@
-﻿"""DB Admin — console for Oracle SQL, MongoDB, and HeatWave MySQL.
+"""DB Admin — console for Oracle SQL, MongoDB, and HeatWave MySQL.
 
 Run:
     python app.py [--host 0.0.0.0] [--port 8004] [--debug]
@@ -17,9 +17,15 @@ from datetime import date
 from urllib.parse import quote
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-APP_DIR = os.path.join(BASE_DIR, "..", "app")
-if APP_DIR not in sys.path:
-    sys.path.insert(0, APP_DIR)
+# crypto_util lives in app1 (and a vendored copy in admin). The old "app"
+# sibling does not exist in this repo, so imports silently fell through.
+for _candidate in (
+    os.path.join(BASE_DIR, "..", "app1"),
+    os.path.join(BASE_DIR, "..", "admin"),
+):
+    _abs = os.path.abspath(_candidate)
+    if os.path.isdir(_abs) and _abs not in sys.path:
+        sys.path.insert(0, _abs)
 
 
 # Shard IDs
@@ -73,9 +79,16 @@ app.secret_key = os.environ.get("DBADMIN_SECRET") or os.urandom(32)
 _oracle_pools = {}  # {shard_id: connection}
 
 
+def _resolve_shard(shard_id=None):
+    """SHARD_ORACLE is 0, which is falsy — never use ``shard_id or``."""
+    if shard_id is None:
+        return _get_shard_id()
+    return shard_id
+
+
 def _oracle_conn(shard_id=None):
     """Get an Oracle SQL connection for the given shard."""
-    sid = shard_id or _get_shard_id()
+    sid = _resolve_shard(shard_id)
     if sid in _oracle_pools:
         return _oracle_pools[sid]
     import oracledb
@@ -202,22 +215,22 @@ def get_available_shards():
 
 
 def _is_oracle(shard_id=None):
-    s = shard_id or _get_shard_id()
+    s = _resolve_shard(shard_id)
     return s in (SHARD_ORACLE, SHARD_ORACLE_2)
 
 
 def _is_heatwave(shard_id=None):
-    return (shard_id or _get_shard_id()) == SHARD_HEATWAVE
+    return _resolve_shard(shard_id) == SHARD_HEATWAVE
 
 
 def _is_mongo(shard_id=None):
-    s = shard_id or _get_shard_id()
+    s = _resolve_shard(shard_id)
     return s != SHARD_ORACLE and s != SHARD_ORACLE_2 and s != SHARD_HEATWAVE
 
 
 def _try_all_collections(shard_id=None):
     """Try to get tables from one shard; if it fails, try the next."""
-    sid = shard_id or _get_shard_id()
+    sid = _resolve_shard(shard_id)
     order = [sid] + [s for s in get_available_shards() if s != sid]
     connected_result = None
     for s in order:
@@ -556,20 +569,26 @@ def table_view(tname):
                 if q:
                     like_clauses = [f'"{c}" LIKE :q' for c in col_names]
                     where = " OR ".join(like_clauses)
-                    count_rows = _oracle_query(f'SELECT COUNT(*) AS cnt FROM "{tname}" WHERE {where}', [f"%{q}%"], shard_id=s)
+                    count_rows = _oracle_query(
+                        f'SELECT COUNT(*) AS cnt FROM "{tname}" WHERE {where}',
+                        {"q": f"%{q}%"},
+                        shard_id=s,
+                    )
                     total_rows = count_rows[0]["CNT"] if count_rows else 0
                     rows = _oracle_query(
                         f'SELECT * FROM (SELECT t.*, ROWNUM AS rn FROM '
                         f'(SELECT * FROM "{tname}" WHERE {where} ORDER BY 1) t '
-                        f'WHERE ROWNUM <= :end) WHERE rn > :start',
-                        [f"%{q}%", skip + per_page, skip], shard_id=s
+                        f'WHERE ROWNUM <= :end_row) WHERE rn > :start_row',
+                        {"q": f"%{q}%", "end_row": skip + per_page, "start_row": skip},
+                        shard_id=s,
                     )
                 else:
                     rows = _oracle_query(
                         f'SELECT * FROM (SELECT t.*, ROWNUM AS rn FROM '
                         f'(SELECT * FROM "{tname}" ORDER BY 1) t '
-                        f'WHERE ROWNUM <= :end) WHERE rn > :start',
-                        [skip + per_page, skip], shard_id=s
+                        f'WHERE ROWNUM <= :end_row) WHERE rn > :start_row',
+                        {"end_row": skip + per_page, "start_row": skip},
+                        shard_id=s,
                     )
                 break
             elif _is_heatwave(s):
