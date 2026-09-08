@@ -24,12 +24,12 @@
       <select onchange="location.href='/switch/'+this.value">
         {% for shard_id in available_shards %}
         <option value="{{ shard_id }}" {{ 'selected' if shard_id == current_shard }}>
-          {% if shard_id == 0 %}Oracle · BOTHOST{% elif shard_id == 1 %}Oracle · BOTHOST1{% elif shard_id == 99 %}HeatWave MySQL{% else %}Mongo shard {{ shard_id }}{% endif %}
+          {% if shard_id == 99 %}HeatWave MySQL{% elif shard_id >= 100 %}Mongo DB_{{ shard_id - 100 }}{% elif shard_id == 0 %}Oracle · BOTHOST{% elif shard_id == 1 %}Oracle · BOTHOST1{% else %}Oracle · DSN_{{ shard_id }}{% endif %}
         </option>
         {% endfor %}
       </select>
       <small class="shard-info">
-        {% if current_shard == 0 %}ATP primary{% elif current_shard == 1 %}ATP secondary{% elif current_shard == 99 %}HeatWave analytics{% else %}Mongo {{ current_shard }}{% endif %}
+        {% if current_shard == 99 %}HeatWave analytics{% elif current_shard >= 100 %}Mongo DB_{{ current_shard - 100 }}{% elif current_shard == 0 %}ATP primary{% elif current_shard == 1 %}ATP secondary{% else %}ATP DSN_{{ current_shard }}{% endif %}
       </small>
     </div>
 

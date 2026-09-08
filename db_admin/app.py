@@ -108,6 +108,7 @@ app.config["SESSION_COOKIE_SECURE"] = False
 # ─── Oracle SQL ──────────────────────────────────────────────────────────────
 
 _oracle_pools = {}  # {shard_id: connection}
+_oracle_live = {}   # requested shard -> dsn index actually in use
 
 
 def _resolve_shard(shard_id=None):
@@ -117,8 +118,32 @@ def _resolve_shard(shard_id=None):
     return shard_id
 
 
+def _oracle_targets():
+    """ORACLE_DSN, ORACLE_DSN_1, ORACLE_DSN_2, … from .env."""
+    out = []
+    primary = (os.environ.get("ORACLE_DSN") or "").strip()
+    if primary:
+        out.append({
+            "i": 0,
+            "dsn": primary,
+            "user": os.environ.get("ORACLE_USER", "ADMIN"),
+            "password": os.environ.get("ORACLE_PASSWORD", ""),
+        })
+    for idx in range(1, 8):
+        dsn = (os.environ.get(f"ORACLE_DSN_{idx}") or "").strip()
+        if not dsn:
+            continue
+        out.append({
+            "i": idx,
+            "dsn": dsn,
+            "user": os.environ.get(f"ORACLE_USER_{idx}") or os.environ.get("ORACLE_USER", "ADMIN"),
+            "password": os.environ.get(f"ORACLE_PASSWORD_{idx}") or os.environ.get("ORACLE_PASSWORD", ""),
+        })
+    return out
+
+
 def _oracle_conn(shard_id=None):
-    """Get an Oracle SQL connection for the given shard."""
+    """Get an Oracle SQL connection; hop to the next DSN if this one is down."""
     sid = _resolve_shard(shard_id)
     if sid in _oracle_pools:
         conn = _oracle_pools[sid]
@@ -133,39 +158,65 @@ def _oracle_conn(shard_id=None):
             _oracle_pools.pop(sid, None)
     import oracledb
     oracledb.defaults.fetch_lobs = False
-    user = os.environ.get("ORACLE_USER", "ADMIN")
-    password = os.environ.get("ORACLE_PASSWORD", "")
-    if sid == SHARD_ORACLE_2:
-        dsn = os.environ.get("ORACLE_DSN_1", "")
-    else:
-        dsn = os.environ.get("ORACLE_DSN", "")
-    if not dsn:
-        raise RuntimeError(
-            f"ORACLE_DSN{'_1' if sid == SHARD_ORACLE_2 else ''} not set"
-        )
-    _oracle_pools[sid] = oracledb.connect(user=user, password=password, dsn=dsn)
-    return _oracle_pools[sid]
+    targets = _oracle_targets()
+    if not targets:
+        raise RuntimeError("ORACLE_DSN not set")
+    start = 0
+    for n, t in enumerate(targets):
+        if t["i"] == sid:
+            start = n
+            break
+    last = None
+    for t in targets[start:]:
+        try:
+            conn = oracledb.connect(user=t["user"], password=t["password"], dsn=t["dsn"])
+            _oracle_pools[sid] = conn
+            _oracle_live[sid] = t["i"]
+            if t["i"] != sid:
+                print(f"[db_admin] Oracle failover shard {sid} -> DSN_{t['i'] or ''}")
+            return conn
+        except Exception as ex:
+            last = ex
+            print(f"[db_admin] Oracle DSN index {t['i']} unreachable: {ex}")
+            continue
+    raise RuntimeError(f"Oracle unreachable: {last}")
 
 
 def _oracle_query(sql, params=None, shard_id=None):
     """Execute SQL on Oracle and return list of dicts."""
-    conn = _oracle_conn(shard_id)
-    cur = conn.cursor()
-    try:
-        cur.execute(sql, params or ())
-        if cur.description:
-            cols = [d[0] for d in cur.description]
-            rows = []
-            for row in cur.fetchall():
-                rec = dict(zip(cols, row))
-                rec.pop("RN", None)
-                rec.pop("rn", None)
-                rows.append(rec)
-            return rows
-        conn.commit()
-        return []
-    finally:
-        cur.close()
+    sid = _resolve_shard(shard_id)
+    last = None
+    for _attempt in range(3):
+        conn = _oracle_conn(sid)
+        cur = conn.cursor()
+        try:
+            cur.execute(sql, params or ())
+            if cur.description:
+                cols = [d[0] for d in cur.description]
+                rows = []
+                for row in cur.fetchall():
+                    rec = dict(zip(cols, row))
+                    rec.pop("RN", None)
+                    rec.pop("rn", None)
+                    rows.append(rec)
+                return rows
+            conn.commit()
+            return []
+        except Exception as ex:
+            last = ex
+            try:
+                conn.close()
+            except Exception:
+                pass
+            _oracle_pools.pop(sid, None)
+            print(f"[db_admin] Oracle query failed, retry/failover: {ex}")
+            continue
+        finally:
+            try:
+                cur.close()
+            except Exception:
+                pass
+    raise last
 
 
 # ─── MongoDB ─────────────────────────────────────────────────────────────────
@@ -300,17 +351,17 @@ def _get_shard_id():
 
 
 def get_available_shards():
-    shards = [SHARD_ORACLE]
-    if os.environ.get("ORACLE_DSN_1"):
-        shards.append(SHARD_ORACLE_2)
+    shards = [t["i"] for t in _oracle_targets()] or [SHARD_ORACLE]
     if _heatwave_enabled():
         shards.append(SHARD_HEATWAVE)
+    for idx in sorted(_load_mongo_shard_uris()):
+        shards.append(SHARD_MONGO_BASE + idx)
     return shards
 
 
 def _is_oracle(shard_id=None):
     s = _resolve_shard(shard_id)
-    return s in (SHARD_ORACLE, SHARD_ORACLE_2)
+    return s != SHARD_HEATWAVE and s < SHARD_MONGO_BASE
 
 
 def _is_heatwave(shard_id=None):
@@ -318,8 +369,7 @@ def _is_heatwave(shard_id=None):
 
 
 def _is_mongo(shard_id=None):
-    s = _resolve_shard(shard_id)
-    return s != SHARD_ORACLE and s != SHARD_ORACLE_2 and s != SHARD_HEATWAVE
+    return _resolve_shard(shard_id) >= SHARD_MONGO_BASE
 
 
 def _list_tables(shard_id=None):
