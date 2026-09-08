@@ -2541,8 +2541,9 @@ def _serve_hard_close():
 def serve():
     from waitress import serve as wserve
     init()
-    _debug_print(f"[frontend] web server running on http://0.0.0.0:{FRONTEND_PORT}")
-    _debug_print(f"[frontend] backend API: {BACKEND_URL}")
+    print(f"[frontend] web server running on http://127.0.0.1:{FRONTEND_PORT}",
+          flush=True)
+    print(f"[frontend] backend API: {BACKEND_URL}", flush=True)
     if edge_gate.hard_close_enabled():
         _serve_hard_close()
         return

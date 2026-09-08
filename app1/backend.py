@@ -2360,12 +2360,13 @@ def _bind_host():
     """
     host = BACKEND_BIND
     if host in ("", "0.0.0.0", "::", "[::]", "*"):
-        _debug_print(
+        print(
             f"[backend] refusing to start: BACKEND_BIND={host!r} would expose the data API "
             "beyond this host. It trusts a cleartext shared token for internal calls. Set "
             "BACKEND_BIND to a specific private interface address, or leave it unset for "
             "127.0.0.1.",
             file=sys.stderr,
+            flush=True,
         )
         sys.exit(2)
     return host
@@ -2384,8 +2385,8 @@ def serve():
     from waitress import serve as wserve
     host = _bind_host()
     init()
-    _debug_print(f"[backend] API server running on http://{host}:{BACKEND_PORT}")
-    _debug_print(f"[backend] engine control API: {engine_client.ENGINE_URL}")
+    print(f"[backend] API server running on http://{host}:{BACKEND_PORT}", flush=True)
+    print(f"[backend] engine control API: {engine_client.ENGINE_URL}", flush=True)
     wserve(
         app,
         host=host,

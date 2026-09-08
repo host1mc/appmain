@@ -1737,12 +1737,13 @@ def _bind_host():
     """
     host = ENGINE_BIND
     if host in ("", "0.0.0.0", "::", "[::]", "*"):
-        _debug_print(
+        print(
             f"[engine] refusing to start: ENGINE_BIND={host!r} would expose the control API "
             "beyond this host. It can start and stop any bot behind a cleartext shared token. "
             "Set ENGINE_BIND to a specific private interface address, or leave it unset for "
             "127.0.0.1.",
             file=sys.stderr,
+            flush=True,
         )
         sys.exit(2)
     return host
@@ -1765,7 +1766,7 @@ def serve():
     from waitress import serve as wserve
     host = _bind_host()
     init()
-    _debug_print(f"[engine] control API on http://{host}:{ENGINE_PORT}")
+    print(f"[engine] control API on http://{host}:{ENGINE_PORT}", flush=True)
     try:
         wserve(
             app,
