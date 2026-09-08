@@ -922,30 +922,29 @@ def set_bot_delivery(bot_id, use_token, use_webhook):
     return bool(ok_token and ok_hook)
 
 
-_CONSOLE_DEBUG_ACTIVE = False
+# Never read this flag from HeatWave on the hot path: every _debug_print used
+# to open a MySQL pool (CREATE DATABASE even) during import / Ctrl+C, which
+# hung every tier before waitress bound. CONSOLE_DEBUG in the environment is
+# the operator switch; the admin toggle still writes app_config for the
+# console, and only updates the in-process flag via set_console_debug_enabled.
+_CONSOLE_DEBUG_ACTIVE = str(os.environ.get("CONSOLE_DEBUG", "")).strip().lower() in (
+    "1", "true", "yes", "on",
+)
 
 
 def is_console_debug_enabled() -> bool:
-    """Check if debug info in console (stdout/stderr) is enabled.
-    Defaults to False (0) so operational errors stay strictly in HeatWave DB.
+    """Whether stdout/stderr debug lines are allowed.
+
+    Env CONSOLE_DEBUG=1/true/yes/on forces on; 0/false/no/off forces off.
+    Otherwise the in-process flag from set_console_debug_enabled() is used.
+    Does not open HeatWave.
     """
-    global _CONSOLE_DEBUG_ACTIVE
-    conn = _conn()
-    if conn is None:
-        return _CONSOLE_DEBUG_ACTIVE
-    try:
-        cur = conn.cursor(dictionary=True)
-        cur.execute("SELECT config_value FROM app_config WHERE config_key='console_debug_enabled'")
-        row = cur.fetchone()
-        if row and row.get("config_value") is not None:
-            val = str(row["config_value"]).strip().lower() in ("1", "true", "yes", "on")
-            _CONSOLE_DEBUG_ACTIVE = val
-            return val
-        return _CONSOLE_DEBUG_ACTIVE
-    except Exception:
-        return _CONSOLE_DEBUG_ACTIVE
-    finally:
-        _close_quietly(conn)
+    env = str(os.environ.get("CONSOLE_DEBUG", "")).strip().lower()
+    if env in ("1", "true", "yes", "on"):
+        return True
+    if env in ("0", "false", "no", "off"):
+        return False
+    return _CONSOLE_DEBUG_ACTIVE
 
 
 def set_console_debug_enabled(enabled: bool) -> bool:

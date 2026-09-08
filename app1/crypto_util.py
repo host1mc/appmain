@@ -259,12 +259,9 @@ def _retired_keys() -> list:
 
 
 def _debug_print(*args, **kwargs):
-    try:
-        import reviews_db
-        if reviews_db.is_console_debug_enabled():
-            print(*args, **kwargs)
-    except Exception:
-        pass
+    # Env only: importing reviews_db here used to open HeatWave at module load.
+    if os.environ.get("CONSOLE_DEBUG", "").strip().lower() in ("1", "true", "yes", "on"):
+        print(*args, **kwargs)
 
 
 def key_fingerprint(material: bytes = None) -> str:
