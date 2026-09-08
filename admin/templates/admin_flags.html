@@ -1,0 +1,663 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Device Flags</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body data-guard="off">
+  <div class="nav">
+    <div class="brand"><a href="{{ url_for('admin_panel') }}"><span class="dot"></span> MC Status Hosting</a> <span class="pill">Admin</span></div>
+    <div class="links">
+      <a href="{{ url_for('admin_panel') }}">Panel</a>
+      <a href="{{ url_for('admin_bots') }}">Fleet</a>
+      <a href="{{ url_for('admin_panel_controls') }}">Hosting</a>
+      <a href="/admin/nodes">Nodes</a>
+      <a href="{{ url_for('admin_flags') }}" aria-current="page" style="color:var(--txt);background:var(--card2)">Flags</a>
+      <a href="{{ url_for('admin_reviews') }}">Reviews</a>
+      <a href="/admin/ads">Ads</a>
+      <a href="{{ url_for('admin_database') }}">Database</a>
+      <a href="{{ url_for('admin_account') }}">Account</a>
+    </div>
+  </div>
+
+  <div class="log-page log-wide">
+    <h2 class="page-title">Device Flags <span class="pill" id="new-count">—</span></h2>
+    <p class="note page-sub">Anyone may register as many accounts as they like. When a signup or login shares a device or an IP with an existing account it is recorded here — never blocked. Open <strong>Info</strong> on any row for the full picture.</p>
+
+    <div class="stat-strip" id="stat-strip"></div>
+
+    <div class="card" id="auto-ban-card">
+      <div style="display:flex;justify-content:space-between;align-items:center;gap:14px;flex-wrap:wrap">
+        <div style="flex:1;min-width:240px">
+          <h2 style="font-size:15px;margin:0">Auto-Ban</h2>
+          <p class="note page-sub" style="margin:4px 0 0">When enabled, users logging in from a device associated with a banned account are automatically banned. Disabled by default — review the flags below first.</p>
+        </div>
+        <label class="toggle-wrap toggle-danger" style="flex-shrink:0">
+          <input type="checkbox" id="auto-ban-toggle" onchange="toggleAutoBan(this.checked)" aria-label="Toggle auto-ban">
+          <span class="toggle-slider"></span>
+          <span class="toggle-knob"></span>
+        </label>
+      </div>
+    </div>
+
+    <div class="toolbar">
+      <input id="q" type="search" class="filter-input" aria-label="Filter the flags loaded on this page"
+             placeholder="Filter this page by account, IP, fingerprint or event…" oninput="queueRender()">
+      <button class="btn btn-ghost btn-sm" id="btn-refresh" onclick="load()">Refresh</button>
+      <label class="tb-check"><input id="only-new" type="checkbox" onchange="load()"> Unreviewed only</label>
+      <select id="page-size" class="tb-select" aria-label="Rows per page" onchange="load()">
+        <option value="100">100 / page</option>
+        <option value="200" selected>200 / page</option>
+        <option value="500">500 / page</option>
+      </select>
+      <button class="btn btn-red btn-sm" id="btn-review-all" onclick="reviewAll()">Mark all reviewed</button>
+    </div>
+
+    <div class="toolbar" id="filter-bar" style="margin:0 0 10px"></div>
+    <div id="flag-content"></div>
+    <div class="toolbar" id="pagination" style="justify-content:center;margin:14px 0"></div>
+  </div>
+
+  <div class="modal-overlay" id="info-modal" onclick="if(event.target===this) closeInfo()">
+    <div class="modal modal-wide" role="dialog" aria-modal="true" aria-labelledby="info-title">
+      <div class="modal-head">
+        <h2 id="info-title">User Info</h2>
+        <button class="btn btn-ghost btn-sm" id="info-close" onclick="closeInfo()">Close</button>
+      </div>
+      <div class="modal-scroll" id="info-body"></div>
+    </div>
+  </div>
+
+  <div class="toast" id="toast"></div>
+
+<script>
+const $ = s => { try { return document.querySelector(s); } catch(e) { return null; } };
+
+function toast(msg, err){
+  const t = $('#toast'); if(!t) return;
+  t.textContent = msg;
+  t.className = 'toast show' + (err ? ' err' : '');
+  setTimeout(() => { if(t) t.className = 'toast'; }, 2600);
+}
+
+function api(path, opts){
+  return fetch(path, {headers:{'Content-Type':'application/json'}, ...opts}).then(r=>r.json()).catch(()=>({ok:false}));
+}
+function fmtDate(s){ if(!s) return '—'; try{ return new Date(s).toLocaleString(); }catch(e){ return esc(s); } }
+// "3h ago" in the table, the full timestamp on hover
+function relTime(s){
+  if(!s) return '—';
+  const d = new Date(s);
+  if(isNaN(d.getTime())) return esc(s);
+  const sec = Math.round((Date.now() - d.getTime()) / 1000);
+  const abs = d.toLocaleString();
+  let label;
+  if(sec < 60) label = sec + 's ago';
+  else if(sec < 3600) label = Math.round(sec / 60) + 'm ago';
+  else if(sec < 86400) label = Math.round(sec / 3600) + 'h ago';
+  else if(sec < 7 * 86400) label = Math.round(sec / 86400) + 'd ago';
+  else label = abs;
+  return `<span class="rel" title="${esc(abs)}">${esc(label)}</span>`;
+}
+function esc(s){ return String(s==null?'':s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+// Inside onclick="fn('…')" the HTML entities are decoded before the JS is parsed,
+// so esc() alone still lets a quote break out — escape for JS first, then HTML.
+function jsArg(s){ return esc(String(s==null?'':s).replace(/\\/g,'\\\\').replace(/'/g,"\\'")); }
+// truncate before escaping — slicing the escaped form cuts entities in half
+function short(h){ if(!h) return '—'; const s = String(h); return esc(s.length > 16 ? s.slice(0,16)+'…' : s); }
+
+// a busy control must stop accepting clicks: two DELETEs from one double-click
+// both reach the API, and the second returns "deleted 0" as though it failed
+function busy(sel, on){
+  const el = typeof sel === 'string' ? $(sel) : sel;
+  if(el) el.disabled = !!on;
+}
+
+// ── WebRTC-reported IP ──────────────────────────────────────────────────────
+// The browser reports its public address over WebRTC; when the server-observed
+// address is loopback or private (local testing, a tunnel, or a proxy hop count
+// that left remote_addr unrewritten), that observed value is no help for
+// identifying the user — so the reported public IP is shown instead, labelled
+// REPORTED. Display-only: the stored ip_address is untouched.
+function isRoutableIp(v){
+  const s = String(v);
+  if(s.indexOf(':') !== -1){
+    const h = s.toLowerCase();
+    if(h === '::1' || h === '::') return false;
+    if(h.startsWith('fe80') || h.startsWith('fc') || h.startsWith('fd')) return false;
+    return true;
+  }
+  const p = s.split('.');
+  if(p.length !== 4) return false;
+  const a = Number(p[0]), b = Number(p[1]);
+  if(!Number.isFinite(a) || !Number.isFinite(b)) return false;
+  if(a === 10 || a === 127 || a === 0) return false;
+  if(a === 192 && b === 168) return false;
+  if(a === 172 && b >= 16 && b <= 31) return false;
+  if(a === 169 && b === 254) return false;
+  if(a === 100 && b >= 64 && b <= 127) return false;  // CGNAT
+  return true;
+}
+function webrtcRead(di, serverIp, extra){
+  const d = (di && typeof di === 'object') ? di : {};
+  const w = (d.webrtc && typeof d.webrtc === 'object' && !Array.isArray(d.webrtc)) ? d.webrtc : null;
+  const out = {ips:[], routable:[], stun:[]};
+  if(w){
+    out.ips = Array.isArray(w.ips) ? w.ips.filter(x => typeof x === 'string' && x !== '') : [];
+    out.routable = out.ips.filter(isRoutableIp);
+    out.stun = (Array.isArray(w.publicIps) ? w.publicIps.filter(x => typeof x === 'string' && x !== '') : []).filter(isRoutableIp);
+  }
+  // The tamper path (app/backend.py _log_tamper_signals) records leaked
+  // addresses in details.webrtc_ips rather than device_info.webrtc — same
+  // meaning, different shelf. Surface them when device_info carries none.
+  if(!out.ips.length){
+    const fb = (extra && typeof extra === 'object' && Array.isArray(extra.webrtc_ips))
+      ? extra.webrtc_ips : [];
+    out.ips = fb.filter(x => typeof x === 'string' && x !== '');
+    out.routable = out.ips.filter(isRoutableIp);
+  }
+  return out;
+}
+function flagIp(di, ip, extra){
+  const r = webrtcRead(di, ip, extra);
+  const reported = (r.stun.length ? r.stun[0] : '') || (r.routable.length ? r.routable[0] : '');
+  const obs = (ip == null) ? '' : String(ip);
+  const show = (reported && !isRoutableIp(obs)) ? reported : obs;
+  return {show, reported: show !== '' && show === reported};
+}
+function flagIpCell(di, ip, extra){
+  const {show, reported} = flagIp(di, ip, extra);
+  if(!show) return '—';
+  return `<button type="button" class="fbtn" title="Filter this page by ${esc(show)}" onclick="setq('${jsArg(show)}')">${esc(show)}</button>`
+       + (reported ? ' <span class="badge warn xs" title="Reported by the browser over WebRTC, not observed by the server">REPORTED</span>' : '');
+}
+
+// ── tamper / automation signal ─────────────────────────────────────────────
+// device_info rides along on every flag row (get_device_events decrypts it).
+// Both its shape and its contents are attacker-controlled: type-check each key,
+// treat a key the collector never sent as unknown rather than as "clean", and
+// let nothing reach innerHTML or an attribute without esc().
+function tamperRead(di){
+  const d = (di && typeof di === 'object') ? di : {};
+  const a = (d.automation && typeof d.automation === 'object') ? d.automation : {};
+  const mism = Array.isArray(d.workerMismatch) ? d.workerMismatch : [];
+  const hits = Array.isArray(a.hits) ? a.hits : [];
+  const verdict = (typeof a.verdict === 'string') ? a.verdict : '';
+  const scope = (typeof d.workerScope === 'string') ? d.workerScope : '';
+  const known = verdict !== '' || Array.isArray(d.workerMismatch);
+  let state = 'na';
+  if(verdict === 'headless' || mism.length) state = 'bad';
+  else if(verdict === 'suspect') state = 'warn';
+  else if(known) state = 'ok';
+  return {state, verdict, scope, mism, hits};
+}
+// same red tint the BLOCKED badge uses, so a loud row reads at a glance
+function tamperBadge(di){
+  const s = tamperRead(di).state;
+  if(s === 'bad') return '<span class="badge bad">TAMPER</span>';
+  if(s === 'warn') return '<span class="badge warn">SUSPECT</span>';
+  if(s === 'ok') return '<span class="badge on">CLEAN</span>';
+  return '<span class="badge off">NO SIGNAL</span>';
+}
+// the table cell: badge, plus which properties disagreed and which checks fired
+function tamperCell(di){
+  const t = tamperRead(di);
+  const tip = [t.verdict ? 'automation: '+t.verdict : '', t.scope ? 'worker scope: '+t.scope : '',
+               t.mism.length ? 'mismatch: '+t.mism.join(', ') : '',
+               t.hits.length ? 'hits: '+t.hits.join(', ') : '']
+    .filter(Boolean).join(' | ').slice(0, 400);
+  const list = (label, arr) => arr.length
+    ? `<div class="log-details">${esc(label)}${arr.slice(0,6).map(x => esc(x)).join(', ')}${arr.length>6?', +'+(arr.length-6):''}</div>`
+    : '';
+  // esc() escapes the quote characters too, so the tooltip stays inside title=""
+  return `<span title="${esc(tip)}">${tamperBadge(di)}</span>`
+       + list('mismatch: ', t.mism) + list('hits: ', t.hits);
+}
+// plain text for the filter box — never rendered, so no markup context here
+function tamperHay(di){
+  const t = tamperRead(di);
+  return [t.verdict, t.scope, t.mism.join(' '), t.hits.join(' '),
+          t.state === 'bad' ? 'tamper spoof' : '',
+          t.state === 'warn' ? 'suspect' : '',
+          t.mism.length ? 'worker-mismatch' : ''].join(' ');
+}
+
+// null-prototype: an event_type of "constructor" or "__proto__" would otherwise
+// return an inherited function and blow up the destructure mid-render
+const BADGE = Object.assign(Object.create(null), {
+  repeat_registration:      ['badge-create',   'REPEAT SIGNUP'],
+  new_device_login:         ['badge-security', 'NEW DEVICE'],
+  shared_device_login:      ['badge-security', 'SHARED LOGIN'],
+  shared_device_bind:       ['badge-edit',     'SHARED DEVICE'],
+  banned_alt_login:         ['badge-delete',   'BANNED ALT'],
+  banned_alt_registration:  ['badge-delete',   'BANNED ALT'],
+  devtools_open_2m:          ['badge-security', 'DEVTOOLS 2M'],
+});
+
+// ── severity & event colour ─────────────────────────────────────────────────
+// a row's loudness is one rule: blocked or a spoofed/automated browser is
+// loud, a device or IP shared with another account is mid, everything else
+// (repeat signups, new devices) is quiet. The same rule drives the modal banner.
+function flagSev(f){
+  if(f && (f.blocked || tamperRead(f.device_info).state === 'bad')) return 'sev-bad';
+  const e = String(f && f.event_type);
+  if(e === 'new_device_login' || e === 'shared_device_login' || e === 'shared_device_bind') return 'sev-warn';
+  return 'sev-info';
+}
+const EVENT_COLOR = Object.assign(Object.create(null), {
+  repeat_registration:     '#22c55e',
+  new_device_login:        '#06b6d4',
+  shared_device_login:     '#f59e0b',
+  shared_device_bind:      '#f59e0b',
+  banned_alt_login:        '#ef4444',
+  banned_alt_registration: '#ef4444',
+  devtools_open_2m:         '#a855f7',
+});
+
+function eventBadge(t){
+  const hit = BADGE[t];
+  const [cls, label] = Array.isArray(hit) ? hit : ['', esc(t).toUpperCase().replace(/_/g,' ')];
+  const style = cls ? '' : 'background:rgba(var(--accent-rgb),.12);color:var(--accent);';
+  const color = EVENT_COLOR[t] || 'var(--accent)';
+  return `<span class="ev-wrap"><span class="sev-dot" style="background:${color}"></span>
+    <button type="button" class="fbtn fbtn-badge" title="Filter this page by this event"
+    onclick="setq('${jsArg(t)}')"><span class="action-badge ${cls}" style="${style}">${label}</span></button></span>`;
+}
+
+// the badges, the account link and the IP cell all double as filter shortcuts
+function setq(v){
+  const q = $('#q');
+  if(!q) return;
+  q.value = q.value.trim().toLowerCase() === String(v).toLowerCase() ? '' : v;
+  render();
+}
+
+function details(d){
+  if(!d) return '—';
+  if(typeof d === 'string') return esc(d);
+  if(typeof d !== 'object') return esc(d);
+  const rows = Object.entries(d);
+  if(!rows.length) return '—';
+  return rows.map(([k,v]) => esc(k)+': '+esc(Array.isArray(v)?v.join(', '):(v && typeof v === 'object' ? JSON.stringify(v) : v))).join('<br>');
+}
+
+let FLAGS = [];
+let PAGE = 0;
+let HAS_MORE = false;
+let UNREVIEWED = 0;
+let LOADING = false;
+let INFO_SEQ = 0;
+let RENDER_T = null;
+
+function pageSize(){ return parseInt(($('#page-size')||{}).value) || 200; }
+function onlyNew(){ return $('#only-new') && $('#only-new').checked ? '&unreviewed=1' : ''; }
+
+function skeleton(n){
+  return '<div class="table-wrap" style="padding:14px">' + Array(n).fill('<div class="skel-row"></div>').join('') + '</div>';
+}
+
+// one flattened haystack per row so the filter box matches account, IP,
+// fingerprint, event type and anything inside details
+function hay(f){
+  return [f.event_type, f.username, f.uid, f.ip_address, f.fingerprint,
+          f.lookup_hash, f.blocked ? 'blocked' : 'allowed',
+          f.reviewed ? 'reviewed' : 'new',
+          flagIp(f.device_info, f.ip_address, f.details).show,
+          tamperHay(f.device_info),
+          typeof f.details === 'object' ? JSON.stringify(f.details) : f.details]
+    .join(' ').toLowerCase();
+}
+
+// The API returns no total, so "is there a next page" is answered by asking for
+// one row more than fits and seeing whether it comes back.
+async function loadPage(n){
+  if(LOADING) return;
+  LOADING = true;
+  busy('#btn-refresh', true);
+  const el = $('#flag-content');
+  if(el) el.innerHTML = skeleton(6);
+  const ps = pageSize();
+  const d = await api('/api/admin/device-flags?limit='+(ps+1)+'&offset='+(n*ps)+onlyNew());
+  LOADING = false;
+  busy('#btn-refresh', false);
+  if(!d || !d.ok){
+    if(el) el.innerHTML = `<div class="table-wrap"><div class="err-box">
+      <p>Could not load flags. The console session may have expired.</p>
+      <button class="btn btn-ghost btn-sm" onclick="load()">Retry</button></div></div>`;
+    const pg = $('#pagination'); if(pg) pg.innerHTML = '';
+    return;
+  }
+  const rows = d.flags || [];
+  HAS_MORE = rows.length > ps;
+  FLAGS = rows.slice(0, ps);
+  PAGE = n;
+  UNREVIEWED = d.unreviewed || 0;
+  const nc = $('#new-count');
+  if(nc){ nc.textContent = UNREVIEWED + ' unreviewed'; nc.classList.toggle('has-new', UNREVIEWED > 0); }
+  render();
+}
+
+function load(){ return loadPage(0); }
+function nextPage(){ if(HAS_MORE) loadPage(PAGE + 1); }
+function prevPage(){ if(PAGE > 0) loadPage(PAGE - 1); }
+
+// rebuilding up to 500 rows of innerHTML on every keystroke is what made typing
+// in the filter box feel stuck
+function queueRender(){
+  clearTimeout(RENDER_T);
+  RENDER_T = setTimeout(render, 120);
+}
+
+function stats(rows){
+  const el = $('#stat-strip');
+  if(!el) return;
+  const blocked = rows.filter(f => f.blocked).length;
+  const loud = rows.filter(f => tamperRead(f.device_info).state === 'bad').length;
+  const accts = new Set(rows.map(f => f.uid || f.username).filter(Boolean)).size;
+  const tile = (v, l, cls, tip, ic) =>
+    `<div class="stat ${cls||''}" title="${esc(tip||'')}"><div class="s-head"><span class="s-ic">${esc(ic||'•')}</span><span class="sl">${esc(l)}</span></div><div class="sv">${esc(v)}</div></div>`;
+  el.innerHTML =
+      tile(UNREVIEWED, 'Unreviewed', UNREVIEWED ? 'stat-warn' : 'stat-ok', 'Across every page, not just this one', '◔')
+    + tile(rows.length, 'On this page', '', 'Flags currently loaded', '▤')
+    + tile(blocked, 'Blocked', blocked ? 'stat-bad' : '', 'Blocked attempts on this page', '⊘')
+    + tile(loud, 'Tamper', loud ? 'stat-bad' : '', 'Rows reporting a spoofed or automated browser, on this page', '⚠')
+    + tile(accts, 'Accounts', '', 'Distinct accounts on this page', '◉');
+}
+
+function filterBar(q, shown, total){
+  const bar = $('#filter-bar');
+  if(!bar) return;
+  bar.innerHTML = q
+    ? `<span class="chip-filter">filter: ${esc(q)}
+         <button type="button" onclick="setq('')" aria-label="Clear the filter">&times;</button></span>
+       <span class="note page-sub" style="margin:0">${shown} of ${total} rows on this page</span>`
+    : (total ? `<span class="note page-sub" style="margin:0">${total} row${total===1?'':'s'} on this page</span>` : '');
+}
+
+function render(){
+  const el = $('#flag-content'), pg = $('#pagination');
+  const q = (($('#q') || {}).value || '').trim().toLowerCase();
+  const rows = q ? FLAGS.filter(f => hay(f).includes(q)) : FLAGS;
+  stats(FLAGS);
+  filterBar(q, rows.length, FLAGS.length);
+
+  if(pg) pg.innerHTML = (PAGE > 0 || HAS_MORE)
+    ? `<button class="btn btn-ghost btn-sm" onclick="prevPage()"${PAGE===0?' disabled':''}>Previous</button>
+       <span class="note page-sub" style="margin:0">page ${PAGE+1}</span>
+       <button class="btn btn-ghost btn-sm" onclick="nextPage()"${HAS_MORE?'':' disabled'}>Next</button>`
+    : '';
+
+  if(rows.length === 0){
+    el.innerHTML = `<div class="table-wrap"><div class="empty">${
+      FLAGS.length
+        ? 'No flag on this page matches that filter.' + (HAS_MORE || PAGE > 0 ? '<br>The filter only searches the page you are on — try Next, or raise the rows-per-page.' : '')
+        : (PAGE > 0 ? 'Nothing on this page.' : 'No device flags recorded.')
+    }</div></div>`;
+    return;
+  }
+
+  el.innerHTML = `<div class="table-wrap"><table class="log-table tbl-cards">
+    <thead><tr>
+      <th scope="col">Time</th><th scope="col">Event</th><th scope="col">Account</th>
+      <th scope="col">Fingerprint</th><th scope="col">IP</th><th scope="col">Signal</th>
+      <th scope="col">Details</th><th scope="col"><span class="sr-only">Actions</span></th>
+    </tr></thead>
+    <tbody>${rows.map(f => {
+      const id = Number(f.id);
+      const who = f.username ? '@'+esc(f.username) : (f.uid ? esc(f.uid) : 'unregistered');
+      return `
+      <tr class="${flagSev(f)}${f.reviewed?' row-reviewed':''}">
+        <td data-label="Time" class="log-time">${relTime(f.created_at)}</td>
+        <td data-label="Event">${eventBadge(f.event_type)} ${f.blocked?'<span class="badge bad">BLOCKED</span>':'<span class="badge on">ALLOWED</span>'}</td>
+        <td data-label="Account" class="log-target">${f.uid?`<a href="/admin/user/${esc(f.uid)}">@${esc(f.username||f.uid)}</a>`:(f.username?'@'+esc(f.username):'—')}</td>
+        <td data-label="Fingerprint" class="log-ip mono">${short(f.fingerprint)}</td>
+        <td data-label="IP" class="log-ip">${flagIpCell(f.device_info, f.ip_address, f.details)}</td>
+        <td data-label="Signal">${tamperCell(f.device_info)}</td>
+        <td data-label="Details" class="log-details">${details(f.details)}</td>
+        <td class="cell-actions">
+          <button class="btn btn-primary btn-sm" onclick="openInfo(${id})" aria-label="Full info for ${who}">Info</button>
+          ${f.reviewed?'<span class="muted" style="font-size:12px">reviewed</span>':`<button class="btn btn-ghost btn-sm" onclick="review(${id},this)" aria-label="Mark the flag for ${who} reviewed">Review</button>`}
+          <button class="btn btn-red btn-sm" onclick="delFlag(${id},this)" aria-label="Delete the flag for ${who} permanently">Delete</button></td>
+      </tr>`;}).join('')}
+    </tbody></table></div>`;
+}
+
+// ── the Info modal: one flag, from every angle ──────────────────────────────
+
+function yn(v){ return ['1','1.0','true','yes'].includes(String(v).toLowerCase()) ? 'yes' : 'no'; }
+
+function kv(rows){
+  return `<table class="log-table"><tbody>${rows.map(([k,v]) =>
+    `<tr><td class="log-target kv-k">${esc(k)}</td><td>${v==null?'—':v}</td></tr>`
+  ).join('')}</tbody></table>`;
+}
+
+function sect(title, inner){
+  return `<h3 class="sect-h">${esc(title)}</h3>${inner}`;
+}
+
+function acctRows(list, extra){
+  if(!list || !list.length) return '<div class="empty" style="padding:10px">None.</div>';
+  return `<div class="table-wrap"><table class="log-table">
+    <thead><tr><th scope="col">Account</th><th scope="col">Email</th><th scope="col">Type</th><th scope="col">Status</th><th scope="col">Created</th>${extra?'<th scope="col">Bound</th>':''}</tr></thead>
+    <tbody>${list.map(u => `<tr>
+      <td class="log-target"><a href="/admin/user/${esc(u.id)}">@${esc(u.username||u.id)}</a></td>
+      <td>${esc(u.email||'—')}</td>
+      <td><span class="badge ${u.account_type==='paid'?'on':'off'}">${esc(u.account_type||'trial').toUpperCase()}</span></td>
+      <td>${u.is_banned?'<span class="badge bad">BANNED</span>':'<span class="badge on">OK</span>'}</td>
+      <td class="log-time">${fmtDate(u.created_at)}</td>
+      ${extra?`<td class="log-time">${fmtDate(u.bound_at)}</td>`:''}
+    </tr>`).join('')}</tbody></table></div>`;
+}
+
+let LAST_FOCUS = null;
+
+function closeInfo(){
+  const m = $('#info-modal');
+  if(!m || !m.classList.contains('show')) return;
+  m.classList.remove('show');
+  document.body.style.overflow = '';
+  INFO_SEQ++;
+  if(LAST_FOCUS && LAST_FOCUS.focus) LAST_FOCUS.focus();
+  LAST_FOCUS = null;
+}
+
+document.addEventListener('keydown', e => { if(e.key === 'Escape') closeInfo(); });
+
+async function openInfo(flagId){
+  const f = FLAGS.find(x => String(x.id) === String(flagId));
+  if(!f) return;
+  const m = $('#info-modal'), body = $('#info-body'), title = $('#info-title');
+  if(!m || !body) return;
+  // two quick clicks would otherwise let the slower response paint under the
+  // newer title
+  const seq = ++INFO_SEQ;
+  LAST_FOCUS = document.activeElement;
+  m.classList.add('show');
+  document.body.style.overflow = 'hidden';
+  const closeBtn = $('#info-close');
+  if(closeBtn) closeBtn.focus();
+  body.innerHTML = skeleton(4);
+  if(title) title.textContent = f.username ? 'Full info — @' + f.username : 'Full info — unregistered signup';
+
+  const qs = new URLSearchParams();
+  if(f.uid) qs.set('user_id', f.uid);
+  if(f.lookup_hash) qs.set('lookup_hash', f.lookup_hash);
+  if(f.ip_address) qs.set('ip', f.ip_address);
+  const d = await api('/api/admin/flag-context?' + qs.toString());
+  if(seq !== INFO_SEQ) return;
+  if(!d || !d.ok){
+    body.innerHTML = `<div class="err-box"><p>Could not load user info.</p>
+      <button class="btn btn-ghost btn-sm" onclick="openInfo(${Number(flagId)})">Retry</button></div>`;
+    return;
+  }
+
+  const bCls = flagSev(f);
+  const bTxt = bCls === 'sev-bad'
+    ? 'Blocked or automated activity — review carefully'
+    : bCls === 'sev-warn'
+      ? 'Device or IP shared with another account'
+      : 'Informational flag — no action needed';
+  const banner = `<div class="flag-banner ${bCls}"><span class="fb-dot"></span>${bTxt}
+    <span class="fb-meta">${esc(f.reviewed ? 'reviewed' : 'unreviewed')} · ${fmtDate(f.created_at)}</span></div>`;
+
+  let html = banner + sect('This flag', kv([
+    ['Event', eventBadge(f.event_type)],
+    ['When', fmtDate(f.created_at)],
+    ['Outcome', f.blocked ? '<span class="badge bad">BLOCKED</span>' : '<span class="badge on">ALLOWED</span>'],
+    ['Reviewed', f.reviewed ? 'yes' : 'no'],
+    ['IP address', f.ip_address ? flagIpCell(f.device_info, f.ip_address, f.details) : null],
+    ['Fingerprint', f.fingerprint ? `<span class="mono-break">${esc(f.fingerprint)}</span>` : null],
+    ['Lookup hash', f.lookup_hash ? `<span class="mono-break">${esc(f.lookup_hash)}</span>` : null],
+    ['Tamper / automation', tamperCell(f.device_info)],
+    ['Details', details(f.details)],
+  ]));
+
+  const u = d.user;
+  if(u){
+    html += sect('Account', kv([
+      ['Username', '@' + esc(u.username||'')],
+      ['User ID', `<span class="mono">${esc(u.uid)}</span>`],
+      ['Display name', esc(u.display_name||'—')],
+      ['Email', esc(u.email||'—')],
+      ['Email verified', yn(u.email_verified)],
+      ['Account type', `<span class="badge ${u.account_type==='paid'?'on':'off'}">${esc(u.account_type||'trial').toUpperCase()}</span>`],
+      ['Bot slots', esc(u.slots)],
+      ['Status', u.is_banned ? `<span class="badge bad">BANNED</span> ${esc(u.banned_reason||'')}` : '<span class="badge on">ACTIVE</span>'],
+      ['Registered', fmtDate(u.created_at)],
+    ]));
+  } else if(f.uid){
+    html += sect('Account', '<div class="empty" style="padding:10px">This account no longer exists.</div>');
+  } else {
+    html += sect('Account', '<div class="empty" style="padding:10px">No account — this signup never completed.</div>');
+  }
+
+  const fp = d.fingerprint;
+  if(fp){
+    const di = fp.device_info || {};
+    const t = tamperRead(di);
+    html += sect('Bound device', kv([
+      ['Registered', fp.registered ? 'yes' : 'no'],
+      ['Fingerprint', fp.hash ? `<span class="mono-break">${esc(fp.hash)}</span>` : null],
+      ['Last IP', flagIpCell(di, fp.ip_address)],
+      ['Bound at', fmtDate(fp.created_at)],
+      ['Tamper / automation', tamperBadge(di)],
+      ['Automation verdict', t.verdict ? esc(t.verdict) : null],
+      ['Worker scope', t.scope ? esc(t.scope) : null],
+      ['Worker mismatch', t.mism.length ? t.mism.map(x => esc(x)).join(', ') : null],
+      ['Automation hits', t.hits.length ? t.hits.map(x => esc(x)).join(', ') : null],
+      ['Device details', Object.keys(di).length ? details(di) : null],
+    ]));
+  }
+
+  if(d.bots && d.bots.length){
+    html += sect(`Bots (${d.bots.length})`, `<div class="table-wrap"><table class="log-table">
+      <thead><tr><th scope="col">Slot</th><th scope="col">Name</th><th scope="col">Server</th><th scope="col">Running</th><th scope="col">Token</th></tr></thead>
+      <tbody>${d.bots.map(b => `<tr>
+        <td>${esc(b.slot_index)}</td>
+        <td class="log-target">${esc(b.name||'—')}</td>
+        <td>${esc(b.server_ip||'—')}${b.server_port?':'+esc(b.server_port):''}</td>
+        <td>${yn(b.running)==='yes'?'<span class="badge on">ON</span>':'<span class="badge off">OFF</span>'}</td>
+        <td class="mono">${esc(b.token_masked||'—')}</td>
+      </tr>`).join('')}</tbody></table></div>`);
+  }
+
+  html += sect(`Other accounts on this device (${(d.device_accounts||[]).length})`,
+               acctRows(d.device_accounts, true));
+  html += sect(`Accounts on this IP (${(d.ip_accounts||[]).length})`,
+               acctRows(d.ip_accounts, false));
+
+  if(d.sessions && d.sessions.length){
+    html += sect(`Active sessions (${d.sessions.length})`, `<div class="table-wrap"><table class="log-table">
+      <thead><tr><th scope="col">Started</th><th scope="col">Last seen</th><th scope="col">IP</th><th scope="col">User agent</th></tr></thead>
+      <tbody>${d.sessions.map(s => `<tr>
+        <td class="log-time">${fmtDate(s.created_at)}</td>
+        <td class="log-time">${fmtDate(s.last_access)}</td>
+        <td class="log-ip">${flagIpCell(fp && fp.device_info, s.ip_address)}</td>
+        <td class="log-details">${esc(s.user_agent||'—')}</td>
+      </tr>`).join('')}</tbody></table></div>`);
+  }
+
+  if(d.flags && d.flags.length){
+    html += sect(`All flags for this account (${d.flags.length})`,
+      (f.uid ? `<div style="text-align:right;margin-bottom:6px"><button class="btn btn-red btn-sm" onclick="delUserFlags('${jsArg(f.uid)}',this)" aria-label="Delete every flag for this account">Delete all for account</button></div>` : '')
+      + `<div class="table-wrap"><table class="log-table">
+      <thead><tr><th scope="col">When</th><th scope="col">Event</th><th scope="col">IP</th><th scope="col">Details</th><th scope="col"><span class="sr-only">Actions</span></th></tr></thead>
+      <tbody>${d.flags.map(x => `<tr class="${flagSev(x)}${x.reviewed?' row-reviewed':''}">
+        <td class="log-time">${fmtDate(x.created_at)}</td>
+        <td>${eventBadge(x.event_type)}</td>
+        <td class="log-ip">${flagIpCell(x.device_info || f.device_info, x.ip_address)}</td>
+        <td class="log-details">${details(x.details)}</td>
+        <td class="cell-actions"><button class="btn btn-red btn-sm" onclick="delFlag(${Number(x.id)},this)" aria-label="Delete this flag permanently">Delete</button></td>
+      </tr>`).join('')}</tbody></table></div>`);
+  }
+
+  body.innerHTML = html;
+}
+
+async function review(id, btn){
+  busy(btn, true);
+  const r = await api('/api/admin/device-flags/review', {method:'POST', body:JSON.stringify({id})});
+  if(r && r.ok){ toast('Marked reviewed'); loadPage(PAGE); }
+  else { busy(btn, false); toast((r&&r.error)||'Error', true); }
+}
+
+async function delFlag(id, btn){
+  busy(btn, true);
+  const r = await api('/api/admin/device-flags', {method:'DELETE', body:JSON.stringify({id})});
+  if(r && r.ok){ toast('Flag deleted'); closeInfo(); loadPage(PAGE); }
+  else { busy(btn, false); toast((r&&r.error)||'Error', true); }
+}
+
+async function delUserFlags(userId, btn){
+  busy(btn, true);
+  const r = await api('/api/admin/device-flags', {method:'DELETE', body:JSON.stringify({user_id:userId})});
+  if(r && r.ok){ toast('Flags deleted'); closeInfo(); loadPage(PAGE); }
+  else { busy(btn, false); toast((r&&r.error)||'Error', true); }
+}
+
+async function reviewAll(){
+  if(!confirm('Mark every flag as reviewed?')) return;
+  busy('#btn-review-all', true);
+  const r = await api('/api/admin/device-flags/review', {method:'POST', body:'{}'});
+  busy('#btn-review-all', false);
+  if(r && r.ok){ toast('Queue cleared'); load(); } else toast((r&&r.error)||'Error', true);
+}
+
+async function loadAutoBan(){
+  const r = await api('/api/admin/auto-ban');
+  if(r && r.ok){
+    // The track and knob are styled off :checked in the stylesheet, so setting
+    // the checkbox is the whole update — the old code also wrote knob.style.left
+    // alongside a CSS transform, and the two stacked into an overshoot.
+    const toggle = $('#auto-ban-toggle');
+    if(toggle) toggle.checked = r.auto_ban_enabled;
+  }
+}
+
+async function toggleAutoBan(enabled){
+  // switching it on starts banning accounts without an operator in the loop
+  if(enabled && !confirm('Enable auto-ban?\n\nAnyone logging in from a device linked to a banned account will be banned automatically, with no further review.')){
+    loadAutoBan();
+    return;
+  }
+  busy('#auto-ban-toggle', true);
+  const r = await api('/api/admin/auto-ban', {method:'PUT', body:JSON.stringify({auto_ban_enabled:enabled})});
+  busy('#auto-ban-toggle', false);
+  if(r && r.ok){ toast('Auto-ban ' + (enabled ? 'enabled' : 'disabled')); }
+  else { toast((r&&r.error)||'Error', true); }
+  loadAutoBan();
+}
+
+// /admin/flags?q=<user> — the ⚑ badge on the admin panel links straight in
+const q0 = new URLSearchParams(location.search).get('q');
+if(q0 && $('#q')) $('#q').value = q0;
+load();
+loadAutoBan();
+</script>
+</body>
+</html>

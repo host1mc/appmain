@@ -1,0 +1,7 @@
+Flask>=3.1,<4
+docker>=7.1,<8
+python-dotenv>=1.0,<2
+waitress>=3.0,<4
+# Optional: only the HeatWave pending-deletion drain uses it (heatwave_deletions.py).
+# Leave MYSQL_HOST unset and the agent runs fine without this installed.
+mysql-connector-python>=9.1.0

@@ -1,0 +1,27 @@
+# admin_console/requirements.txt — the standalone console's own dependency set.
+#
+# This folder installs on its own: pip install -r requirements.txt from inside
+# admin_console/. Derived from the imports of every .py in here, including the
+# vendored copies of the app's modules, and pinned to the same floors the app's
+# root requirements.txt uses. The app's flask-limiter and bcrypt are not needed:
+# nothing here rate-limits, and database.py hashes with Argon2id when
+# argon2-cffi is present and hashlib.pbkdf2_hmac otherwise.
+
+Flask>=3.0            # admin_app.py, auth.py, bp_*.py
+cryptography>=42.0    # crypto_util.py — Fernet over data/secret.key
+requests>=2.31        # engine_client.py — the engine control API
+waitress>=2.1         # start_admin.py serves the app on 127.0.0.1
+
+# Required by the vendored database.py (in _load_config() and _oracle_pool()),
+# the ATP data backend.
+oracledb>=2.0
+# Required by the vendored reviews_db.py (in _pool()) — the HeatWave (MySQL)
+# backend, which holds the `reviews` table and nothing else. bp_reviews.py is
+# the only blueprint that uses it, and it is the only one that never touches
+# the ATP.
+mysql-connector-python>=9.0
+# Required by the vendored database.py for Argon2id password hashing. Imported
+# inside a try there, so the console still runs without it — but then a password
+# it sets is PBKDF2 while the app's tiers mint Argon2id, so install it here too
+# and keep the two in step.
+argon2-cffi>=23.1.0

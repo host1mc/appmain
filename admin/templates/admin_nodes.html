@@ -1,0 +1,808 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Nodes — Admin</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body data-guard="off">
+  <div class="nav">
+    <div class="brand"><a href="{{ url_for('admin_panel') }}"><span class="dot"></span> MC Status Hosting</a> <span class="pill">Admin</span></div>
+    <div class="links">
+      <a href="{{ url_for('admin_panel') }}">Panel</a>
+      <a href="/admin/bots">Fleet</a>
+      <a href="{{ url_for('admin_panel_controls') }}">Hosting</a>
+      <a href="/admin/nodes" aria-current="page" style="color:var(--txt);background:var(--card2)">Nodes</a>
+      <a href="{{ url_for('admin_flags') }}">Flags</a> <a href="{{ url_for('admin_errors') }}">Errors</a>
+      <a href="{{ url_for('admin_reviews') }}">Reviews</a>
+      <a href="/admin/ads">Ads</a>
+      <a href="{{ url_for('admin_database') }}">Database</a>
+      <a href="/admin/account">Account</a>
+    </div>
+  </div>
+
+  <div class="log-page log-wide">
+    <h2 style="font-size:22px;margin-bottom:4px">Nodes</h2>
+    <p class="note" style="text-align:left;margin:0 0 12px">The hosts /panel deploys containers onto. Nothing lets anyone pick a node for a particular server — a new container goes to the lowest-numbered node that is enabled, has capacity above zero and has room — so capacity and enabled are the whole of the placement control. Existing containers are never moved, which is why a node is retired by setting its capacity to 0 rather than deleted.</p>
+    <p class="note" style="text-align:left;margin:0 0 12px"><strong>Servers</strong> on a row lists what is actually on that node: every container placed there, the panel user who owns it, the state it is supposed to be in, and the state the node reports it is really in. The rows come from the database and the live states come from the node itself, so a server whose container was removed by hand, and a container nobody owns any more, both show up as the faults they are.</p>
+    <p class="note" style="text-align:left;margin:0 0 12px"><strong>Config</strong> on a row asks that node what it is actually configured to enforce — memory and CPU per container, whether its Docker daemon is up, which runtimes it offers, how large an upload it accepts. Those settings live in that host's own environment, not in this database, so the answer is read live from the agent every time the panel is opened. Nothing here is a copy: a limit shown is a limit the node applies.</p>
+
+    <div id="transport-banner" hidden></div>
+
+    <div style="margin:12px 0;display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+      <button class="btn btn-ghost btn-sm" onclick="loadNodes()">Refresh</button>
+      <span id="node-summary" class="note" style="margin:0"></span>
+    </div>
+
+    <div id="node-content">
+      <div class="empty">Loading…</div>
+    </div>
+
+    <div class="card" style="margin-top:14px">
+      <h2>Pending container deletions</h2>
+      <p style="font-size:13px;color:var(--muted)">Servers deleted while their node was offline. The owner's slot is already freed, but the container is still on that node — and nothing removes it automatically, so nothing is lost until an operator confirms it here. <strong>Delete from node</strong> removes the container and its data on the node; <strong>Remove entry</strong> only clears the queue row, for a container you already removed by hand on the host.</p>
+      <div id="pending-content"><div class="empty">Loading…</div></div>
+    </div>
+
+    <div class="card">
+      <h2>Register a node</h2>
+      <p style="font-size:13px;color:var(--muted)">The console never talks to a node itself. It posts to the engine, which is the only process that owns the node table — it encrypts the agent token before storing it, so the token below is write-only from here on and no page ever gets it back.</p>
+      <form id="node-form" autocomplete="off">
+        <div class="field"><label for="f-name">Name</label>
+          <input type="text" id="f-name" maxlength="64" required placeholder="e.g. node-fra-1" aria-describedby="name-hint">
+          <div id="name-hint" class="note" style="text-align:left;margin-top:6px">1–64 characters, and unique regardless of case.</div></div>
+        <div class="field"><label for="f-scheme">Scheme</label>
+          <select id="f-scheme" aria-describedby="scheme-hint">
+            <option value="https" selected>https</option>
+            <option value="http">http</option>
+          </select>
+          <div id="scheme-hint" class="note" style="text-align:left;margin-top:6px">Filled in for whichever address below was typed without one. An address that carries its own <span class="log-ip">http://</span> or <span class="log-ip">https://</span> keeps it, so one half of a pair can stay plain while the other is TLS.</div></div>
+        <div class="field"><label for="f-url">Base URL</label>
+          <input type="text" id="f-url" maxlength="255" required placeholder="node.example.com:8081" aria-describedby="url-hint">
+          <div id="url-hint" class="note" style="text-align:left;margin-top:6px">A bare origin — scheme, host and port only, no path. The address most app instances use, normally the node's public hostname. Plain <span class="log-ip">http://</span> to anything but loopback puts the agent token on the wire in the clear; it is allowed, and it is warned about.</div></div>
+        <div class="field"><label for="f-url2">Also reachable at (optional)</label>
+          <input type="text" id="f-url2" maxlength="255" placeholder="http://127.0.0.1:8081" aria-describedby="url2-hint">
+          <div id="url2-hint" class="note" style="text-align:left;margin-top:6px">A second address for the same agent, for the app instance the first one does not work from. An instance sharing this node's host has to come in over loopback, because the public hostname does not come back from inside that host. Both addresses go on <strong>one</strong> node row — its capacity is counted once and there is one container pool — and /panel tries them in order and uses whichever answers. Leave it empty for a node every instance reaches the same way.</div></div>
+        <div class="field"><label for="f-token">Agent token</label>
+          <input type="password" id="f-token" autocomplete="new-password" required aria-describedby="token-hint">
+          <div id="token-hint" class="note" style="text-align:left;margin-top:6px">The node-agent's bearer token. It grants full control of that host's container daemon. Stored encrypted; a value that is already ciphertext is stored as-is, so a token copied out of <span class="log-ip">token_enc</span> can be pasted back.</div></div>
+        <div class="field"><label for="f-capacity">Capacity</label>
+          <input type="number" id="f-capacity" min="0" max="999999" required placeholder="e.g. 10" aria-describedby="capacity-hint">
+          <div id="capacity-hint" class="note" style="text-align:left;margin-top:6px">How many containers may live here. Required, because there is no sensible guess: 0 registers the node and takes it out of placement, and a number is the ceiling new deploys are measured against.</div></div>
+        <div class="row-actions">
+          <button type="submit" class="btn btn-primary btn-sm">Register node</button>
+        </div>
+      </form>
+      <div id="create-result" class="note" style="text-align:left;margin-top:14px" role="status" aria-live="polite">Nothing submitted yet.</div>
+    </div>
+  </div>
+
+  <div class="toast" id="toast"></div>
+
+<script>
+const $ = s => { try { return document.querySelector(s); } catch(e) { return null; } };
+
+function toast(msg, err){
+  const t = $('#toast'); if(!t) return;
+  t.textContent = msg;
+  t.className = 'toast show' + (err ? ' err' : '');
+  setTimeout(() => { if(t) t.className = 'toast'; }, 2600);
+}
+
+function esc(s){ return String(s==null?'':s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+
+function fmtDate(d){ if(!d) return '—'; try { return new Date(d).toLocaleString(); } catch(e){ return d; } }
+
+// A node row's url column can hold more than one address for the same agent, as a
+// comma-separated list the panel tries in order. It is one row on purpose: two
+// rows for one host would count its capacity twice and give it two container
+// pools. These three helpers only take the list apart and put it back together —
+// what counts as a usable address is decided server-side, and a second opinion
+// here could disagree with the app's.
+function splitNodeUrls(value){
+  return String(value == null ? '' : value).split(',').map(u => u.trim()).filter(Boolean);
+}
+
+function joinNodeUrls(parts){
+  return parts.map(p => String(p == null ? '' : p).trim()).filter(Boolean).join(',');
+}
+
+// The scheme selector supplies the one that was not typed. An address that came
+// with its own is left as it is, which is how the loopback half of a pair stays
+// plain http while the public half is https.
+function withScheme(value, scheme){
+  const text = String(value == null ? '' : value).trim();
+  if(!text) return '';
+  return /^[a-zA-Z][a-zA-Z0-9+.-]*:\/\//.test(text) ? text : scheme + '://' + text;
+}
+
+// The warning text is whatever the API shipped, so this page cannot drift from
+// the reason node_registry gives for the same condition.
+let WARNING_TEXT = '';
+
+// The registry row per node id, as last loaded. The config panel needs it to put
+// what the node reports beside what the engine believes about it: a node's own
+// ceiling is set in that host's .env and its capacity is set from this page, so
+// the two can disagree, and a disagreement is exactly what makes a deploy fail
+// on a node the panel was certain had room.
+let NODES = {};
+
+// Whether the token reaches a node in the clear is decided server-side, from the
+// URL — repeating an "is this loopback" test here would be a second opinion that
+// could disagree with the app's.
+function renderTransportBanner(nodes){
+  const el = $('#transport-banner'); if(!el) return;
+  const bad = nodes.filter(n => n && n.insecure_token_transport);
+  if(bad.length === 0){ el.hidden = true; el.innerHTML = ''; return; }
+  el.hidden = false;
+  el.innerHTML = `<div class="card" style="border-color:var(--amber)">
+    <h2><span class="badge warn">TOKEN IN CLEARTEXT</span> ${bad.length} node${bad.length===1?'':'s'} reachable over plain HTTP</h2>
+    <p style="font-size:13px;color:var(--muted);margin:0 0 8px">${esc(WARNING_TEXT)}</p>
+    <div class="log-ip" style="word-break:break-all">${bad.map(n => esc(n.name || ('#' + Number(n.id))) + ' — ' + esc(n.url || '')).join('<br>')}</div>
+  </div>`;
+}
+
+function nodeRow(n){
+  // The id goes into JS handler arguments, so it is coerced to a number rather
+  // than escaped as text: nothing but a number survives Number().
+  const id = Number(n.id);
+  const enabled = !!n.enabled;
+  const capacity = Number(n.capacity || 0);
+  const servers = (n.servers == null) ? null : Number(n.servers);
+  const free = (n.free == null) ? null : Number(n.free);
+  const full = capacity > 0 && free === 0;
+  // Enabled and capacity are separate reasons a node takes no new containers, so
+  // they are shown separately: "disabled" and "full" need different fixes.
+  const placement = !enabled ? '<span class="badge off">NO NEW SERVERS — DISABLED</span>'
+    : (capacity === 0 ? '<span class="badge off">NO NEW SERVERS — CAPACITY 0</span>'
+    : (full ? '<span class="badge warn">FULL</span>' : '<span class="badge on">ACCEPTING</span>'));
+  // One node can carry more than one address for the same agent, so each is given
+  // its own line: a cell that has to break a comma-separated string mid-host is
+  // the one place an operator cannot check an address by reading it.
+  const urls = splitNodeUrls(n.url);
+  return `<tr>
+    <td class="log-admin">${esc(n.name || ('#' + id))} <span class="log-ip">(${id})</span></td>
+    <td class="log-ip" style="word-break:break-all">
+      <span id="url-display-${id}">${urls.length ? urls.map(esc).join('<br>') : '—'}
+      ${n.insecure_token_transport ? ' <span class="badge warn" title="' + esc(WARNING_TEXT) + '">CLEARTEXT TOKEN</span>' : ''}</span>
+      <div id="url-edit-${id}" hidden style="margin-top:4px">
+        <div style="display:flex;gap:6px;align-items:center">
+          <input type="text" id="url-input-${id}" value="${esc(n.url || '')}" maxlength="255"
+                 placeholder="https://node.example.com:8081,http://127.0.0.1:8081"
+                 style="flex:1;min-width:200px;background:var(--bg2);border:1px solid var(--line);color:var(--txt);padding:6px 10px;border-radius:8px;font-size:14px"
+                 aria-label="Base URL for node ${id}" aria-describedby="url-note-${id}">
+          <button class="btn btn-ghost btn-sm" onclick="saveUrl(${id})" aria-label="Save URL for node ${id}">Save</button>
+          <button class="btn btn-ghost btn-sm" onclick="cancelEditUrl(${id})" aria-label="Cancel editing URL for node ${id}">Cancel</button>
+        </div>
+        <div id="url-note-${id}" class="note" style="text-align:left;margin:4px 0 0">Two addresses for the same agent, comma separated, are allowed — give the second one to the app instance the first is unreachable from. It stays one node row, so capacity is still counted once.</div>
+      </div>
+    </td>
+    <td class="log-ip">${servers == null ? '—' : servers}${capacity ? ' / ' + capacity : ''}
+      ${free == null ? '' : '<span class="muted"> (' + free + ' free)</span>'}</td>
+    <td>${placement}</td>
+    <td class="log-ip">${esc(fmtDate(n.created_at))}</td>
+    <td>
+      <input type="number" id="cap-${id}" value="${capacity}" min="0" max="999999" aria-label="Capacity for node ${id}"
+             style="width:90px;background:var(--bg2);border:1px solid var(--line);color:var(--txt);padding:6px 10px;border-radius:8px;font-size:14px">
+      <button class="btn btn-ghost btn-sm" onclick="saveCapacity(${id})" aria-label="Save capacity for node ${id}">Save</button>
+      <button class="btn btn-ghost btn-sm" onclick="startEditUrl(${id})" aria-label="Edit URL for node ${id}">Edit URL</button>
+      ${enabled ? `<button class="btn btn-ghost btn-sm" onclick="setEnabled(${id}, false)" aria-label="Disable node ${id}">Disable</button>`
+                : `<button class="btn btn-green btn-sm" onclick="setEnabled(${id}, true)" aria-label="Enable node ${id}">Enable</button>`}
+      <button class="btn btn-ghost btn-sm" id="srvbtn-${id}" onclick="toggleServers(${id})"
+              aria-expanded="false" aria-controls="srv-${id}" aria-label="Show servers on node ${id}">Servers</button>
+      <button class="btn btn-ghost btn-sm" id="cfgbtn-${id}" onclick="toggleConfig(${id})"
+              aria-expanded="false" aria-controls="cfg-${id}" aria-label="Show configuration for node ${id}">Config</button>
+      <button class="btn btn-red btn-sm" onclick="deleteNode(${id})" aria-label="Delete node ${id}">Delete</button>
+    </td>
+  </tr>
+  <tr id="srvrow-${id}" hidden>
+    <td colspan="6" style="background:var(--bg2);padding:14px 12px">
+      <div id="srv-${id}"><div class="empty" style="margin:0">Loading…</div></div>
+    </td>
+  </tr>
+  <tr id="cfgrow-${id}" hidden>
+    <td colspan="6" style="background:var(--bg2);padding:14px 12px">
+      <div id="cfg-${id}"><div class="empty" style="margin:0">Loading…</div></div>
+    </td>
+  </tr>`;
+}
+
+// value and note are inserted as HTML, so every caller escapes its own text —
+// several of these cells are badges, and escaping here would print the markup.
+function cfgRow(label, value, note){
+  return `<tr>
+    <th scope="row" style="text-align:left;font-weight:500;color:var(--muted);padding:4px 14px 4px 0;white-space:nowrap;vertical-align:top">${esc(label)}</th>
+    <td class="log-ip" style="padding:4px 0;word-break:break-word;vertical-align:top">${value}${
+      note ? '<div class="note" style="text-align:left;margin:2px 0 0">' + note + '</div>' : ''}</td>
+  </tr>`;
+}
+
+function cfgSection(title, rows){
+  const body = rows.filter(Boolean).join('');
+  if(!body) return '';
+  return `<div style="flex:1 1 300px;min-width:260px">
+    <div style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.5px;color:var(--muted2);margin:0 0 6px">${esc(title)}</div>
+    <table style="border-collapse:collapse;width:100%"><tbody>${body}</tbody></table>
+  </div>`;
+}
+
+// Everything below is the agent's own answer, rendered as it arrived. Nothing is
+// recomputed from a copy of a limit kept in this page — a figure this console
+// believed and the node had stopped applying would be worse than no figure.
+function renderConfig(id, d){
+  const box = $('#cfg-' + id);
+  if(!box) return;
+  if(!d || !d.ok){
+    box.innerHTML = '<div class="empty" style="margin:0">'
+      + esc((d && d.error) || 'The node did not answer.')
+      + '</div><p class="note" style="text-align:left;margin:8px 0 0">The rest of this row comes from the registry, which the engine can still read — only the node\'s own settings are missing.</p>';
+    return;
+  }
+  const reg = NODES[id] || {};
+  const c = d.container || {}, lim = d.limits || {}, dk = d.docker || {};
+  const ins = d.install || {}, tok = d.token || {};
+  const num = v => (v == null || v === '') ? '—' : esc(String(v));
+
+  // The registry decides placement; the node enforces its own ceiling. They are
+  // set in two different places (this console and that host's .env), so they can
+  // disagree — and when they do, the panel hands a container to a node that
+  // refuses it. That is the one comparison worth making loudly.
+  const regCap = Number(reg.capacity || 0);
+  const nodeMax = (d.max_servers == null) ? null : Number(d.max_servers);
+  const capMismatch = nodeMax != null && nodeMax !== regCap;
+  const regServers = (reg.servers == null) ? null : Number(reg.servers);
+  const nodeServers = (d.servers == null) ? null : Number(d.servers);
+  const countMismatch = nodeServers != null && regServers != null && nodeServers !== regServers;
+
+  const memMb = Number(c.memory_mb || 0);
+  const commitNote = (nodeMax && memMb)
+    ? esc('At its ceiling this node commits ' + (nodeMax * memMb >= 1024
+        ? (nodeMax * memMb / 1024).toFixed(1) + ' GB' : (nodeMax * memMb) + ' MB')
+        + ' of memory (' + nodeMax + ' × ' + memMb + ' MB).')
+    : '';
+
+  const runtimes = (d.runtimes && typeof d.runtimes === 'object') ? d.runtimes : {};
+  const rtRows = Object.keys(runtimes).map(key => {
+    const rt = runtimes[key] || {};
+    const versions = Array.isArray(rt.versions) ? rt.versions : [];
+    return cfgRow(rt.label || key,
+      versions.length
+        ? versions.map(v => (String(v) === String(rt.default_version)
+            ? '<strong>' + esc(v) + '</strong>' : esc(v))).join(', ')
+        : '<span class="badge off">NONE OFFERED</span>',
+      versions.length ? esc('Default ' + (rt.default_version || '—')
+        + ' · startup ' + (rt.default_startup || '—')) : '');
+  });
+
+  box.innerHTML =
+    (d.insecure_token_transport ? `<div class="card" style="border-color:var(--amber);margin:0 0 12px">
+      <p style="font-size:13px;color:var(--muted);margin:0"><span class="badge warn">TOKEN IN CLEARTEXT</span>
+      ${esc(d.cleartext_token_warning || WARNING_TEXT)}</p></div>` : '')
+    + (capMismatch ? `<div class="card" style="border-color:var(--amber);margin:0 0 12px">
+      <p style="font-size:13px;color:var(--muted);margin:0"><span class="badge warn">CEILINGS DISAGREE</span>
+      Placement uses the registry capacity of <strong>${regCap}</strong>, but this node refuses anything past
+      <strong>${nodeMax}</strong> (its own NODE_MAX_SERVERS). ${regCap > nodeMax
+        ? 'Deploys will start failing on this node before the panel considers it full.'
+        : 'Capacity here is the lower of the two, so the extra room on the node is unused.'}</p></div>` : '')
+    + `<div style="display:flex;flex-wrap:wrap;gap:22px 34px">`
+    + cfgSection('Placement', [
+        cfgRow('Registry capacity', num(regCap),
+          esc('Set from this page. The number placement is measured against.')),
+        cfgRow('Node ceiling', nodeMax == null ? '—'
+          : (capMismatch ? '<span class="badge warn">' + nodeMax + '</span>' : num(nodeMax)),
+          esc('NODE_MAX_SERVERS on that host.')),
+        cfgRow('Containers (node)', nodeServers == null
+          ? '<span class="badge off">UNKNOWN</span>'
+          : (countMismatch ? '<span class="badge warn">' + nodeServers + '</span>' : num(nodeServers)),
+          nodeServers == null
+            ? esc('The daemon could not list them — the settings below are still what this agent is configured with.')
+            : (countMismatch ? esc('The registry counts ' + regServers
+                + '. The registry counts server rows; the node counts containers it actually holds.') : '')),
+        cfgRow('Data root', esc(d.data_root || '—'),
+          esc('Every server directory on this node lives under here.'))
+      ])
+    + cfgSection('Docker', [
+        cfgRow('Daemon', dk.reachable
+          ? '<span class="badge on">REACHABLE</span>' : '<span class="badge off">UNREACHABLE</span>',
+          dk.reachable ? '' : esc('The agent is up and answering, but its Docker socket is not — nothing can start or stop here.')),
+        cfgRow('Version', num(dk.version)),
+        cfgRow('API timeout', dk.timeout_seconds == null ? '—' : num(dk.timeout_seconds) + 's',
+          esc('How long one Docker call may take before the agent gives up on it.'))
+      ])
+    + cfgSection('Per container', [
+        cfgRow('Memory', memMb ? num(memMb) + ' MB' : '—', commitNote),
+        cfgRow('CPU', c.cpu_percent == null ? '—' : num(c.cpu_percent) + '% of a core'),
+        cfgRow('Disk', c.storage_mb == null ? '—' : num(c.storage_mb) + ' MB',
+          esc('Enforced by the agent, not by Docker.')),
+        cfgRow('Processes', num(c.pids_limit)),
+        cfgRow('Runs as', c.user ? num(c.user)
+          : '<span class="badge warn">IMAGE DEFAULT</span>',
+          c.user ? '' : esc('DCHOST_CONTAINER_USER is empty, so a container runs as whatever user its image declares — root, for most images.')),
+        cfgRow('Logs', c.log_driver === 'none'
+          ? '<span class="badge off">NOT KEPT</span>' : num(c.log_driver),
+          c.log_driver === 'none'
+            ? esc('The panel console shows nothing for servers on this node. DCHOST_LOG_DRIVER=json-file turns it on.')
+            : esc('Rotated at ' + (c.log_max_size || '?') + ' × ' + (c.log_max_files || '?') + ' files.'))
+      ])
+    + cfgSection('Requests the agent accepts', [
+        cfgRow('Rate limits', esc((lim.rate_read_per_min == null ? '?' : lim.rate_read_per_min) + ' read')
+          + esc(' · ' + (lim.rate_write_per_min == null ? '?' : lim.rate_write_per_min) + ' write')
+          + esc(' · ' + (lim.rate_auth_per_min == null ? '?' : lim.rate_auth_per_min) + ' auth'),
+          esc('Per minute, per caller.')),
+        cfgRow('Upload', lim.max_upload_file_mb == null ? '—' : num(lim.max_upload_file_mb) + ' MB per file'),
+        cfgRow('Request body', lim.max_request_body_mb == null ? '—' : num(lim.max_request_body_mb) + ' MB'),
+        cfgRow('File editor', lim.max_text_file_mb == null ? '—' : num(lim.max_text_file_mb) + ' MB',
+          esc('Largest file the panel will open for editing.')),
+        cfgRow('Directory listing', lim.max_directory_entries == null ? '—'
+          : num(lim.max_directory_entries) + ' entries')
+      ])
+    + cfgSection('Installs', [
+        cfgRow('Timeout', ins.timeout_seconds == null ? '—' : num(ins.timeout_seconds) + 's',
+          esc('A dependency install running longer than this is killed and reported as failed.')),
+        cfgRow('Concurrent', num(ins.max_concurrent),
+          esc('Further installs are refused rather than queued while this many are running.'))
+      ])
+    + cfgSection('Runtimes offered', rtRows.length ? rtRows
+        : [cfgRow('Catalog', '<span class="badge off">EMPTY</span>',
+            esc('This node advertises no runtime, so /panel cannot create a server on it.'))])
+    + cfgSection('Agent token', [
+        cfgRow('Length', tok.length == null ? '—'
+          : (tok.weak ? '<span class="badge warn">' + Number(tok.length) + ' CHARS — WEAK</span>'
+                      : num(tok.length) + ' chars'),
+          tok.weak ? esc('Under 32 characters. It grants full control of this host\'s container daemon; rotate NODE_TOKEN there and re-register the node here.')
+                   : esc('The token itself is never sent to this page — the engine holds it encrypted.'))
+      ])
+    + `</div>`;
+}
+
+// Two sources in one table, and the difference between them is the point: the
+// registry says which container was placed here and who owns it, the node says
+// which container is actually there. A row that appears in one and not the other
+// is a real fault, so it is shown as one rather than smoothed over.
+function serverRow(s){
+  const wanted = String(s.desired_state || '').toLowerCase();
+  const live = s.container || null;
+  const status = live ? String(live.status || '').toLowerCase() : '';
+  let actual;
+  if(s.container_missing === true){
+    // The node answered and did not have it. Still occupying a capacity slot.
+    actual = '<span class="badge off">NO CONTAINER ON NODE</span>';
+  } else if(!live){
+    actual = '<span class="muted">— node not reachable</span>';
+  } else if(wanted && status && wanted !== status){
+    actual = '<span class="badge warn">' + esc(status || 'unknown') + '</span>';
+  } else {
+    actual = esc(status || 'unknown');
+  }
+  const install = live && live.install_status && live.install_status !== 'idle'
+    ? ' <span class="badge warn">INSTALL: ' + esc(live.install_status) + '</span>' : '';
+  const owner = s.username
+    ? esc(s.username) + (s.user_id ? ' <span class="log-ip">(' + esc(s.user_id) + ')</span>' : '')
+    : '<span class="badge warn">OWNER ROW MISSING</span>';
+  const alloc = [s.memory_mb == null ? null : Number(s.memory_mb) + ' MB',
+                 s.cpu_percent == null ? null : Number(s.cpu_percent) + '% CPU']
+                .filter(Boolean).join(' · ');
+  return `<tr id="srv-row-${esc(s.id || '')}">
+    <td class="log-admin">${esc(s.name || '(unnamed)')}
+      ${s.placed ? '' : '<span class="badge warn" title="This server has no node recorded against it, so it is counted here only because this is the lowest-numbered node. Registering another node does not move it, but the node it is counted against can change.">UNPLACED</span>'}
+      <div class="log-ip" style="word-break:break-all">${esc(s.id || '')}</div></td>
+    <td>${owner}</td>
+    <td class="log-ip">${esc(s.runtime || '—')}${s.version ? ' ' + esc(s.version) : ''}
+      ${alloc ? '<div class="muted">' + esc(alloc) + '</div>' : ''}</td>
+    <td class="log-ip">${esc(wanted || '—')}</td>
+    <td class="log-ip">${actual}${install}</td>
+    <td class="log-ip">${esc(fmtDate(s.created_at))}</td>
+    <td class="log-ip">
+      <button class="btn-sm" style="color:var(--red);border:1px solid var(--red);background:rgba(239,68,68,.08)" onclick="deleteServer('${esc(s.id || '')}')" title="Delete this server from node and DB">Delete</button>
+    </td>
+  </tr>`;
+}
+
+function renderServers(id, d){
+  const box = $('#srv-' + id);
+  if(!box) return;
+  if(!d || !d.ok){
+    box.innerHTML = '<div class="empty" style="margin:0">'
+      + esc((d && d.error) || 'Could not read the servers on this node.') + '</div>';
+    return;
+  }
+  const servers = Array.isArray(d.servers) ? d.servers : [];
+  const users = Array.isArray(d.users) ? d.users : [];
+  const orphans = Array.isArray(d.orphan_container_ids) ? d.orphan_container_ids : [];
+  // Same idiom as the config panel's warnings: an amber card, one badge, one
+  // sentence saying what to do about it.
+  const warn = (label, body) => `<div class="card" style="border-color:var(--amber);margin:0 0 12px">
+    <p style="font-size:13px;color:var(--muted);margin:0"><span class="badge warn">${esc(label)}</span> ${body}</p></div>`;
+  let html = '';
+
+  if(d.schema_note){
+    html += warn('NO HOSTING SCHEMA', esc(d.schema_note));
+  }
+  if(d.live_error){
+    // The rows below are still true — they are the registry's. What is missing is
+    // only the confirmation that a container is actually behind each one.
+    html += warn('NODE DID NOT ANSWER', esc(d.live_error)
+      + ' The servers below are the ones the registry has placed on this node; whether a container is really running for each could not be checked.');
+  }
+  if(orphans.length){
+    html += warn(orphans.length + ' CONTAINER' + (orphans.length===1?'':'S') + ' WITH NO SERVER ROW',
+      'These are on the node but nothing in the database owns them, so nobody can see or delete them from /panel and nothing will ever reclaim their memory:'
+      + '<br><span style="word-break:break-all">' + orphans.map(esc).join('<br>') + '</span>');
+  }
+
+  const missing = servers.filter(s => s.container_missing === true).length;
+  if(missing){
+    html += warn(missing + ' SERVER ROW' + (missing===1?'':'S') + ' WITH NO CONTAINER',
+      'The node has no container for these, so they cannot start — but each one still counts against this node\'s capacity.');
+  }
+
+  const roster = users.length
+    ? users.map(u => (u.username ? esc(u.username) : esc(u.user_id || '—'))
+        + ' <span class="muted">(' + Number(u.servers) + ')</span>').join(' · ')
+    : '<span class="muted">nobody</span>';
+  html += '<p class="note" style="text-align:left;margin:0 0 10px">'
+    + Number(d.total || 0) + ' server' + (Number(d.total||0)===1?'':'s') + ' · '
+    + users.length + ' user' + (users.length===1?'':'s') + ' · agent '
+    + (d.agent_reachable ? 'reachable' : 'not reachable')
+    + '<br><strong>Users on this node:</strong> ' + roster + '</p>';
+
+  if(!servers.length){
+    html += '<div class="empty" style="margin:0">No server is placed on this node.</div>';
+    box.innerHTML = html;
+    return;
+  }
+  html += `<table class="log-table">
+    <thead><tr>
+      <th scope="col">Server</th>
+      <th scope="col">Owner</th>
+      <th scope="col">Runtime</th>
+      <th scope="col">Wanted</th>
+      <th scope="col">On the node</th>
+      <th scope="col">Created</th>
+      <th scope="col">Action</th>
+    </tr></thead>
+    <tbody>${servers.map(serverRow).join('')}</tbody>
+  </table>`;
+  if(d.truncated){
+    html += '<p class="note" style="text-align:left;margin:8px 0 0">Only the newest '
+      + servers.length + ' servers are listed — this node holds more.</p>';
+  }
+  box.innerHTML = html;
+}
+
+async function toggleServers(id){
+  const row = $('#srvrow-' + id), box = $('#srv-' + id), btn = $('#srvbtn-' + id);
+  if(!row || !box) return;
+  if(!row.hidden){
+    row.hidden = true;
+    if(btn){ btn.setAttribute('aria-expanded', 'false'); btn.textContent = 'Servers'; }
+    return;
+  }
+  row.hidden = false;
+  if(btn){ btn.setAttribute('aria-expanded', 'true'); btn.textContent = 'Hide'; }
+  box.innerHTML = '<div class="empty" style="margin:0">Reading the registry and asking the node…</div>';
+  try {
+    const r = await fetch('/api/admin/nodes/' + id + '/servers', {headers:{'Content-Type':'application/json'}});
+    const d = await r.json();
+    renderServers(id, d);
+  } catch(e) {
+    renderServers(id, {ok:false, error:'Request failed'});
+  }
+}
+
+async function deleteServer(serverId){
+  if(!confirm('Delete server ' + serverId + '? This removes the container from the node AND deletes the DB row.')) return;
+  try {
+    const r = await fetch('/api/admin/servers/' + encodeURIComponent(serverId), {
+      method: 'DELETE',
+      headers: {'Content-Type': 'application/json'}
+    });
+    const d = await r.json();
+    if(d.ok){
+      const tr = document.getElementById('srv-row-' + serverId);
+      if(tr) tr.remove();
+    } else {
+      alert('Delete failed: ' + (d.errors ? d.errors.join(', ') : (d.error || 'unknown error')));
+    }
+  } catch(e) {
+    alert('Request failed: ' + e.message);
+  }
+}
+
+async function toggleConfig(id){
+  const row = $('#cfgrow-' + id), box = $('#cfg-' + id), btn = $('#cfgbtn-' + id);
+  if(!row || !box) return;
+  if(!row.hidden){
+    row.hidden = true;
+    if(btn){ btn.setAttribute('aria-expanded', 'false'); btn.textContent = 'Config'; }
+    return;
+  }
+  row.hidden = false;
+  if(btn){ btn.setAttribute('aria-expanded', 'true'); btn.textContent = 'Hide'; }
+  box.innerHTML = '<div class="empty" style="margin:0">Asking the node…</div>';
+  try {
+    const r = await fetch('/api/admin/nodes/' + id + '/config', {headers:{'Content-Type':'application/json'}});
+    const d = await r.json();
+    renderConfig(id, d);
+  } catch(e) {
+    renderConfig(id, {ok:false, error:'Request failed'});
+  }
+}
+
+async function loadNodes(){
+  const el = $('#node-content');
+  el.innerHTML = '<div class="empty">Loading…</div>';
+  const sum = $('#node-summary');
+  try {
+    const r = await fetch('/api/admin/nodes', {headers:{'Content-Type':'application/json'}});
+    const d = await r.json();
+    if(d && d.cleartext_token_warning) WARNING_TEXT = d.cleartext_token_warning;
+    if(!d || !d.ok || !Array.isArray(d.nodes)){
+      // The engine runs on the fleet's host, so "unavailable" is the ordinary
+      // case on an operator's machine — reported as a fact, not as a page crash.
+      el.innerHTML = '<div class="empty">' + esc((d && d.error) || 'No engine responded — the node registry lives behind it.') + '</div>';
+      if(sum) sum.textContent = '';
+      renderTransportBanner([]);
+      return;
+    }
+    renderTransportBanner(d.nodes);
+    // Rebuilding the table drops any open config panel with it, so the lookup it
+    // reads from is refilled here rather than merged into: a node deleted since
+    // the last load must not leave a stale row behind for a panel to compare to.
+    NODES = {};
+    d.nodes.forEach(n => { if(n && n.id != null) NODES[Number(n.id)] = n; });
+    if(d.nodes.length === 0){
+      el.innerHTML = '<div class="empty">No nodes registered. /panel cannot place a container until one exists.</div>';
+      if(sum) sum.textContent = '';
+      return;
+    }
+    const used = d.nodes.reduce((a, n) => a + Number(n.servers || 0), 0);
+    const cap = d.nodes.reduce((a, n) => a + Number(n.capacity || 0), 0);
+    const open = d.nodes.filter(n => n.enabled && Number(n.capacity || 0) > Number(n.servers || 0)).length;
+    if(sum) sum.textContent = d.nodes.length + ' node' + (d.nodes.length===1?'':'s')
+      + ' · ' + used + '/' + cap + ' containers · ' + open + ' accepting new servers';
+    el.innerHTML = `<table class="log-table">
+      <thead><tr>
+        <th scope="col">Node</th>
+        <th scope="col">Base URL</th>
+        <th scope="col">In use</th>
+        <th scope="col">Placement</th>
+        <th scope="col">Registered</th>
+        <th scope="col">Actions</th>
+      </tr></thead>
+      <tbody>${d.nodes.map(nodeRow).join('')}</tbody>
+    </table>
+    <p class="note" style="text-align:left;margin:10px 0 0">A server row with no node recorded counts against the lowest-numbered node, which is why node #1 can show containers it was never explicitly given.</p>`;
+  } catch(e) {
+    el.innerHTML = '<div class="empty">Error loading nodes</div>';
+    if(sum) sum.textContent = '';
+  }
+}
+
+async function saveCapacity(nodeId){
+  const box = $('#cap-' + nodeId);
+  const raw = box ? String(box.value).trim() : '';
+  // Sent as typed rather than parsed here: the API rejects a bad number with the
+  // reason, and parseInt would turn "abc" into a silent 0 that closes the node.
+  if(raw === ''){ toast('Capacity is required — 0 stops new servers landing here', true); return; }
+  try {
+    const r = await fetch('/api/admin/nodes/' + nodeId + '/capacity', {
+      method:'PUT', headers:{'Content-Type':'application/json'}, body: JSON.stringify({capacity: raw})
+    });
+    const d = await r.json();
+    if(d && d.ok) toast(d.capacity === 0 ? 'Capacity 0 — no new servers will land on this node'
+                                         : 'Capacity set to ' + d.capacity);
+    else toast((d && d.error) || 'Could not update capacity', true);
+  } catch(e) { toast('Request failed', true); }
+  loadNodes();
+}
+
+function startEditUrl(nodeId){
+  const display = $('#url-display-' + nodeId);
+  const edit = $('#url-edit-' + nodeId);
+  const input = $('#url-input-' + nodeId);
+  if(display) display.style.display = 'none';
+  if(edit) edit.hidden = false;
+  if(input) input.focus();
+}
+
+function cancelEditUrl(nodeId){
+  const display = $('#url-display-' + nodeId);
+  const edit = $('#url-edit-' + nodeId);
+  if(display) display.style.display = '';
+  if(edit) edit.hidden = true;
+}
+
+async function saveUrl(nodeId){
+  const input = $('#url-input-' + nodeId);
+  // A list typed with spaces after its commas is the same list, so it is tidied
+  // rather than refused. Nothing else about the text is touched.
+  const raw = input ? joinNodeUrls(splitNodeUrls(input.value)) : '';
+  if(raw === ''){ toast('URL is required', true); return; }
+  try {
+    const r = await fetch('/api/admin/nodes/' + nodeId + '/url', {
+      method:'PUT', headers:{'Content-Type':'application/json'}, body: JSON.stringify({url: raw})
+    });
+    const d = await r.json();
+    if(d && d.ok){
+      toast('URL updated');
+      if(d.warning) toast(d.warning, true);
+    } else {
+      toast((d && d.error) || 'Could not update URL', true);
+    }
+  } catch(e) { toast('Request failed', true); }
+  loadNodes();
+}
+
+async function setEnabled(nodeId, enabled){
+  if(!enabled && !confirm('Disable node #' + nodeId + '?\n\nIts containers keep running — the node just stops receiving new ones.')) return;
+  try {
+    const r = await fetch('/api/admin/nodes/' + nodeId + '/enabled', {
+      method:'PUT', headers:{'Content-Type':'application/json'}, body: JSON.stringify({enabled: !!enabled})
+    });
+    const d = await r.json();
+    if(d && d.ok) toast(enabled ? 'Node enabled' : 'Node disabled');
+    else toast((d && d.error) || 'Could not update the node', true);
+  } catch(e) { toast('Request failed', true); }
+  loadNodes();
+}
+
+async function deleteNode(nodeId){
+  if(!confirm('Delete node #' + nodeId + '?\n\nOnly a node with no containers can be deleted — servers are never migrated. Set its capacity to 0 instead to retire one that is still in use.')) return;
+  try {
+    const r = await fetch('/api/admin/nodes/' + nodeId, {
+      method:'DELETE', headers:{'Content-Type':'application/json'}
+    });
+    const d = await r.json();
+    if(d && d.ok) toast('Node deleted');
+    else toast((d && d.error) || 'Delete failed', true);
+  } catch(e) { toast('Request failed', true); }
+  loadNodes();
+}
+
+async function createNode(ev){
+  ev.preventDefault();
+  const res = $('#create-result');
+  // Every field is sent as typed and validated server-side, so one set of rules
+  // decides — a number coerced in the page would be a second, quieter one. The
+  // url is the one exception, and only by assembly: the two address boxes are one
+  // node's two addresses, so they are joined into the single url the registry
+  // stores, with the chosen scheme filled in where one was not typed. Neither
+  // address is otherwise rewritten and neither is checked here.
+  const scheme = $('#f-scheme') ? $('#f-scheme').value : 'https';
+  const body = {
+    name: $('#f-name').value,
+    url: joinNodeUrls([withScheme($('#f-url').value, scheme),
+                       withScheme($('#f-url2').value, scheme)]),
+    token: $('#f-token').value,
+    capacity: $('#f-capacity').value
+  };
+  if(res) res.textContent = 'Registering…';
+  try {
+    const r = await fetch('/api/admin/nodes', {
+      method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body)
+    });
+    const d = await r.json();
+    if(d && d.ok){
+      // Never keep a typed token in the DOM once it is stored.
+      $('#f-token').value = '';
+      $('#f-name').value = '';
+      $('#f-url').value = '';
+      $('#f-url2').value = '';
+      $('#f-capacity').value = '';
+      if(d.warning){
+        // The one condition worth interrupting for: the token this operator just
+        // typed will cross the network in the clear on every control call.
+        if(res) res.innerHTML = '<span class="badge warn">TOKEN IN CLEARTEXT</span> Node #'
+          + Number(d.node_id) + ' registered — ' + esc(d.warning);
+        toast('Node registered — its token travels unencrypted', true);
+      } else {
+        if(res) res.textContent = 'Node #' + Number(d.node_id) + ' registered.';
+        toast('Node registered');
+      }
+      loadNodes();
+    } else {
+      if(res) res.textContent = (d && d.error) || 'Could not register the node';
+      toast((d && d.error) || 'Could not register the node', true);
+    }
+  } catch(e) {
+    if(res) res.textContent = 'Request failed: ' + e.message;
+    toast('Request failed', true);
+  }
+}
+
+$('#node-form').addEventListener('submit', createNode);
+loadNodes();
+
+// ── pending container deletions ────────────────────────────────────────────
+// A queued server_id comes from HeatWave and is normally a UUID, but it is
+// treated as untrusted text anyway: it is rendered escaped, carried on the
+// button as a data attribute (never an inline onclick string), and the server
+// re-reads the row from HeatWave before anything is deleted.
+function pendingRow(p){
+  const node = p.node_name
+    ? esc(p.node_name) + ' <span class="log-ip">(#' + esc(p.node_id) + ')</span>'
+    : (p.node_id ? '<span class="log-ip">#' + esc(p.node_id) + '</span>'
+                 : '<span class="muted">node unknown</span>');
+  const ips = splitNodeUrls(p.node_ip).map(esc).join('<br>');
+  return `<tr>
+    <td class="log-ip" style="word-break:break-all">${esc(p.server_id)}</td>
+    <td>${node}</td>
+    <td class="log-ip" style="word-break:break-all">${ips || '<span class="muted">—</span>'}</td>
+    <td class="log-ip">${esc(fmtDate(p.requested_at))}${p.purge ? '' : ' <span class="muted">(data kept)</span>'}</td>
+    <td>
+      <button class="btn btn-red btn-sm" data-pending-del="${esc(p.server_id)}">Delete from node</button>
+      <button class="btn btn-ghost btn-sm" data-pending-clear="${esc(p.server_id)}">Remove entry</button>
+    </td>
+  </tr>`;
+}
+
+async function loadPending(){
+  const box = $('#pending-content'); if(!box) return;
+  try {
+    const r = await fetch('/api/admin/pending-deletions', {headers:{'Content-Type':'application/json'}});
+    const d = await r.json();
+    if(!d || !d.ok || !Array.isArray(d.pending)){
+      box.innerHTML = '<div class="empty">' + esc((d && d.error) || 'Could not read the pending-deletion queue.') + '</div>';
+      return;
+    }
+    if(d.pending.length === 0){
+      box.innerHTML = '<div class="empty" style="margin:0">No containers are waiting for a manual delete.</div>';
+      return;
+    }
+    box.innerHTML = `<table class="log-table">
+      <thead><tr>
+        <th scope="col">Container</th>
+        <th scope="col">Node</th>
+        <th scope="col">Node address</th>
+        <th scope="col">Queued</th>
+        <th scope="col">Actions</th>
+      </tr></thead>
+      <tbody>${d.pending.map(pendingRow).join('')}</tbody>
+    </table>
+  } catch(e) {
+    box.innerHTML = '<div class="empty">Error loading pending deletions</div>';
+  }
+}
+
+async function deletePending(serverId){
+  if(!confirm('Remove this container from its node?\n\n' + serverId + '\n\nThe container AND its data directory on that node are deleted. This is the confirmation the queue exists for.')) return;
+  try {
+    const r = await fetch('/api/admin/pending-deletions/' + encodeURIComponent(serverId) + '/delete', {
+      method:'POST', headers:{'Content-Type':'application/json'}
+    });
+    const d = await r.json();
+    if(d && d.ok) toast(d.already_gone ? 'Container was already gone — entry cleared' : 'Container deleted from the node');
+    else toast((d && d.error) || 'Delete failed', true);
+  } catch(e) { toast('Request failed', true); }
+  loadPending();
+}
+
+async function clearPending(serverId){
+  if(!confirm('Clear this queue entry without touching the node?\n\n' + serverId + '\n\nUse this only when the container was already removed by hand on the host — the entry is dropped and no node is contacted.')) return;
+  try {
+    const r = await fetch('/api/admin/pending-deletions/' + encodeURIComponent(serverId) + '/clear', {
+      method:'POST', headers:{'Content-Type':'application/json'}
+    });
+    const d = await r.json();
+    if(d && d.ok) toast('Entry removed');
+    else toast((d && d.error) || 'Could not remove the entry', true);
+  } catch(e) { toast('Request failed', true); }
+  loadPending();
+}
+
+// Delegation instead of inline handlers, so a server_id can never be executed
+// as script however it is spelled in HeatWave.
+document.addEventListener('click', ev => {
+  const del = ev.target.closest('[data-pending-del]');
+  if(del){ deletePending(del.getAttribute('data-pending-del')); return; }
+  const clr = ev.target.closest('[data-pending-clear]');
+  if(clr){ clearPending(clr.getAttribute('data-pending-clear')); }
+});
+loadPending();
+</script>
+</body>
+</html>

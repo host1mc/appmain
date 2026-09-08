@@ -1,0 +1,41 @@
+﻿# Repository-wide ignores.
+#
+# app/.gitignore covers the app tier from inside app/, but its `admin_console/.env`
+# line predates the rename to `admin/` — and being scoped to app/, it could never
+# have matched a sibling directory anyway. This file is what covers the admin
+# tier, which is the tier whose .env currently carries the live Fernet key.
+
+__pycache__/
+*.py[cod]
+
+# Runtime state. data/ holds secret.key, internal.key and flask_key.key in every
+# tier; those three decrypt every bot token and every encrypted settings value in
+# the shared database. No leading slash, so this matches at any depth — app/data/,
+# admin/data/, and any copy an operator parks somewhere else.
+data/
+
+# Real .env files carry ENCRYPTION_KEY, the ATP password and INTERNAL_TOKEN. Only
+# the committed templates are safe, so the negation has to come after the pattern
+# that would otherwise swallow it.
+.env
+.env.*
+!.env.example
+
+# Backups rotate_key.py writes next to each .env before rewriting it. Each one
+# holds the *previous* key, which still decrypts every value not yet re-encrypted
+# — the same liability as the key itself, just with a timestamp on it.
+*.bak-*
+
+# Oracle wallet and any loose key material: credentials, same rule as data/.
+Wallet_ATP/
+wallet/
+*.pem
+*.p12
+*.pfx
+*.key
+
+# Operator backups taken before large changes contain copies of data/.
+full backup done/
+
+# Local-only editor and agent scratch state.
+.claude/

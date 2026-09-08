@@ -1,0 +1,622 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>User Details — Admin</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body data-guard="off">
+  <div class="nav">
+    <div class="brand"><a href="{{ url_for('admin_panel') }}"><span class="dot"></span> MC Status Hosting</a> <span class="pill">Admin</span></div>
+    <div class="links">
+      <a href="{{ url_for('admin_panel') }}">Panel</a>
+      <a href="/admin/bots">Fleet</a>
+      <a href="{{ url_for('admin_panel_controls') }}">Hosting</a>
+      <a href="/admin/nodes">Nodes</a>
+      <a href="{{ url_for('admin_flags') }}">Flags</a> <a href="{{ url_for('admin_errors') }}">Errors</a>
+      <a href="{{ url_for('admin_reviews') }}">Reviews</a>
+      <a href="/admin/ads">Ads</a>
+      <a href="{{ url_for('admin_database') }}">Database</a>
+      <a href="/admin/account">Account</a>
+    </div>
+  </div>
+
+  <div class="container">
+    <a href="{{ url_for('admin_panel') }}" class="btn btn-ghost btn-sm" style="margin-bottom:16px">&larr; Back to Panel</a>
+    <div id="user-detail-root">
+      <div class="empty">Loading user details…</div>
+    </div>
+  </div>
+
+  <div class="toast" id="toast"></div>
+
+<script>
+const $ = s => document.querySelector(s);
+const API = '/api/admin/users/';
+const USER_ID = '{{ user_id }}';
+
+async function selectUserDetail(){
+  const root = $('#user-detail-root');
+  if(!root) return;
+  try {
+    const [uRes, sessRes, netRes] = await Promise.all([
+      api(API + USER_ID),
+      api('/api/admin/sessions?user_id=' + USER_ID),
+      // /api/admin/users/<id> carries no IP-neighbour list; flag-context resolves
+      // this account's IP itself and returns every other account seen on it.
+      api('/api/admin/flag-context?user_id=' + encodeURIComponent(USER_ID))
+    ]);
+    if(!uRes || !uRes.ok) { root.innerHTML = '<div class="empty">Failed to load user</div>'; return; }
+    const u = uRes.user, bots = uRes.bots || [], fp = uRes.fingerprint || {};
+    const shared = uRes.shared_accounts || [], flags = uRes.flags || [];
+    const fpHistory = Array.isArray(uRes.fingerprint_history) ? uRes.fingerprint_history : [];
+    const sessions = (sessRes && sessRes.ok) ? (sessRes.sessions || []) : [];
+    const netOk = !!(netRes && netRes.ok);
+    const ipAccounts = netOk && Array.isArray(netRes.ip_accounts)
+      ? netRes.ip_accounts.filter(a => String(a.id) !== String(USER_ID)) : [];
+    const netIp = netOk && typeof netRes.ip_address === 'string' ? netRes.ip_address : '';
+    // the fingerprint row is the freshest server-observed IP; flag-context's own
+    // resolution is the fallback for an account with no bound device
+    const srvIp = (typeof fp.ip_address === 'string' && fp.ip_address) ? fp.ip_address : netIp;
+    const sessIps = [];
+    for(const s of sessions){
+      const v = (s && typeof s.ip_address === 'string') ? s.ip_address : '';
+      if(v && sessIps.indexOf(v) === -1) sessIps.push(v);
+    }
+    const acct = u.account_type || 'trial';
+    const trialExpired = u.trial_expires_at && new Date(u.trial_expires_at) < new Date();
+    const banned = u.is_banned ? true : false;
+
+    let slotsHtml = '';
+    for(let i=0;i<(u.slots||1);i++){
+      const bot = bots.find(b => b.slot_index === i);
+      if(bot){
+        const r = bot.running;
+        slotsHtml += `<div class="bot-slot">
+          <div style="display:flex;justify-content:space-between;align-items:center;width:100%;gap:8px;flex-wrap:wrap">
+            <div><strong>${esc(bot.name)}</strong> <span class="badge ${r?'on':'off'}">${r?'RUNNING':'STOPPED'}</span></div>
+            <div style="display:flex;gap:6px;flex-wrap:wrap">
+              ${r?`<button class="btn btn-red btn-sm" onclick="botAction('${jsArg(bot.id)}','stop')">Stop</button>`
+                 :`<button class="btn btn-green btn-sm" onclick="botAction('${jsArg(bot.id)}','start')" ${bot.server_ip&&bot.channel_id?'':'disabled title="not configured"'}>Start</button>`}
+              <button class="btn btn-ghost btn-sm" id="cfg-btn-${i}" aria-expanded="false" aria-controls="cfg-slot-${i}"
+                      aria-label="Edit configuration for the bot in slot ${i+1}" onclick="toggleBotConfig('${jsArg(bot.id)}',${i})">Edit config</button>
+              <button class="btn btn-ghost btn-sm" aria-label="Delete the bot in slot ${i+1} — destructive and permanent"
+                      onclick="deleteBot('${jsArg(bot.id)}')">Delete</button>
+            </div>
+          </div>
+          <div style="font-size:13px;color:var(--muted);margin-top:6px;width:100%">${bot.server_ip?esc(bot.server_ip)+':'+esc(bot.server_port||25565):'not configured'} &middot; Token: ${esc(bot.token_masked||'not set')} &middot; Guild: ${esc(bot.guild_id||'—')} &middot; Channel: ${esc(bot.channel_id||'—')}</div>
+          <div class="bot-cfg" id="cfg-slot-${i}" hidden></div>
+        </div>`;
+      }
+      else{slotsHtml+=`<div class="bot-slot empty-slot"><span style="color:var(--muted)">Slot #${i+1} — empty</span></div>`;}
+    }
+
+    const runningBots = bots.filter(b=>b.running).length;
+    const totalBots = bots.length;
+
+    // The hosting container grant, which is a different thing from u.slots above:
+    // that counts Minecraft status bots, this counts /panel containers. null is
+    // "no grant" and is rendered as the fleet default rather than as 0, because 0
+    // is a decision (hosting off) and null is the absence of one.
+    const cSlots = (uRes.container_slots === null || uRes.container_slots === undefined)
+      ? null : Number(uRes.container_slots);
+    const cDefault = Number(uRes.container_slots_default != null ? uRes.container_slots_default : 1);
+    const cHigh = Number(uRes.container_slots_high != null ? uRes.container_slots_high : 1000);
+    const cInForce = cSlots === null ? cDefault : cSlots;
+
+    root.innerHTML = `
+    <div class="panel-grid">
+      <div>
+        <div class="card"><h2>User Info</h2>
+          <div class="kv"><span class="k">Display Name</span><span class="v">${esc(u.display_name||'—')}</span></div>
+          <div class="kv"><span class="k">Username</span><span class="v">@${esc(u.username)}</span></div>
+          <div class="kv"><span class="k">User ID</span><span class="v" style="font-family:monospace;font-size:12px">${esc(u.uid)}</span></div>
+          <div class="kv"><span class="k">Email</span><span class="v">${esc(u.email||'—')} ${u.email_verified?'<span class="badge on">Verified</span>':'<span class="badge off">Unverified</span>'}</span></div>
+          <div class="kv"><span class="k">Email verified</span><span class="v">
+            <label class="toggle-wrap" title="${u.email_verified?'Mark this address unverified':'Mark this address verified'}">
+              <input type="checkbox" id="ev-toggle" ${u.email_verified?'checked':''}
+                     aria-label="Email verified for this account"
+                     onchange="setEmailVerified(this.checked)">
+              <span class="toggle-slider"></span><span class="toggle-knob"></span>
+            </label></span></div>
+          <div class="kv"><span class="k">Account Type</span><span class="v"><span class="badge ${acct==='paid'?'on':'off'}">${esc(String(acct).toUpperCase())}</span> ${acct==='trial'&&u.trial_expires_at?'(expires '+esc(fmtDate(u.trial_expires_at))+')':''} ${trialExpired?'<span class="badge off">EXPIRED</span>':''}</span></div>
+          <div class="kv"><span class="k">Status</span><span class="v">${banned?'<span class="badge off" style="background:rgba(239,68,68,.12);color:var(--red)">BANNED</span>':'<span class="badge on" style="background:rgba(34,197,94,.12);color:var(--green)">Active</span>'}</span></div>
+          <div class="kv"><span class="k">Created At</span><span class="v">${esc(fmtDate(u.created_at))}</span></div>
+          <div class="kv"><span class="k">Last Login</span><span class="v">${esc(fmtDate(u.last_login))}</span></div>
+          <hr class="sep">
+          <div style="display:flex;gap:8px;flex-wrap:wrap">
+            ${acct==='trial'?'<button class="btn btn-green btn-sm" onclick="setAccountType(\'paid\')">Upgrade to Paid</button>':'<button class="btn btn-ghost btn-sm" onclick="setAccountType(\'trial\')">Downgrade to Trial</button>'}
+            ${banned?'<button class="btn btn-green btn-sm" onclick="unbanUser()">Unban User</button>':'<button class="btn btn-red btn-sm" aria-label="Ban this user — destructive, locks them out immediately" onclick="banUser()">Ban User</button>'}
+            <button class="btn btn-green btn-sm" onclick="loginAsUser()">Login As User</button>
+            <button class="btn btn-ghost btn-sm" onclick="extendTrial()">Extend Trial (7d)</button>
+          </div>
+          <hr class="sep">
+          <h2 style="font-size:15px">Set New Password</h2>
+          <div class="field"><label for="rp-pass">New password</label>
+            <input id="rp-pass" type="password" autocomplete="new-password" placeholder="at least 6 characters"></div>
+          <button class="btn btn-red btn-sm" onclick="resetPassword()"
+                  aria-label="Set a new password for this user — destructive, signs them out on every device">Set Password</button>
+          <p class="note" style="text-align:left">Replaces the password without needing the old one and signs this user out everywhere — every active session is revoked.</p>
+          <hr class="sep">
+          <div class="row-actions">
+            <button class="btn btn-ghost btn-sm" onclick="resetFingerprint()" ${fp.registered?'':'disabled title="No fingerprint"'}>Reset Fingerprint</button>
+            <button class="btn btn-red btn-sm" aria-label="Delete this user and all their bots — destructive and permanent" onclick="deleteUser()">Delete User</button>
+          </div>
+        </div>
+        <div class="card"><h2>Fingerprint</h2>
+          <div class="kv"><span class="k">Registered</span><span class="v">${fp.registered?'<span class="badge on">Yes</span>':'<span class="badge off">No</span>'}</span></div>
+          <div class="kv"><span class="k">Hash</span><span class="v" style="font-family:monospace;font-size:12px;word-break:break-all">${esc(fp.hash||'—')}</span></div>
+          <div class="kv"><span class="k">Device Info</span><span class="v">${esc(fp.device_info?(fp.device_info.userAgent||JSON.stringify(fp.device_info).substring(0,140)):'—')}</span></div>
+          <div class="kv"><span class="k">Tamper / Automation</span><span class="v">${tamperBadge(fp.device_info)}</span></div>
+          ${tamperDetail(fp.device_info)}
+          <div class="kv"><span class="k" title="fingerprints.ip_address is rewritten every time this device logs in again — it is the newest IP, not the one used at signup">Last Seen IP</span><span class="v">${userIpCell(fp.device_info, fp.ip_address)}</span></div>
+          <div class="kv"><span class="k">Registered At</span><span class="v">${fp.created_at?esc(fmtDate(fp.created_at)):'—'}</span></div>
+          <hr class="sep">
+          <div class="kv"><span class="k">Other accounts on this device</span><span class="v">${shared.length}</span></div>
+          ${shared.length?shared.map(s=>`<div style="display:flex;justify-content:space-between;align-items:center;padding:8px 10px;border:1px solid var(--line);border-radius:8px;margin-bottom:6px;font-size:13px">
+              <div><a href="/admin/user/${encodeURIComponent(s.id)}">@${esc(s.username)}</a> <span class="badge ${s.account_type==='paid'?'on':'off'}" style="font-size:10px">${esc(String(s.account_type||'trial').toUpperCase())}</span>${s.is_banned?' <span class="badge off">BANNED</span>':''}</div>
+              <span style="color:var(--muted);font-size:11px">${esc(fmtDate(s.bound_at))}</span>
+            </div>`).join(''):''}
+          ${fp.lookup_hash?`<button class="btn btn-ghost btn-sm" onclick="copyLookup('${jsArg(fp.lookup_hash)}')">Copy device key</button>`:''}
+          <a class="btn btn-blurple btn-sm" href="/admin/fingerprint/${encodeURIComponent(u.uid)}">Full Details</a>
+        </div>
+        <div class="card"><h2>Device Flags (${flags.length})</h2>
+          ${flags.length===0?'<div class="empty" style="padding:12px">No flagged device activity.</div>'
+          :flags.map(f=>`<div style="padding:10px 12px;border:1px solid var(--line);border-radius:8px;margin-bottom:6px;font-size:13px">
+              <div style="display:flex;justify-content:space-between;gap:8px">
+                <strong>${esc(String(f.event_type||'').replace(/_/g,' '))}</strong>
+                <span style="white-space:nowrap">
+                  <span class="badge ${f.reviewed?'on':'warn'}">${f.reviewed?'REVIEWED':'NEW'}</span>
+                  <span class="badge ${f.blocked?'off':'on'}">${f.blocked?'BLOCKED':'ALLOWED'}</span>${tamperMark(f.device_info)}${webrtcMark(f.device_info, f.ip_address)}
+                </span>
+              </div>
+              <div style="color:var(--muted);font-size:11px;margin-top:4px">${esc(fmtDate(f.created_at))} &middot; ${userIpCell(f.device_info, f.ip_address)} &middot; ${f.fingerprint?esc(String(f.fingerprint).substring(0,16))+'…':'no fingerprint'}</div>
+              ${flagDetails(f.details)}
+              <div style="margin-top:6px"><button class="btn btn-red btn-sm" onclick="deleteFlag(${f.id})" aria-label="Delete this flag permanently">Delete</button></div>
+            </div>`).join('')}
+          ${flags.length>0?`<button class="btn btn-red btn-sm" onclick="deleteAllFlags()" aria-label="Delete every flag for this user — they can be re-recorded on next suspicious activity">Delete all flags</button>`:''}
+          <a class="btn btn-ghost btn-sm" href="/admin/flags">Flags</a>
+        </div>
+      </div>
+      <div>
+        <div class="card"><h2>Network / IP${webrtcMark(fp.device_info, srvIp)}</h2>
+          <div class="kv"><span class="k" title="The address the request actually arrived from — fingerprints.ip_address, rewritten on every login">Server-observed IP</span><span class="v">${ipCell(srvIp)}</span></div>
+          <div class="kv"><span class="k" title="The browser's own public address (WebRTC/STUN) — shown as the user IP when the server-observed address is loopback or private, e.g. local testing or a proxy hop count mismatch">User IP</span><span class="v">${userIpCell(fp.device_info, srvIp)}</span></div>
+          <div class="kv"><span class="k" title="IPs the browser volunteered over WebRTC — they disagree with the server-observed one behind a proxy or VPN">Browser IPs (WebRTC)</span><span class="v">${webrtcBadge(fp.device_info, srvIp)}</span></div>
+          ${webrtcDetail(fp.device_info, srvIp)}
+          <hr class="sep">
+          <div class="kv"><span class="k">Active session IPs</span><span class="v">${sessIps.length} distinct / ${sessions.length} session${sessions.length===1?'':'s'}</span></div>
+          ${sessions.length===0 ? '<div class="empty" style="padding:12px">No active sessions</div>'
+          : sessions.map(s => `
+            <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;padding:8px 10px;border:1px solid var(--line);border-radius:8px;margin-bottom:6px;font-size:13px">
+              <span>${userIpCell(fp.device_info, s.ip_address)}${(typeof s.ip_address === 'string' && s.ip_address && srvIp && s.ip_address !== srvIp) ? ' <span class="badge warn" style="font-size:10px" title="This session came from a different IP than the last device login">OTHER IP</span>' : ''}</span>
+              <span style="color:var(--muted);font-size:11px;text-align:right">last seen ${esc(fmtDate(s.last_access))}<br>started ${esc(fmtDate(s.created_at))}</span>
+            </div>`).join('')}
+          <hr class="sep">
+          <div class="kv"><span class="k" title="Every other account whose bound device was last seen on this same IP">Other accounts on this IP</span><span class="v">${netOk ? ipAccounts.length : '—'}</span></div>
+          ${!netOk ? '<div style="color:var(--muted);font-size:11px">IP-neighbour lookup unavailable — /api/admin/flag-context did not answer.</div>'
+          : (ipAccounts.length===0 ? '<div style="color:var(--muted);font-size:11px">No other account has been seen on this IP.</div>'
+          : ipAccounts.map(a => `
+            <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;padding:8px 10px;border:1px solid var(--line);border-radius:8px;margin-bottom:6px;font-size:13px">
+              <span><span style="cursor:pointer;text-decoration:underline" title="Open this account" onclick="openUser('${jsArg(a.id)}')">@${esc(a.username)}</span>
+                <span class="badge ${a.account_type==='paid'?'on':'off'}" style="font-size:10px">${esc(String(a.account_type||'trial').toUpperCase())}</span>${a.is_banned?' <span class="badge off">BANNED</span>':''}</span>
+              <span style="color:var(--muted);font-size:11px">${esc(fmtDate(a.created_at))}</span>
+            </div>`).join(''))}
+        </div>
+        <div class="card"><h2>Device History (${fpHistory.length})</h2>
+          <div style="color:var(--muted);font-size:11px;margin-bottom:8px">Every distinct device and address this account has been seen on. A repeat login from the same device and IP does not add a row, so this is the list of changes, not of logins.</div>
+          ${fpHistory.length===0 ? '<div class="empty" style="padding:12px">No history yet — recorded from the next login onward.</div>'
+          : fpHistory.map((h, i) => `
+            <div style="padding:8px 10px;border:1px solid var(--line);border-radius:8px;margin-bottom:6px;font-size:13px">
+              <div style="display:flex;justify-content:space-between;align-items:center;gap:8px">
+                <span>${userIpCell(h.device_info, h.ip_address)}${i===0?' <span class="badge on" style="font-size:10px">CURRENT</span>':''}${(typeof h.hash==='string' && typeof fp.hash==='string' && h.hash && fp.hash && h.hash!==fp.hash)?' <span class="badge warn" style="font-size:10px" title="This sighting used a different fingerprint than the one currently bound">OTHER DEVICE</span>':''}${webrtcMark(h.device_info, h.ip_address)}</div>
+                <span style="color:var(--muted);font-size:11px">${esc(fmtDate(h.created_at))}</span>
+              </div>
+              <div style="color:var(--muted);font-size:11px;margin-top:4px;word-break:break-all">${h.hash?esc(String(h.hash).substring(0,24))+'…':'no fingerprint'}</div>
+              ${webrtcDetail(h.device_info, h.ip_address)}
+            </div>`).join('')}
+        </div>
+        <div class="card"><h2>Trial &amp; Bots</h2>
+          <div class="kv"><span class="k">Account Type</span><span class="v"><span class="badge ${acct==='paid'?'on':'off'}">${esc(String(acct).toUpperCase())}</span></span></div>
+          <div class="kv"><span class="k">Trial Expires</span><span class="v">${u.trial_expires_at?esc(fmtDate(u.trial_expires_at)):'—'}</span></div>
+          <div class="kv"><span class="k">Status</span><span class="v">${trialExpired?'<span class="badge off">EXPIRED</span>':'<span class="badge on">Active</span>'}</span></div>
+          <div class="kv"><span class="k">Bots</span><span class="v">${runningBots} running / ${totalBots} total</span></div>
+          <hr class="sep">
+          <div style="display:flex;gap:8px;flex-wrap:wrap">
+            ${runningBots>0?'<button class="btn btn-red btn-sm" onclick="stopAllBots()">Stop All Bots</button>':'<button class="btn btn-green btn-sm" onclick="startAllBots()">Start All Bots</button>'}
+          </div>
+        </div>
+        <div class="card"><h2>Sessions (${sessions.length})</h2>
+          ${sessions.length===0 ? '<div class="empty" style="padding:12px">No active sessions</div>'
+          : sessions.map(s => `
+            <div style="display:flex;justify-content:space-between;align-items:center;padding:10px 12px;border:1px solid var(--line);border-radius:8px;margin-bottom:6px;font-size:13px">
+              <div><div style="font-weight:600">${userIpCell(fp.device_info, s.ip_address)}</div>
+              <div style="color:var(--muted);font-size:11px">${s.user_agent?esc(String(s.user_agent).substring(0,60)):'—'} &middot; ${esc(fmtDate(s.last_access))}</div></div>
+            </div>`).join('')}
+          ${sessions.length>0?`<button class="btn btn-ghost btn-sm" onclick="revokeSessions()" aria-label="Revoke every active session for this user — destructive, signs them out" style="margin-top:6px">Revoke All Sessions</button>`:''}
+        </div>
+      </div>
+    </div>
+
+    <div class="card"><h2>Hosting Containers</h2>
+      <div class="kv"><span class="k" title="What /panel enforces for this account right now">In force</span><span class="v"><span class="badge ${cInForce>0?'on':'off'}">${cInForce} container${cInForce===1?'':'s'}</span> ${cSlots===null?'<span style="color:var(--muted);font-size:12px">from the fleet default</span>':'<span style="color:var(--muted);font-size:12px">granted to this account</span>'}</span></div>
+      <div class="kv"><span class="k">Fleet default</span><span class="v">${cDefault} <span style="color:var(--muted);font-size:12px">(Hosting page &rarr; Servers per account)</span></span></div>
+      <div style="display:flex;gap:8px;align-items:center;margin:10px 0">
+        <label style="font-size:13px;color:var(--muted)" for="edit-container-slots">Grant:</label>
+        <input id="edit-container-slots" type="number" value="${cSlots===null?'':cSlots}" min="0" max="${cHigh}" placeholder="default"
+               style="width:90px;background:var(--bg2);border:1px solid var(--line);color:var(--txt);padding:6px 10px;border-radius:8px;font-size:14px">
+        <button class="btn btn-ghost btn-sm" onclick="updateContainerSlots()">Update</button>
+        <button class="btn btn-ghost btn-sm" onclick="clearContainerSlots()" ${cSlots===null?'disabled title="No grant to clear"':''}>Use default</button>
+      </div>
+      <p class="note" style="text-align:left">Leave blank for the fleet default, 0 to switch hosting off for this account, or a number for exactly that many containers. Separate from Bot Slots below — changing this never touches their bots, and existing containers above a lowered grant keep running; the account just cannot deploy another.</p>
+    </div>
+
+    <div class="card"><h2>Bot Slots</h2>
+      <div style="display:flex;gap:8px;align-items:center;margin-bottom:10px">
+        <label style="font-size:13px;color:var(--muted)" for="edit-slots">Slots:</label>
+        <input id="edit-slots" type="number" value="${u.slots||1}" min="0" max="20" style="width:70px;background:var(--bg2);border:1px solid var(--line);color:var(--txt);padding:6px 10px;border-radius:8px;font-size:14px">
+        <button class="btn btn-ghost btn-sm" onclick="updateSlots()">Update</button>
+      </div>
+      ${slotsHtml}
+    </div>
+    `;
+  } catch(e) { console.error('selectUserDetail error:', e); root.innerHTML = '<div class="empty">Error loading user details</div>'; }
+}
+
+function api(path, opts){
+  return fetch(path, {headers:{'Content-Type':'application/json'}, ...opts}).then(r=>r.json()).catch(()=>({ok:false}));
+}
+function fmtDate(d){if(!d)return'—';try{return new Date(d).toLocaleString()}catch(e){return d}}
+// Usernames, bot names, server IPs and user agents all come from the database
+// and are attacker-controlled: nothing reaches innerHTML unescaped.
+function esc(s){ return String(s==null?'':s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+// Inside onclick="fn('…')" the HTML entities are decoded before the JS is parsed,
+// so esc() alone still lets a quote break out — escape for JS first, then HTML.
+function jsArg(s){ return esc(String(s==null?'':s).replace(/\\/g,'\\\\').replace(/'/g,"\\'")); }
+function fieldVal(sel){ const el = $(sel); return el ? String(el.value).trim() : ''; }
+
+// ── server-observed IP ─────────────────────────────────────────────────────
+// On some request paths the IP is read out of a proxy header, so it is exactly
+// as attacker-controlled as a username: esc() for the cell text, jsArg() for the
+// onclick argument. Click copies it, the same affordance as the device key.
+function ipCell(ip){
+  const v = (ip == null) ? '' : String(ip);
+  if(!v) return '<span class="log-ip">—</span>';
+  return `<span class="log-ip" style="font-size:13px;color:var(--txt);cursor:pointer" title="Click to copy this IP" onclick="copyIp('${jsArg(v)}')">${esc(v)}</span>`;
+}
+function copyIp(v){try{navigator.clipboard.writeText(v);toast('IP copied — paste it into the Flags filter')}catch(e){toast(v)}}
+// the id goes through jsArg and is re-encoded here, so no attacker string is
+// ever pasted into an href
+function openUser(id){ window.location.href = '/admin/user/' + encodeURIComponent(id); }
+// The user's own IP as far as the panel can see it. The browser reports its
+// public address over WebRTC (device_info), while the server-observed address
+// is where the request physically arrived from. When the observed address is
+// loopback or private (local testing, a tunnel, or a proxy hop count that left
+// remote_addr unrewritten), the observed one is no help for identifying the
+// user — so the browser-reported public IP is shown instead, clearly labelled
+// so nobody mistakes a volunteered address for one the server saw on the wire.
+// Display-only: fingerprints.ip_address and sessions.ip_address are untouched.
+function userIpCell(di, observedIp){
+  const r = webrtcRead(di, observedIp);
+  const reported = (r.stun.length ? r.stun[0] : '') || (r.routable.length ? r.routable[0] : '');
+  const obs = (observedIp == null) ? '' : String(observedIp);
+  if(reported && !isRoutableIp(obs)){
+    return `<span class="log-ip" style="font-size:13px;color:var(--txt);cursor:pointer" title="Browser-reported IP (WebRTC) — the request reached the server via a loopback or private address, so the observed IP is not public. Click to copy" onclick="copyIp('${jsArg(reported)}')">${esc(reported)} <span class="badge warn" style="font-size:9px;vertical-align:middle">REPORTED</span></span>`;
+  }
+  return ipCell(obs);
+}
+
+// ── WebRTC-revealed IPs ────────────────────────────────────────────────────
+// device_info is a blob the browser posted, so the shape is untrusted as well as
+// the values: every key is type-checked before use, and a blob stored before the
+// WebRTC probe shipped reads as "no signal" rather than as a clean result.
+// The collector asks a public STUN server for a reflexive candidate alongside the
+// host ones, so `publicIps` is the address the browser sees itself as, while a LAN
+// address is still the normal host answer. Only a *routable* candidate that the
+// server did not see is the proxy/VPN tell — comparing every candidate would flag
+// every ordinary user on a home router.
+function isRoutableIp(v){
+  const s = String(v);
+  if(s.indexOf(':') !== -1){
+    const h = s.toLowerCase();
+    if(h === '::1' || h === '::') return false;
+    if(h.startsWith('fe80') || h.startsWith('fc') || h.startsWith('fd')) return false;
+    return true;
+  }
+  const p = s.split('.');
+  if(p.length !== 4) return false;
+  const a = Number(p[0]), b = Number(p[1]);
+  if(!Number.isFinite(a) || !Number.isFinite(b)) return false;
+  if(a === 10 || a === 127 || a === 0) return false;
+  if(a === 192 && b === 168) return false;
+  if(a === 172 && b >= 16 && b <= 31) return false;
+  if(a === 169 && b === 254) return false;
+  if(a === 100 && b >= 64 && b <= 127) return false;  // CGNAT
+  return true;
+}
+function webrtcRead(di, serverIp){
+  const d = (di && typeof di === 'object') ? di : {};
+  const w = (d.webrtc && typeof d.webrtc === 'object' && !Array.isArray(d.webrtc)) ? d.webrtc : null;
+  const out = {state:'na', ips:[], routable:[], stun:[], types:[], mdns:false, foundations:0, sdp:'', error:''};
+  if(!w) return out;
+  out.ips = Array.isArray(w.ips) ? w.ips.filter(x => typeof x === 'string' && x !== '') : [];
+  out.routable = out.ips.filter(isRoutableIp);
+  out.stun = (Array.isArray(w.publicIps) ? w.publicIps.filter(x => typeof x === 'string' && x !== '') : []).filter(isRoutableIp);
+  out.types = Array.isArray(w.candidateTypes) ? w.candidateTypes.filter(x => typeof x === 'string' && x !== '') : [];
+  out.mdns = w.mdns === true;
+  // foundations arrives as a list of candidate foundation strings; the count is
+  // what is worth showing.
+  out.foundations = Array.isArray(w.foundations) ? w.foundations.length : (Number(w.foundations) || 0);
+  out.sdp = (typeof w.sdpHash === 'string') ? w.sdpHash : '';
+  out.error = (typeof w.error === 'string') ? w.error : '';
+  const srv = (typeof serverIp === 'string' && serverIp !== '' && isRoutableIp(serverIp)) ? serverIp : '';
+  if(out.error) out.state = 'err';
+  else if(!out.ips.length) out.state = out.mdns ? 'mdns' : 'none';
+  else if(!out.routable.length) out.state = 'local';
+  else if(!srv) out.state = 'nosrv';
+  else out.state = (out.routable.indexOf(srv) === -1) ? 'mismatch' : 'ok';
+  return out;
+}
+// Only a routable candidate the server never saw is the proxy/VPN tell, so only
+// that gets the red tint the BANNED badge uses. A LAN-only answer is what an
+// ordinary home router gives and is reported as normal.
+function webrtcBadge(di, serverIp){
+  const s = webrtcRead(di, serverIp).state;
+  if(s === 'na') return '<span class="badge off">NO SIGNAL</span>';
+  if(s === 'err') return '<span class="badge warn">WEBRTC ERROR</span>';
+  if(s === 'none') return '<span class="badge warn">NO CANDIDATES</span>';
+  if(s === 'mdns') return '<span class="badge on">mDNS HIDDEN</span>';
+  if(s === 'local') return '<span class="badge on">LOCAL ONLY</span>';
+  if(s === 'nosrv') return '<span class="badge warn">NO PUBLIC SERVER IP</span>';
+  if(s === 'mismatch') return '<span class="badge off" style="background:rgba(239,68,68,.12);color:var(--red)">PROXY / VPN</span>';
+  return '<span class="badge on">MATCHES SERVER IP</span>';
+}
+// on a flag row only the loud states earn the space, exactly like tamperMark
+function webrtcMark(di, serverIp){
+  const s = webrtcRead(di, serverIp).state;
+  return (s === 'mismatch' || s === 'err') ? ' ' + webrtcBadge(di, serverIp) : '';
+}
+function webrtcDetail(di, serverIp){
+  const r = webrtcRead(di, serverIp);
+  if(r.state === 'na') return '<div style="color:var(--muted);font-size:11px;margin:-4px 0 6px">No WebRTC probe in this device record — nothing collected, not a clean result.</div>';
+  const bits = [];
+  if(r.stun.length) bits.push('public IP the browser sees (STUN) — ' + r.stun.map(x => ipCell(x)).join(' '));
+  if(r.ips.length) bits.push('candidates — ' + r.ips.map(x => ipCell(x)).join(' '));
+  if(r.types.length) bits.push('types: ' + r.types.map(x => esc(x)).join(', '));
+  if(r.mdns) bits.push('mDNS obfuscation on');
+  if(r.foundations) bits.push('foundations: ' + r.foundations);
+  if(r.sdp) bits.push('sdp ' + esc(r.sdp.substring(0,16)));
+  if(r.error) bits.push('probe error — ' + esc(r.error));
+  if(r.state === 'local') bits.push('LAN addresses only — no public candidate to compare');
+  if(r.state === 'nosrv') bits.push('the server saw a loopback or private address, so there is nothing public to compare against — local testing, or TRUSTED_PROXY_HOPS does not match the real proxy chain');
+  if(r.state === 'mismatch') bits.push('routable candidate absent from the server-observed IP — proxy or VPN');
+  if(!bits.length) return '';
+  return `<div style="color:var(--muted);font-size:11px;margin:-4px 0 6px;word-break:break-all">${bits.join(' &middot; ')}</div>`;
+}
+
+// ── tamper / automation summary ────────────────────────────────────────────
+// device_info is whatever the browser posted into a hidden field, so the shape
+// is untrusted as well as the values: every key is type-checked before use and
+// a key the collector did not send stays absent rather than reading as "no".
+function tamperRead(di){
+  const d = (di && typeof di === 'object') ? di : {};
+  const a = (d.automation && typeof d.automation === 'object') ? d.automation : {};
+  const mism = Array.isArray(d.workerMismatch) ? d.workerMismatch : [];
+  const hits = Array.isArray(a.hits) ? a.hits : [];
+  const verdict = (typeof a.verdict === 'string') ? a.verdict : '';
+  const scope = (typeof d.workerScope === 'string') ? d.workerScope : '';
+  const known = verdict !== '' || Array.isArray(d.workerMismatch);
+  let state = 'na';
+  if(verdict === 'headless' || mism.length) state = 'bad';
+  else if(verdict === 'suspect') state = 'warn';
+  else if(known) state = 'ok';
+  return {state, verdict, scope, mism, hits};
+}
+// the loud state reuses the red tint the BANNED badge above already uses
+function tamperBadge(di){
+  const s = tamperRead(di).state;
+  if(s === 'bad') return '<span class="badge off" style="background:rgba(239,68,68,.12);color:var(--red)">TAMPER</span>';
+  if(s === 'warn') return '<span class="badge warn">SUSPECT</span>';
+  if(s === 'ok') return '<span class="badge on">CLEAN</span>';
+  return '<span class="badge off">NO SIGNAL</span>';
+}
+// on a flag row only the loud states are worth the space — a clean or unknown
+// blob stays silent so the noisy rows are the ones that stand out
+function tamperMark(di){
+  const s = tamperRead(di).state;
+  return (s === 'bad' || s === 'warn') ? ' ' + tamperBadge(di) : '';
+}
+// which properties disagreed and which checks fired — itemised, never a JSON dump
+function tamperDetail(di){
+  const t = tamperRead(di);
+  const bits = [];
+  if(t.verdict) bits.push('automation: ' + esc(t.verdict));
+  if(t.scope) bits.push('worker scope: ' + esc(t.scope));
+  if(t.mism.length) bits.push('worker mismatch — ' + t.mism.map(x => esc(x)).join(', '));
+  if(t.hits.length) bits.push('checks fired — ' + t.hits.map(x => esc(x)).join(', '));
+  if(!bits.length) return '';
+  return `<div style="color:var(--muted);font-size:11px;margin:-4px 0 4px;word-break:break-all">${bits.join(' &middot; ')}</div>`;
+}
+// full reason payload of a device flag: every key the backend recorded
+function flagDetails(d){
+  if(!d) return '';
+  if(typeof d === 'string') return `<div style="color:var(--muted);font-size:11px;margin-top:4px">${esc(d)}</div>`;
+  return `<div style="color:var(--muted);font-size:11px;margin-top:4px">${Object.entries(d).map(([k,v]) => esc(k)+': '+esc(Array.isArray(v)?v.join(', '):v)).join('<br>')}</div>`;
+}
+function copyLookup(h){try{navigator.clipboard.writeText(h);toast('Device key copied — paste it on the Flags page')}catch(e){toast(h)}}
+function toast(msg,e){const t=$('#toast');if(!t)return;t.textContent=msg;t.className='toast show'+(e?' err':'');setTimeout(()=>{if(t)t.className='toast'},2600)}
+
+function loginAsUser(){api(API+USER_ID+'/login-as',{method:'POST',body:'{}'}).then(r=>{if(r&&r.ok){window.open('/admin/embed?token='+encodeURIComponent(r.token)+'&uid='+encodeURIComponent(USER_ID),'_blank');toast('User session opened in embedded view')}else toast((r&&r.error)||'Error',true)})}
+function botAction(botId,action){api(`/api/admin/bots/${botId}/${action}`,{method:'POST'}).then(r=>{if(r&&r.ok){toast('Bot '+(action==='start'?'started':'stopped'));selectUserDetail()}else toast((r&&r.error)||'Error',true)})}
+function deleteBot(botId){if(!confirm('Delete this bot?'))return;api('/api/admin/bots/'+botId,{method:'DELETE'}).then(r=>{if(r&&r.ok){toast('Bot deleted');selectUserDetail()}else toast((r&&r.error)||'Error',true)})}
+function setAccountType(type){api(API+USER_ID+'/account-type',{method:'PUT',body:JSON.stringify({account_type:type})}).then(r=>{if(r&&r.ok){toast('Type changed to '+type);selectUserDetail()}else toast((r&&r.error)||'Error',true)})}
+function banUser(){if(!confirm('Ban this user?'))return;api(API+USER_ID+'/ban',{method:'POST'}).then(r=>{if(r&&r.ok){toast('User banned');selectUserDetail()}else toast((r&&r.error)||'Error',true)})}
+function unbanUser(){if(!confirm('Unban this user?'))return;api(API+USER_ID+'/unban',{method:'POST'}).then(r=>{if(r&&r.ok){toast('User unbanned');selectUserDetail()}else toast((r&&r.error)||'Error',true)})}
+function stopAllBots(){if(!confirm('Stop all bots?'))return;api(API+USER_ID+'/bots/stop-all',{method:'POST'}).then(r=>{if(r&&r.ok){toast('All bots stopped');selectUserDetail()}else toast((r&&r.error)||'Error',true)})}
+function startAllBots(){if(!confirm('Start all bots?'))return;api(API+USER_ID+'/bots/start-all',{method:'POST'}).then(r=>{if(r&&r.ok){toast('All bots started');selectUserDetail()}else toast((r&&r.error)||'Error',true)})}
+function extendTrial(){if(!confirm('Extend trial by 7 days?'))return;api(API+USER_ID+'/extend-trial',{method:'POST'}).then(r=>{if(r&&r.ok){toast('Trial extended');selectUserDetail()}else toast((r&&r.error)||'Error',true)})}
+function updateSlots(){const v=parseInt($('#edit-slots')?.value)||0;api(API+USER_ID+'/slots',{method:'PUT',body:JSON.stringify({slots:v})}).then(r=>{if(r&&r.ok){toast('Slots updated');selectUserDetail()}else toast((r&&r.error)||'Error',true)})}
+// The container grant is sent as null when the box is empty, which clears it —
+// parseInt('')||0 would send 0 and switch hosting off instead.
+function putContainerSlots(slots){
+  return api(API+USER_ID+'/container-slots',{method:'PUT',body:JSON.stringify({slots})}).then(r=>{
+    if(r&&r.ok){
+      toast(r.container_slots===null||r.container_slots===undefined
+        ? 'Grant cleared — this account now gets the fleet default ('+((r.container_slots_default!=null)?r.container_slots_default:1)+')'
+        : (r.container_slots===0 ? 'Hosting switched off for this account'
+                                 : 'Grant set to '+r.container_slots+' container'+(r.container_slots===1?'':'s')));
+      selectUserDetail();
+    } else toast((r&&r.error)||'Error',true);
+  });
+}
+function updateContainerSlots(){
+  const raw=($('#edit-container-slots')?.value||'').trim();
+  if(raw===''){ putContainerSlots(null); return; }
+  const v=parseInt(raw,10);
+  if(!Number.isFinite(v)){ toast('Grant must be a whole number, or blank for the default',true); return; }
+  if(v===0 && !confirm('Switch hosting off for this account?\n\nTheir existing containers keep running, but they cannot deploy another until the grant is raised.')) return;
+  putContainerSlots(v);
+}
+function clearContainerSlots(){ putContainerSlots(null); }
+function deleteUser(){if(!confirm('Delete user?'))return;api(API+USER_ID,{method:'DELETE'}).then(r=>{if(r&&r.ok){window.location.href='/admin';}else toast((r&&r.error)||'Error',true)})}
+function resetFingerprint(){if(!confirm('Reset fingerprint?'))return;api(API+USER_ID+'/reset-fingerprint',{method:'POST'}).then(r=>{if(r&&r.ok){toast('Fingerprint reset');selectUserDetail()}else toast((r&&r.error)||'Error',true)})}
+function revokeSessions(){if(!confirm('Revoke all sessions?'))return;api('/api/admin/sessions/user/'+USER_ID+'/revoke-all',{method:'POST'}).then(r=>{if(r&&r.ok){toast('Sessions revoked');selectUserDetail()}else toast((r&&r.error)||'Error',true)})}
+function deleteFlag(id){api('/api/admin/device-flags',{method:'DELETE',body:JSON.stringify({id})}).then(r=>{if(r&&r.ok){toast('Flag deleted');selectUserDetail()}else toast((r&&r.error)||'Error',true)})}
+function deleteAllFlags(){api('/api/admin/device-flags',{method:'DELETE',body:JSON.stringify({user_id:USER_ID})}).then(r=>{if(r&&r.ok){toast('All flags deleted');selectUserDetail()}else toast((r&&r.error)||'Error',true)})}
+
+// ── email verification (two-way) ──
+async function setEmailVerified(verified){
+  const want = !!verified;
+  const r = await api(API+USER_ID+'/email-verified', {method:'PUT', body:JSON.stringify({verified:want})});
+  if(r && r.ok){
+    toast(r.email_verified ? 'Email marked verified' : 'Email marked unverified');
+    selectUserDetail();
+  } else {
+    toast((r&&r.error)||'Error', true);
+    const t = $('#ev-toggle'); if(t) t.checked = !want;   // put the switch back
+  }
+}
+
+// ── operator password reset ──
+// The typed password only ever exists in the input and the request body: it is
+// never echoed into the DOM, a URL or the console, and the field is cleared as
+// soon as the request comes back.
+async function resetPassword(){
+  const el = $('#rp-pass');
+  if(!el) return;
+  const pw = el.value;
+  if(pw.length < 6){ toast('Password must be at least 6 characters', true); return; }
+  if(!confirm('Set a new password for this user?\n\nThis revokes every active session — they are signed out everywhere and must log in again with the new password.')) return;
+  const r = await api(API+USER_ID+'/reset-password', {method:'POST', body:JSON.stringify({password:pw})});
+  el.value = '';
+  if(r && r.ok){
+    const n = (r.revoked != null) ? r.revoked : (r.sessions_revoked != null ? r.sessions_revoked : 0);
+    toast('Password set — '+n+' session'+(n===1?'':'s')+' revoked');
+    selectUserDetail();
+  } else toast((r&&r.error)||'Reset failed', true);
+}
+
+// ── inline bot config editor ──
+// Keyed by slot index, not bot id: the id goes nowhere near an element id.
+const BOT_CFG = {};
+// field name in the API payload -> id prefix of its input in the inline form
+const CFG_FIELDS = {
+  name: 'cf-name-', server_ip: 'cf-ip-', server_port: 'cf-port-', edition: 'cf-edition-',
+  update_interval: 'cf-interval-', guild_id: 'cf-guild-', channel_id: 'cf-channel-'
+};
+const CFG_NUM = {server_port: 'Port', update_interval: 'Update interval'};
+
+async function toggleBotConfig(botId, idx){
+  const host = document.getElementById('cfg-slot-'+idx);
+  const btn = document.getElementById('cfg-btn-'+idx);
+  if(!host) return;
+  if(!host.hidden){                       // second click closes it
+    host.hidden = true; host.textContent = '';
+    delete BOT_CFG[idx];
+    if(btn){ btn.setAttribute('aria-expanded','false'); btn.focus(); }
+    return;
+  }
+  host.hidden = false;
+  host.textContent = 'Loading configuration…';
+  if(btn) btn.setAttribute('aria-expanded','true');
+  const r = await api('/api/admin/bots/'+encodeURIComponent(botId)+'/config');
+  if(!r || !r.ok){ host.textContent = (r && r.error) || 'Failed to load configuration'; return; }
+  const b = r.bot || {};
+  const s = v => (v == null ? '' : String(v));
+  // remember what the server sent so the PUT can carry only real edits
+  BOT_CFG[idx] = {id: botId, orig: {
+    name: s(b.name), server_ip: s(b.server_ip), server_port: s(b.server_port),
+    edition: s(b.edition) || 'java', update_interval: s(b.update_interval),
+    guild_id: s(b.guild_id), channel_id: s(b.channel_id)
+  }};
+  const o = BOT_CFG[idx].orig;
+  host.innerHTML = `
+    <div class="cfg-grid">
+      <div class="field"><label for="cf-name-${idx}">Bot name</label>
+        <input id="cf-name-${idx}" value="${esc(o.name)}" maxlength="80"></div>
+      <div class="field"><label for="cf-ip-${idx}">Server host / IP</label>
+        <input id="cf-ip-${idx}" value="${esc(o.server_ip)}" spellcheck="false"></div>
+      <div class="field"><label for="cf-port-${idx}">Server port</label>
+        <input id="cf-port-${idx}" type="number" min="1" max="65535" value="${esc(o.server_port)}"></div>
+      <div class="field"><label for="cf-edition-${idx}">Edition</label>
+        <select id="cf-edition-${idx}">
+          <option value="java" ${o.edition==='java'?'selected':''}>Java</option>
+          <option value="bedrock" ${o.edition==='bedrock'?'selected':''}>Bedrock</option>
+        </select></div>
+      <div class="field"><label for="cf-interval-${idx}">Update interval (s)</label>
+        <input id="cf-interval-${idx}" type="number" min="15" value="${esc(o.update_interval)}">
+        <span class="cfg-hint">15s floor — the engine clamps anything lower.</span></div>
+      <div class="field"><label for="cf-guild-${idx}">Guild ID</label>
+        <input id="cf-guild-${idx}" inputmode="numeric" value="${esc(o.guild_id)}" spellcheck="false"></div>
+      <div class="field"><label for="cf-channel-${idx}">Channel ID</label>
+        <input id="cf-channel-${idx}" inputmode="numeric" value="${esc(o.channel_id)}" spellcheck="false"></div>
+      <div class="field"><label for="cf-token-${idx}">Bot token</label>
+        <input id="cf-token-${idx}" type="password" autocomplete="off" placeholder="leave blank to keep current">
+        <span class="cfg-hint">Current: ${esc(b.token_masked || 'not set')} — only sent if you type a new one.</span></div>
+    </div>
+    <div class="row-actions">
+      <button class="btn btn-primary btn-sm" onclick="saveBotConfig(${idx})">Save Config</button>
+      <button class="btn btn-ghost btn-sm" onclick="toggleBotConfig('${jsArg(botId)}',${idx})">Cancel</button>
+    </div>
+    <p class="note" style="text-align:left">Owner @${esc(b.owner_username || b.username || '—')} &middot; slot #${(Number(b.slot_index)||0)+1} &middot; only the fields you change are sent.</p>`;
+  const first = host.querySelector('input');
+  if(first) first.focus();
+}
+
+async function saveBotConfig(idx){
+  const st = BOT_CFG[idx];
+  if(!st){ toast('Form is stale — reopen the editor', true); return; }
+  const body = {};
+  for(const k of Object.keys(CFG_FIELDS)){
+    const v = fieldVal('#'+CFG_FIELDS[k]+idx);
+    if(v === st.orig[k]) continue;       // omitted key means "leave alone"
+    if(!CFG_NUM[k]){ body[k] = v; continue; }
+    if(v === ''){ toast(CFG_NUM[k]+' cannot be blank', true); return; }
+    const n = parseInt(v, 10);
+    if(!isFinite(n)){ toast(CFG_NUM[k]+' must be a number', true); return; }
+    if(k === 'server_port' && (n < 1 || n > 65535)){ toast('Port must be 1–65535', true); return; }
+    if(k === 'update_interval' && n < 15){ toast('Update interval must be at least 15s', true); return; }
+    body[k] = n;
+  }
+  const tokenEl = $('#cf-token-'+idx);
+  const token = tokenEl ? tokenEl.value : '';
+  if(token) body.token = token;          // omitted entirely when left blank
+  if(Object.keys(body).length === 0){ toast('Nothing changed'); return; }
+  const r = await api('/api/admin/bots/'+encodeURIComponent(st.id)+'/config',
+                      {method:'PUT', body:JSON.stringify(body)});
+  if(tokenEl) tokenEl.value = '';
+  if(r && r.ok){
+    const fields = r.updated || Object.keys(body);
+    toast('Saved: ' + fields.join(', '));
+    selectUserDetail();
+  } else toast((r&&r.error)||'Save failed', true);
+}
+
+selectUserDetail();
+</script>
+<script src="{{ url_for('static', filename='fp-guard.js') }}" defer></script>
+</body>
+</html>

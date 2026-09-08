@@ -1,0 +1,30 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>User Session — Console</title>
+  <style>
+    html, body { margin: 0; height: 100%; font-family: system-ui, "Segoe UI", Roboto, sans-serif; background: #0d1117; color: #c9d1d9; }
+    #bar { display: flex; align-items: center; gap: 12px; padding: 8px 14px; background: #161b22; border-bottom: 1px solid #30363d; font-size: 13px; }
+    #bar a { color: #58a6ff; text-decoration: none; }
+    #bar a:hover { text-decoration: underline; }
+    #bar .sep { width: 1px; height: 18px; background: #30363d; }
+    #bar .u { color: #8b949e; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    #frame { width: 100%; height: calc(100% - 37px); border: 0; display: block; }
+  </style>
+</head>
+<body data-guard="off">
+  <div id="bar">
+    <a href="/admin">&larr; Console</a>
+    <span class="sep"></span>
+    <span>User session</span>
+    <span class="u" id="uid"></span>
+  </div>
+  <iframe id="frame" src="/embed/impersonate/{{ token }}" title="User session"></iframe>
+  <script>
+    const uid = {{ uid|tojson }};
+    document.getElementById('uid').textContent = uid ? ('— ' + uid) : '';
+  </script>
+</body>
+</html>

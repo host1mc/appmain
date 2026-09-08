@@ -1,0 +1,122 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Reviews</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body data-guard="off">
+  <div class="nav">
+    <div class="brand"><a href="{{ url_for('admin_panel') }}"><span class="dot"></span> MC Status Hosting</a> <span class="pill">Admin</span></div>
+    <div class="links">
+      <a href="{{ url_for('admin_panel') }}">Panel</a>
+      <a href="{{ url_for('admin_bots') }}">Fleet</a>
+      <a href="{{ url_for('admin_panel_controls') }}">Hosting</a>
+      <a href="/admin/nodes">Nodes</a>
+      <a href="{{ url_for('admin_flags') }}">Flags</a> <a href="{{ url_for('admin_errors') }}">Errors</a>
+      <a href="{{ url_for('admin_reviews') }}" aria-current="page" style="color:var(--txt);background:var(--card2)">Reviews</a>
+      <a href="/admin/ads">Ads</a>
+      <a href="{{ url_for('admin_database') }}">Database</a>
+      <a href="{{ url_for('admin_account') }}">Account</a>
+    </div>
+  </div>
+
+  <div class="log-page log-wide">
+    <h2 class="page-title">Reviews <span class="pill" id="pending-count">—</span></h2>
+    <p class="note page-sub">User-submitted reviews. Approve to publish on the home page; reject deletes permanently.</p>
+
+    <div class="toolbar">
+      <div class="filter-tabs" role="tablist" aria-label="Review status">
+        <button class="tab" data-filter="waiting" onclick="setFilter('waiting')">Waiting</button>
+        <button class="tab" data-filter="approved" onclick="setFilter('approved')">Approved</button>
+        <button class="tab" data-filter="all" onclick="setFilter('all')">All</button>
+      </div>
+      <button class="btn btn-ghost btn-sm" id="btn-refresh" onclick="load()">Refresh</button>
+    </div>
+
+    <div id="list"></div>
+  </div>
+
+  <div class="toast" id="toast"></div>
+
+<script>
+const $ = s => { try { return document.querySelector(s); } catch(e){ return null; } };
+let currentFilter = 'waiting';
+function toast(msg, err){
+  const t = $('#toast'); if(!t) return;
+  t.textContent = msg;
+  t.className = 'toast show' + (err ? ' err' : '');
+  setTimeout(() => { if(t) t.className = 'toast'; }, 2600);
+}
+function api(path, opts){
+  return fetch(path, {headers:{'Content-Type':'application/json'}, ...opts}).then(r=>r.json()).catch(()=>({ok:false}));
+}
+function esc(s){ return String(s==null?'':s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+function fmtDate(s){ if(!s) return '—'; try{ return new Date(s).toLocaleString(); }catch(e){ return esc(s); } }
+function stars(n){ n = parseInt(n)||0; return '★'.repeat(n) + '☆'.repeat(5-n); }
+function busy(sel, on){ const el = typeof sel==='string'?$(sel):sel; if(el) el.disabled = !!on; }
+function onlyPending(){ return currentFilter === 'waiting' ? '?filter=pending' : currentFilter === 'approved' ? '?filter=approved' : ''; }
+function setFilter(f){
+  currentFilter = f;
+  document.querySelectorAll('.filter-tabs .tab').forEach(b => b.classList.toggle('on', b.dataset.filter === f));
+  load();
+}
+
+async function load(){
+  const r = await api('/api/admin/reviews' + onlyPending());
+  const pc = $('#pending-count'); if(pc) pc.textContent = (r && r.pending!=null) ? r.pending : '—';
+  const list = $('#list'); if(!list) return;
+  if(!r || !r.ok){ list.innerHTML = '<p class="note">Could not load reviews.</p>'; return; }
+  const store = r.store || {};
+  if(store.ok === false){
+    list.innerHTML = '<p class="note" style="color:#ff6b6b">Reviews store unavailable — '
+      + esc(store.error || 'unknown error') + '<br>Nothing can be listed or moderated until this is fixed.</p>';
+    return;
+  }
+  if(!r.reviews.length){
+    const msg = currentFilter === 'waiting' ? 'No reviews waiting for approval.'
+      : currentFilter === 'approved' ? 'No approved reviews yet.'
+      : 'No reviews yet. The store is reachable and empty.';
+    list.innerHTML = '<p class="note">' + msg + '</p>'; return;
+  }
+  list.innerHTML = r.reviews.map(row => `
+    <div class="card" style="text-align:left;margin-bottom:12px">
+      <div style="display:flex;justify-content:space-between;gap:12px;flex-wrap:wrap;align-items:center">
+        <div>
+          <strong>${esc(row.author_name)}</strong>
+          <span style="color:#f5b301;letter-spacing:2px">${stars(row.rating)}</span>
+          ${row.approved ? '<span class="badge on">approved</span>' : '<span class="badge off">waiting</span>'}
+        </div>
+        <div class="note">${esc(fmtDate(row.created_at))}</div>
+      </div>
+      <p style="margin:8px 0 12px;white-space:pre-wrap">${esc(row.body)}</p>
+      <div style="display:flex;gap:8px">
+        ${row.approved ? '' : `<button class="btn btn-green btn-sm" onclick="approve(${row.id}, this)">Approve</button>`}
+        <button class="btn btn-red btn-sm" onclick="reject(${row.id}, this)">${row.approved ? 'Delete' : 'Reject'}</button>
+      </div>
+    </div>`).join('');
+}
+
+async function approve(id, btn){
+  busy(btn, true);
+  const r = await api('/api/admin/reviews/approve', {method:'POST', body:JSON.stringify({id})});
+  if(r && r.ok){ toast('Approved'); load(); }
+  else { busy(btn, false); toast((r&&r.error)||'Error', true); }
+}
+
+async function reject(id, btn){
+  if(!confirm('Permanently delete this review?')) return;
+  busy(btn, true);
+  const r = await api('/api/admin/reviews', {method:'DELETE', body:JSON.stringify({id})});
+  if(r && r.ok){ toast('Deleted'); load(); }
+  else { busy(btn, false); toast((r&&r.error)||'Error', true); }
+}
+
+load();
+setFilter('waiting');
+</script>
+</body>
+</html>

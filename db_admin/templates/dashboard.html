@@ -1,0 +1,170 @@
+{% extends "base.html" %}
+{% block title %}Dashboard{% endblock %}
+{% block h1 %}Dashboard{% endblock %}
+{% block content %}
+
+{% set pal = ['#7b46d6', '#9b59b6', '#4f9cf9', '#3ad1c4', '#43b581', '#f0b429', '#e879f9', '#ed4245'] %}
+{% set top_rows = tables|sort(attribute='rows', reverse=True) %}
+{% set tt_max = (top_tables[0].rows if top_tables else 0) or 1 %}
+{% set u_max = (users[0].rows if users else 0) or 1 %}
+
+<div class="stat-grid">
+  <div class="stat" style="--accent:#9b59b6">
+    <div class="top">
+      <div class="k">Tables</div>
+      <div class="ic">&#9636;</div>
+    </div>
+    <div class="v" data-anim="num" data-n="{{ tables|length }}">{{ tables|length }}</div>
+    <div class="d">in the selected database</div>
+  </div>
+
+  <div class="stat" style="--accent:#43b581">
+    <div class="top">
+      <div class="k">Total rows</div>
+      <div class="ic">&#8801;</div>
+    </div>
+    <div class="v" data-anim="num" data-n="{{ totals.rows }}">{{ totals.rows|num }}</div>
+    <div class="d">across {{ tables|length }} tables</div>
+    {% if top_rows and top_rows[0].rows %}
+    <div class="stackbar" data-anim="stack">
+      {% for t in top_rows[:6] %}
+      <div data-w="{{ (t.rows / top_rows[0].rows * 100)|round(2) }}" style="width:0;background:{{ pal[loop.index0 % 8] }}"></div>
+      {% endfor %}
+    </div>
+    <div class="stackbar seg-legend">
+      {% for t in top_rows[:6] %}
+      <span><i style="background:{{ pal[loop.index0 % 8] }}"></i>{{ t.name }} {{ t.rows|num }}</span>
+      {% endfor %}
+    </div>
+    {% endif %}
+  </div>
+
+  <div class="stat" style="--accent:#4f9cf9">
+    <div class="top">
+      <div class="k">Users with data</div>
+      <div class="ic">&#9786;</div>
+    </div>
+    <div class="v" data-anim="num" data-n="{{ users|length }}">{{ users|length }}</div>
+    <div class="d">accounts holding rows</div>
+  </div>
+
+  <div class="stat" style="--accent:#3ad1c4">
+    <div class="top">
+      <div class="k">Unique fields</div>
+      <div class="ic">&#9642;</div>
+    </div>
+    <div class="v">{{ tables|sum(attribute='fields') }}</div>
+    <div class="d">across all tables</div>
+  </div>
+</div>
+
+<div class="panel">
+  <div class="p-head">
+    <span>Top tables by row count</span>
+    <span class="sub">most active tables</span>
+  </div>
+  <div class="p-body">
+    {% for t in top_tables %}
+    <div class="tbar">
+      <div class="lbl mono">{{ t.name }}</div>
+      <div class="track">
+        <div class="seg-a" data-anim="bar" data-w="{{ (t.rows / tt_max * 100)|round(1) }}" style="width:0"></div>
+      </div>
+      <div class="vals"><b>{{ t.rows|num }}</b> rows &middot; {{ t.fields }} fields</div>
+    </div>
+    {% else %}
+    <div class="empty">No tables found.</div>
+    {% endfor %}
+  </div>
+</div>
+
+<div class="grid-2">
+  <div class="panel">
+    <div class="p-head">
+      <span>Tables ({{ tables|length }})</span>
+      <span class="sub">{{ totals.rows|num }} total rows</span>
+    </div>
+    <div class="p-body flush">
+      <form data-mass action="/tables/drop_selected" method="post" data-confirm="Drop the selected table(s)? This cannot be undone.">
+        <input type="hidden" name="next" value="/">
+        <div style="display:flex;align-items:center;gap:8px;padding:8px 10px;border-bottom:1px solid rgba(255,255,255,.06)">
+          <label style="display:flex;align-items:center;gap:6px;font-size:12px;color:var(--muted2);cursor:pointer">
+            <input type="checkbox" data-check-all style="width:14px;height:14px;accent-color:#e74c3c">
+            <span>Select all</span>
+          </label>
+          <button class="btn sm danger ghost" type="submit" data-mass-btn disabled style="opacity:.45">
+            Drop selected (<span data-mass-count>0</span>)
+          </button>
+        </div>
+        <div class="table-wrap">
+          <table class="tbl sortable" id="tablesTbl">
+            <thead>
+              <tr>
+                <th style="width:28px"></th>
+                <th data-key>Table</th><th data-key class="num">Rows</th><th data-key class="num">Fields</th>
+                <th class="num">Share</th><th></th>
+              </tr>
+            </thead>
+            <tbody>
+              {% for t in tables %}
+              <tr>
+                <td><input type="checkbox" name="tname" value="{{ t.name }}" style="width:14px;height:14px;accent-color:#e74c3c;cursor:pointer"></td>
+                <td class="mono fw-bold">{{ t.name }}</td>
+                <td class="num mono" data-v="{{ t.rows }}">{{ t.rows|num }}</td>
+                <td class="num mono" data-v="{{ t.fields }}">{{ t.fields }}</td>
+                <td class="num">
+                  <div class="mini" style="width:110px;margin-left:auto">
+                    <div data-anim="bar" data-w="{{ (t.rows / totals.rows * 100)|round(1) if totals.rows else 0 }}" style="width:0"></div>
+                  </div>
+                </td>
+                <td class="num">
+                  <a class="btn sm" href="/table/{{ t.name }}">Open</a>
+                  <a class="btn sm ghost" href="/table/{{ t.name }}/export.csv">CSV</a>
+                  <button class="btn sm danger ghost" type="button" data-post="/table/{{ t.name|urlencode }}/drop" data-confirm="Drop table {{ t.name }}? This cannot be undone." title="Drop table">
+                    <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2m3 0v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/></svg>
+                    Delete
+                  </button>
+                </td>
+              </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <div class="panel">
+    <div class="p-head">
+      <span>Users - rows leaderboard (top {{ users|length }} of {{ user_count }})</span>
+      <a href="/users">all users -&gt;</a>
+    </div>
+    <div class="p-body">
+      <div class="lb">
+        {% for u in users %}
+        <div class="lb-card">
+          <span class="rank {{ 'medal' if loop.index == 1 else ('medal2' if loop.index == 2 else ('medal3' if loop.index == 3 else '')) }}">{{ loop.index }}</span>
+          <div class="uid">{{ u.id|shortid }}{% if u.name %} <span class="badge purple">{{ u.name }}</span>{% endif %}</div>
+          <div class="meta">{{ u.tables }} table(s) &middot; {{ u.rows|num }} rows</div>
+          <div class="foot">
+            <a class="btn sm ghost" href="/user/{{ u.id|urlencode }}">Detail</a>
+            <button class="btn sm danger ghost" type="button" data-post="/user/{{ u.id|urlencode }}/delete_all" data-confirm="Delete ALL data for this user? This cannot be undone.">
+              <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2m3 0v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/></svg>
+              Delete
+            </button>
+          </div>
+          {% if u_max > 0 %}
+          <div class="mini" style="margin-top:9px">
+            <div class="fill" data-anim="bar" data-w="{{ (u.rows / u_max * 100)|round(1) }}" style="width:0"></div>
+          </div>
+          {% endif %}
+        </div>
+        {% else %}
+        <div class="empty">No user-owned rows yet.</div>
+        {% endfor %}
+      </div>
+    </div>
+  </div>
+</div>
+
+{% endblock %}

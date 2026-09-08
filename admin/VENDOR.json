@@ -1,0 +1,46 @@
+{
+  "_comment": "Copies of the hosting app's modules. Do not edit them here \u2014 edit them in the app and re-run sync_from_app.py.",
+  "files": {
+    "cf_edge.py": {
+      "bytes": 6783,
+      "sha256": "829ba85e3fd952d080a271a60019cdea108912351606603ae7eb4f22f22eec6f"
+    },
+    "creds.py": {
+      "bytes": 5047,
+      "sha256": "fbe8febadae73becfbd9bc9aa18905e6b12fe90d4f6c68b355f86602760c6d25"
+    },
+    "crypto_util.py": {
+      "bytes": 21640,
+      "sha256": "02ba14c0b93e483e45b95b1ad80b4625513b485221659a4891f28d967279067d"
+    },
+    "database.py": {
+      "bytes": 235746,
+      "sha256": "f6ecc68c77a93b37236cb102ad5da370dbc831d1b0b0cea5cc0ad384de59b9eb"
+    },
+    "engine_client.py": {
+      "bytes": 7224,
+      "sha256": "9451c3707d1b8ed4cc890d182b93562c9ec1a7a99861cb08c630c9c9d5386f90"
+    },
+    "error_codes.py": {
+      "bytes": 4637,
+      "sha256": "e18c707c39afeaf0e9f93b93ec3aea92e5747926f1b7247fc4da3ba4f1880a21"
+    },
+    "internal_auth.py": {
+      "bytes": 9065,
+      "sha256": "0a4c6d5d40c28648f4a25d4105fe60d45229a9a575042ba6fdf33267dafddf9a"
+    },
+    "renew_config.py": {
+      "bytes": 1135,
+      "sha256": "d665c6710fe1728948ea6e8619643470b8f916e017a7963e14a62b1a51e7dfff"
+    },
+    "reviews_db.py": {
+      "bytes": 46694,
+      "sha256": "e2e8f3d775d7e46937d7d2b12a9073198db7b6d731f9d19c6411ff0540b0207d"
+    }
+  },
+  "source_branch": "arena/01a066ff-app",
+  "source_commit": "a161bcfa68ed647bc9cbae26af8a7903d8d01a24",
+  "source_dirty": true,
+  "source_path": "P:\\dc_hostfnal\\app1",
+  "synced_at": "2026-09-07T18:49:35+00:00"
+}

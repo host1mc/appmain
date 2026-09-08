@@ -1,0 +1,74 @@
+{% extends "base.html" %}
+{% block title %}Users{% endblock %}
+{% block h1 %}Users{% endblock %}
+{% block crumb %}analysis / users{% endblock %}
+{% block content %}
+
+{% set u_max = (users[0].rows if users else 0) or 1 %}
+{% set total_rows = users|sum(attribute='rows') %}
+
+<div class="stat-grid">
+  <div class="stat" style="--accent:#9b59b6">
+    <div class="top"><div class="k">Users with data</div><div class="ic">&#9786;</div></div>
+    <div class="v" data-anim="num" data-n="{{ users|length }}">{{ users|length }}</div>
+    <div class="d">accounts holding rows</div>
+  </div>
+  <div class="stat" style="--accent:#43b581">
+    <div class="top"><div class="k">Rows held</div><div class="ic">&#8801;</div></div>
+    <div class="v" data-anim="num" data-n="{{ total_rows }}">{{ total_rows|num }}</div>
+    <div class="d">across user-linked tables</div>
+  </div>
+  <div class="stat" style="--accent:#3ad1c4">
+    <div class="top"><div class="k">Avg per user</div><div class="ic">&#9642;</div></div>
+    <div class="v">{{ (total_rows / users|length)|num if users else '0' }}</div>
+    <div class="d">mean rows across active users</div>
+  </div>
+</div>
+
+<div class="panel">
+  <div class="p-head">
+    <span>All users ({{ users|length }})</span>
+    <span class="sub">rows held across user-linked tables</span>
+  </div>
+  <div class="p-body">
+    <form data-mass action="/users/delete_selected" method="post" data-confirm="Delete ALL data for the selected user(s)? This cannot be undone.">
+      <div style="display:flex;align-items:center;gap:8px;margin-bottom:10px">
+        <label style="display:flex;align-items:center;gap:6px;font-size:12px;color:var(--muted2);cursor:pointer">
+          <input type="checkbox" data-check-all style="width:14px;height:14px;accent-color:#e74c3c">
+          <span>Select all</span>
+        </label>
+        <button class="btn sm danger ghost" type="submit" data-mass-btn disabled style="opacity:.45">
+          Delete selected (<span data-mass-count>0</span>)
+        </button>
+      </div>
+      <div class="lb">
+        {% for u in users %}
+        <div class="lb-card">
+          <div style="display:flex;align-items:flex-start;gap:8px">
+            <input type="checkbox" name="uid" value="{{ u.id }}" style="width:14px;height:14px;margin-top:3px;flex:none;accent-color:#e74c3c;cursor:pointer">
+            <span class="rank {{ 'medal' if loop.index == 1 else ('medal2' if loop.index == 2 else ('medal3' if loop.index == 3 else '')) }}">{{ loop.index }}</span>
+          </div>
+          <div class="uid"><a href="/user/{{ u.id|urlencode }}" style="color:inherit;text-decoration:none">{{ u.id|shortid }}</a>{% if u.name %} <span class="badge purple">{{ u.name }}</span>{% endif %}</div>
+          <div class="meta">{{ u.tables }} table(s) &middot; {{ u.rows|num }} rows</div>
+          <div class="foot">
+            <a class="btn sm" href="/user/{{ u.id|urlencode }}">All linked data</a>
+            <button class="btn sm danger ghost" type="button" data-post="/user/{{ u.id|urlencode }}/delete_all" data-confirm="Delete ALL data for this user? This cannot be undone." title="Delete all user data">
+              <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2m3 0v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/></svg>
+              Delete
+            </button>
+          </div>
+          {% if u_max > 0 %}
+          <div class="mini" style="margin-top:9px">
+            <div class="fill" data-anim="bar" data-w="{{ (u.rows / u_max * 100)|round(1) }}" style="width:0"></div>
+          </div>
+          {% endif %}
+        </div>
+        {% else %}
+        <div class="empty">No user-owned rows yet.</div>
+        {% endfor %}
+      </div>
+    </form>
+  </div>
+</div>
+
+{% endblock %}

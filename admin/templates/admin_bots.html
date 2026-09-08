@@ -1,0 +1,329 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Fleet — Admin</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body data-guard="off">
+  <div class="nav">
+    <div class="brand"><a href="{{ url_for('admin_panel') }}"><span class="dot"></span> MC Status Hosting</a> <span class="pill">Admin</span></div>
+    <div class="links">
+      <a href="{{ url_for('admin_panel') }}">Panel</a>
+      <a href="{{ url_for('admin_bots') }}" aria-current="page" style="color:var(--txt);background:var(--card2)">Fleet</a>
+      <a href="{{ url_for('admin_panel_controls') }}">Hosting</a>
+      <a href="/admin/nodes">Nodes</a>
+      <a href="{{ url_for('admin_flags') }}">Flags</a> <a href="{{ url_for('admin_errors') }}">Errors</a>
+      <a href="{{ url_for('admin_reviews') }}">Reviews</a>
+      <a href="/admin/ads">Ads</a>
+      <a href="{{ url_for('admin_database') }}">Database</a>
+      <a href="{{ url_for('admin_account') }}">Account</a>
+    </div>
+  </div>
+
+  <div class="log-page">
+    <h2 style="font-size:22px;margin-bottom:4px">Fleet</h2>
+    <p class="note" style="text-align:left;margin:0 0 12px">Every bot across all accounts — running and stopped. Start / stop write the database flag (1 = on, 0 = off) directly, and every engine picks the change up on its next tick, so a bot stopped here stops on every deployment sharing this database.</p>
+
+    <div class="card">
+      <h2>Engine</h2>
+      <div id="engine-panel" class="note" style="text-align:left;margin:0" role="status" aria-live="polite">Loading…</div>
+    </div>
+
+    <div style="margin:12px 0;display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+      <button class="btn btn-ghost btn-sm" onclick="loadFleet()">Refresh</button>
+      <button class="btn btn-green btn-sm" onclick="batchAction('start')" id="btn-start-selected" disabled>Start selected</button>
+      <button class="btn btn-ghost btn-sm" onclick="batchAction('stop')" id="btn-stop-selected" disabled>Stop selected</button>
+      <span id="sel-count" class="note" style="margin:0">0 selected</span>
+    </div>
+
+    <div id="edit-panel" hidden></div>
+
+    <div id="fleet-content">
+      <div class="empty">Loading...</div>
+    </div>
+  </div>
+
+  <div class="toast" id="toast"></div>
+
+<script>
+const $ = s => { try { return document.querySelector(s); } catch(e) { return null; } };
+
+function toast(msg, err){
+  const t = $('#toast'); if(!t) return;
+  t.textContent = msg;
+  t.className = 'toast show' + (err ? ' err' : '');
+  setTimeout(() => { if(t) t.className = 'toast'; }, 2600);
+}
+
+function esc(s){ return String(s==null?'':s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+
+// The engine lives on the fleet's host, so "unavailable" is the ordinary case on
+// an operator's machine — it is reported as a fact, never as a page error.
+function renderEngine(e){
+  const el = $('#engine-panel'); if(!el) return;
+  if(e && e.ok){
+    const bits = Object.entries(e).filter(([k]) => k !== 'ok')
+      .map(([k, v]) => esc(k) + ': ' + esc(typeof v === 'object' ? JSON.stringify(v) : v));
+    el.innerHTML = '<span class="badge on">REACHABLE</span> '
+      + (bits.length ? bits.join(' · ') : 'Engine responded ok.');
+  } else {
+    el.innerHTML = '<span class="badge off">NOT REACHABLE</span> '
+      + esc((e && e.error) || 'No engine responded.')
+      + ' — start/stop still work: they write the database flag and engines apply it on their next tick.';
+  }
+}
+
+function fleetRow(b){
+  const server = b.server_ip ? esc(b.server_ip) + ':' + esc(b.server_port == null ? '' : b.server_port) : '—';
+  // The id goes into JS handler arguments, so it is coerced to a number rather
+  // than escaped as text: nothing but a number can survive Number().
+  const id = Number(b.id);
+  return `<tr>
+    <td class="log-ip"><input type="checkbox" class="row-sel" data-id="${id}" onchange="updateSel()" aria-label="Select bot ${id}"></td>
+    <td class="log-target">${b.user_id ? `<a href="/admin/user/${esc(b.user_id)}">@${esc(b.username || b.user_id)}</a>` : '—'}</td>
+    <td class="log-admin">${esc(b.name || ('#' + id))} <span class="log-ip">(${id})</span></td>
+    <td class="log-ip">${server} <span class="muted">${esc(b.edition || '')}</span></td>
+    <td class="log-ip">${esc(b.channel_id || '—')}</td>
+    <td class="log-ip">${esc(b.update_interval == null ? '—' : b.update_interval)}s</td>
+    <td><span class="badge ${b.running ? 'on' : 'off'}">${b.running ? 'RUNNING' : 'STOPPED'}</span></td>
+    <td>${b.trial_expired == null ? '<span class="badge off">UNKNOWN</span>'
+        : (b.trial_expired ? '<span class="badge warn">TRIAL EXPIRED</span>' : '<span class="muted">—</span>')}</td>
+    <td class="log-ip" title="${b.running && b.last_error ? esc(b.last_error) : ''}">
+      ${b.running && b.last_error ? '<span class="badge warn">ERROR</span> <span class="muted">' + esc(String(b.last_error).slice(0, 60)) + '</span>' : esc(b.message_id || '—')}</td>
+    <td>
+      <button class="btn btn-ghost btn-sm" onclick="editBot(${id})" aria-label="Edit bot ${id}">Edit</button>
+      <button class="btn btn-green btn-sm" onclick="botAction(${id}, 'start')" aria-label="Start bot ${id}">Start</button>
+      <button class="btn btn-ghost btn-sm" onclick="botAction(${id}, 'stop')" aria-label="Stop bot ${id}">Stop</button>
+      <button class="btn btn-red btn-sm" onclick="deleteBot(${id})" aria-label="Delete bot ${id}">Delete</button>
+    </td>
+  </tr>`;
+}
+
+async function loadFleet(){
+  const el = $('#fleet-content');
+  el.innerHTML = '<div class="empty">Loading...</div>';
+  try {
+    const r = await fetch('/api/admin/bots', {headers:{'Content-Type':'application/json'}});
+    const d = await r.json();
+    if(!d || !d.ok || !Array.isArray(d.bots)){
+      renderEngine(d && d.engine);
+      el.innerHTML = '<div class="empty">Error loading fleet</div>';
+      return;
+    }
+    renderEngine(d.engine);
+    if(d.bots.length === 0){
+      el.innerHTML = '<div class="empty">No bots found.</div>';
+      return;
+    }
+    el.innerHTML = `<table class="log-table">
+      <thead><tr>
+        <th scope="col"><input type="checkbox" id="sel-all" aria-label="Select all bots" onchange="toggleAll()"></th>
+        <th scope="col">Owner</th>
+        <th scope="col">Bot</th>
+        <th scope="col">Server</th>
+        <th scope="col">Channel</th>
+        <th scope="col">Interval</th>
+        <th scope="col">State</th>
+        <th scope="col">Trial</th>
+        <th scope="col">Message id</th>
+        <th scope="col">Actions</th>
+      </tr></thead>
+      <tbody>${d.bots.map(fleetRow).join('')}</tbody>
+    </table>`;
+    updateSel();
+  } catch(e) { el.innerHTML = '<div class="empty">Error loading fleet</div>'; }
+}
+
+function selectedIds(){
+  return Array.from(document.querySelectorAll('.row-sel:checked')).map(c => Number(c.dataset.id));
+}
+
+function updateSel(){
+  const boxes = document.querySelectorAll('.row-sel');
+  const all = document.getElementById('sel-all');
+  const n = selectedIds().length;
+  const cnt = document.getElementById('sel-count');
+  if(cnt) cnt.textContent = n + ' selected';
+  document.getElementById('btn-start-selected').disabled = n === 0;
+  document.getElementById('btn-stop-selected').disabled = n === 0;
+  if(all){
+    all.checked = boxes.length > 0 && n === boxes.length;
+    all.indeterminate = n > 0 && n < boxes.length;
+  }
+}
+
+function toggleAll(){
+  const on = document.getElementById('sel-all').checked;
+  document.querySelectorAll('.row-sel').forEach(c => { c.checked = on; });
+  updateSel();
+}
+
+async function batchAction(action){
+  const ids = selectedIds();
+  if(ids.length === 0) return;
+  if(action === 'stop' && !confirm('Stop ' + ids.length + ' bot' + (ids.length > 1 ? 's' : '') + '?')) return;
+  try {
+    const r = await fetch('/api/admin/bots/' + action, {
+      method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ids})
+    });
+    const d = await r.json();
+    if(d && d.ok){
+      const res = d.results || {};
+      const okN = Object.values(res).filter(v => v && v.ok).length;
+      const skipped = Object.entries(res).filter(([, v]) => v && !v.ok)
+        .map(([id, v]) => '#' + id + ' (' + v.error + ')');
+      toast(okN + '/' + ids.length + ' ' + action + 'ed'
+        + (skipped.length ? ' — skipped: ' + skipped.join(', ') : ''));
+    } else toast((d && d.error) || ('Could not ' + action + ' bots'), true);
+  } catch(e) { toast('Request failed', true); }
+  loadFleet();
+}
+
+async function botAction(botId, action){
+  try {
+    const r = await fetch('/api/admin/bots/' + botId + '/' + action, {
+      method:'POST', headers:{'Content-Type':'application/json'}
+    });
+    const d = await r.json();
+    if(d && d.ok) toast('Bot ' + action + 'ed');
+    else toast((d && d.error) || ('Could not ' + action + ' bot'), true);
+  } catch(e) { toast('Request failed', true); }
+  loadFleet();
+}
+
+async function deleteBot(botId){
+  if(!confirm('Delete bot #' + botId + '? This removes its configuration and cannot be undone.')) return;
+  try {
+    const r = await fetch('/api/admin/bots/' + botId, {
+      method:'DELETE', headers:{'Content-Type':'application/json'}
+    });
+    const d = await r.json();
+    if(d && d.ok) toast('Bot deleted'); else toast((d && d.error) || 'Delete failed', true);
+  } catch(e) { toast('Request failed', true); }
+  closeEdit();
+  loadFleet();
+}
+// The embed is round-tripped as text so the operator can fix a broken one, and
+// only sent when they actually changed it — a reformat alone must not clear
+// message_id (save_bot_config drops it whenever an embed is written).
+let EMBED_ORIGINAL = '';
+
+function closeEdit(){
+  const p = $('#edit-panel');
+  if(p){ p.hidden = true; p.innerHTML = ''; }
+}
+
+function editForm(b){
+  const editions = ['java', 'bedrock'];
+  return `<div class="card" style="margin-bottom:16px">
+    <h2>Edit bot #${esc(b.id)} <span class="pill">${esc(b.username || b.user_id || '')}</span></h2>
+    <form id="bot-form" autocomplete="off">
+      <div class="field"><label for="f-name">Name</label>
+        <input type="text" id="f-name" value="${esc(b.name || '')}"></div>
+      <div class="field"><label for="f-ip">Server address</label>
+        <input type="text" id="f-ip" value="${esc(b.server_ip || '')}"></div>
+      <div class="field"><label for="f-port">Server port</label>
+        <input type="number" id="f-port" min="1" max="65535" value="${esc(b.server_port == null ? '' : b.server_port)}"></div>
+      <div class="field"><label for="f-edition">Edition</label>
+        <select id="f-edition">${editions.map(e =>
+          `<option value="${e}"${(b.edition || 'java') === e ? ' selected' : ''}>${e}</option>`).join('')}</select></div>
+      <div class="field"><label for="f-interval">Update interval (seconds, minimum 15)</label>
+        <input type="number" id="f-interval" min="15" value="${esc(b.update_interval == null ? '' : b.update_interval)}"></div>
+      <div class="field"><label for="f-guild">Guild id</label>
+        <input type="text" id="f-guild" value="${esc(b.guild_id || '')}"></div>
+      <div class="field"><label for="f-channel">Channel id</label>
+        <input type="text" id="f-channel" value="${esc(b.channel_id || '')}"></div>
+      <div class="field"><label for="f-token">Bot token</label>
+        <input type="password" id="f-token" autocomplete="new-password"
+               placeholder="${esc(b.token_masked || 'not set')}" aria-describedby="token-hint">
+        <div id="token-hint" class="note" style="text-align:left;margin-top:6px">Stored token: <span class="log-ip">${esc(b.token_masked || 'not set')}</span>. Leave blank to keep it — the real token is never sent to this page. Saving a new token clears the posted message so it is re-created.</div></div>
+      <div class="field"><label for="f-embed">Embed JSON</label>
+        <textarea id="f-embed" rows="8" spellcheck="false" aria-describedby="embed-hint"></textarea>
+        <div id="embed-hint" class="note" style="text-align:left;margin-top:6px">Only sent if you edit it.</div></div>
+      <div class="row-actions">
+        <button type="submit" class="btn btn-primary btn-sm">Save changes</button>
+        <button type="button" class="btn btn-ghost btn-sm" onclick="closeEdit()">Cancel</button>
+      </div>
+    </form>
+    <div id="edit-result" class="note" style="text-align:left;margin-top:14px" role="status" aria-live="polite">Message id: ${esc(b.message_id || '—')}</div>
+  </div>`;
+}
+
+async function editBot(botId){
+  const p = $('#edit-panel'); if(!p) return;
+  p.hidden = false;
+  p.innerHTML = '<div class="empty">Loading configuration…</div>';
+  try {
+    const r = await fetch('/api/admin/bots/' + botId + '/config', {headers:{'Content-Type':'application/json'}});
+    const d = await r.json();
+    if(!d || !d.ok || !d.bot){
+      p.innerHTML = '<div class="empty">' + esc((d && d.error) || 'Could not load configuration') + '</div>';
+      return;
+    }
+    p.innerHTML = editForm(d.bot);
+    EMBED_ORIGINAL = JSON.stringify(d.bot.embed || {}, null, 2);
+    // Assigned as a value, never interpolated into the markup above: the embed
+    // is user-authored text.
+    $('#f-embed').value = EMBED_ORIGINAL;
+    $('#bot-form').addEventListener('submit', ev => saveBot(ev, d.bot.id));
+    $('#f-name').focus();
+  } catch(e) {
+    p.innerHTML = '<div class="empty">Request failed</div>';
+  }
+}
+
+async function saveBot(ev, botId){
+  ev.preventDefault();
+  const res = $('#edit-result');
+  const body = {
+    name: $('#f-name').value,
+    server_ip: $('#f-ip').value,
+    edition: $('#f-edition').value,
+    guild_id: $('#f-guild').value,
+    channel_id: $('#f-channel').value
+  };
+  // The two numeric fields are omitted when blank rather than sent as "": the
+  // API rejects a non-number, and blank here means "do not touch it".
+  if($('#f-port').value !== '') body.server_port = $('#f-port').value;
+  if($('#f-interval').value !== '') body.update_interval = $('#f-interval').value;
+  const token = $('#f-token').value;
+  if(token) body.token = token;
+  const embedText = $('#f-embed').value;
+  if(embedText !== EMBED_ORIGINAL){
+    try { body.embed = JSON.parse(embedText); }
+    catch(e){
+      if(res) res.textContent = 'Embed JSON is not valid: ' + e.message;
+      toast('Invalid embed JSON', true);
+      return;
+    }
+  }
+  if(res) res.textContent = 'Saving…';
+  try {
+    const r = await fetch('/api/admin/bots/' + botId + '/config', {
+      method:'PUT', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body)
+    });
+    const d = await r.json();
+    if(d && d.ok){
+      // Never keep a typed token in the DOM once it is stored.
+      $('#f-token').value = '';
+      if(res) res.textContent = 'Saved: ' + (d.updated || []).join(', ');
+      toast('Configuration saved');
+      loadFleet();
+    } else {
+      if(res) res.textContent = (d && d.error) || 'Save failed';
+      toast((d && d.error) || 'Save failed', true);
+    }
+  } catch(e) {
+    if(res) res.textContent = 'Request failed: ' + e.message;
+    toast('Request failed', true);
+  }
+}
+
+loadFleet();
+</script>
+</body>
+</html>

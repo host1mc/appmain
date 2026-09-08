@@ -1,0 +1,86 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{% block title %}DB Admin{% endblock %} - DB Admin</title>
+<link rel="stylesheet" href="/static/style.css">
+{% block head_extra %}{% endblock %}
+</head>
+<body>
+<div class="layout">
+
+  <aside class="sidebar">
+    <div class="brand">
+      <div class="logo">&#9673;</div>
+      <div class="lbl">
+        <div class="t">DB Admin</div>
+        <small><span class="live">&#9679;</span> live console</small>
+      </div>
+    </div>
+
+    <div class="db-selector">
+      <label>Database</label>
+      <select onchange="location.href='/switch/'+this.value">
+        {% for shard_id in available_shards %}
+        <option value="{{ shard_id }}" {{ 'selected' if shard_id == current_shard }}>
+          {% if shard_id == 0 %}Oracle SQL (BOTHOST){% elif shard_id == 1 %}Oracle SQL (BOTHOST1){% elif shard_id == 99 %}HeatWave (MySQL){% else %}MongoDB Shard {{ shard_id }}{% endif %}
+        </option>
+        {% endfor %}
+      </select>
+      <small class="shard-info">
+        {% if current_shard == 0 %}BOTHOST ATP{% elif current_shard == 1 %}BOTHOST1 ATP{% elif current_shard == 99 %}HeatWave MySQL{% else %}MongoDB Shard {{ current_shard }}{% endif %}
+      </small>
+    </div>
+
+    <nav class="side-nav">
+      <a href="/" class="{{ 'active' if request.path == '/' else '' }}"><span class="ic">&#9673;</span>Dashboard</a>
+      <a href="/tables" class="{{ 'active' if request.path == '/tables' else '' }}"><span class="ic">&#9636;</span>Tables</a>
+      <a href="/users" class="{{ 'active' if request.path == '/users' else '' }}"><span class="ic">&#9786;</span>Users</a>
+      <a href="/query" class="{{ 'active' if request.path == '/query' else '' }}"><span class="ic">&#128215;</span>Query Console</a>
+    </nav>
+
+    <div class="side-foot">
+      <div class="row"><span>Tables</span><b>{{ side_totals.collections|default(0)|num }}</b></div>
+      <div class="row" style="margin-top:8px"><span>Total rows</span><b>{{ side_totals.rows|default(0)|num }}</b></div>
+    </div>
+  </aside>
+
+  <main class="main">
+    <header class="topbar">
+      <div>
+        <h1>{% block h1 %}DB Admin{% endblock %}</h1>
+        <div class="crumb">{% block crumb %}db admin{% endblock %}</div>
+      </div>
+      <div class="chips">
+        <span class="chip"><span class="u">TABLES</span> {{ side_totals.collections|default(0) }}</span>
+      </div>
+    </header>
+
+    <div class="content">
+      {% with msgs = get_flashed_messages(with_categories=true) %}
+        {% for cat, m in msgs %}
+          <div class="alert hidden-alert" data-cat="{{ cat }}">{{ m }}</div>
+        {% endfor %}
+      {% endwith %}
+      {% block content %}{% endblock %}
+    </div>
+  </main>
+
+</div>
+
+<div class="modal-overlay" id="modalOverlay">
+  <div class="modal">
+    <div class="m-head">
+      <span id="modalTitle">Details</span>
+      <button class="x" id="modalClose" aria-label="Close">&times;</button>
+    </div>
+    <div class="m-body" id="modalBody"></div>
+  </div>
+</div>
+
+<div class="toasts" id="toasts"></div>
+
+<script src="/static/app.js"></script>
+</body>
+</html>

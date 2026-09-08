@@ -1,0 +1,180 @@
+{% extends "base.html" %}
+{% block title %}User {{ u.id|shortid }}{% endblock %}
+{% block h1 %}User {{ u.id|shortid }}{% endblock %}
+{% block crumb %}analysis / users / <span class="mono">{{ u.id|shortid }}</span>{% endblock %}
+{% block content %}
+
+{% set next_url = request.path %}
+
+<div class="panel">
+  <div class="p-body">
+    <div class="donut-wrap">
+      <div style="width:64px;height:64px;border-radius:18px;background:var(--grad);display:flex;align-items:center;justify-content:center;font-size:26px;font-weight:800;color:#fff;box-shadow:0 0 28px rgba(123,70,214,.5);flex-shrink:0">
+        {{ (u.name or u.id)[:1]|upper }}
+      </div>
+      <div style="flex:1;min-width:220px">
+        <h4 class="mono" style="margin:0;font-size:17px">{{ u.id }}</h4>
+        {% if u.name %}<span class="badge purple" style="margin-top:6px">{{ u.name }}</span>{% endif %}
+        <div class="text-muted small" style="margin-top:8px;color:var(--dim)">
+          {{ u.rows|num }} rows across {{ u.tables }} tables
+        </div>
+      </div>
+      <div class="stat-grid" style="margin-bottom:0;grid-template-columns:repeat(3,minmax(130px,1fr));flex:1">
+        <div class="stat" style="--accent:#9b59b6;padding:12px 14px">
+          <div class="k">Tables</div>
+          <div class="v" style="font-size:20px" data-anim="num" data-n="{{ u.tables }}">{{ u.tables }}</div>
+        </div>
+        <div class="stat" style="--accent:#43b581;padding:12px 14px">
+          <div class="k">Rows</div>
+          <div class="v" style="font-size:20px" data-anim="num" data-n="{{ u.rows }}">{{ u.rows|num }}</div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="grid-2">
+  <div class="panel">
+    <div class="p-head"><span>Rows per table</span><span class="sub">relative to the user's largest table</span></div>
+    <div class="p-body">
+      {% for tname, cnt, b in u.breakdown %}
+      <div class="bar-row">
+        <span class="name mono">{{ tname }}</span>
+        <div class="track"><div class="fill cyan" data-anim="bar" data-w="{{ (cnt / u.breakdown[0][1] * 100)|round(1) if u.breakdown[0][1] else 0 }}" style="width:0"></div></div>
+        <span class="val mono">{{ cnt|num }} rows</span>
+      </div>
+      {% else %}
+      <div class="empty">No rows.</div>
+      {% endfor %}
+    </div>
+  </div>
+
+  <div class="panel">
+    <div class="p-head"><span>Bots</span><span class="badge gray">{{ bots|length }}</span></div>
+    <div class="p-body">
+      <div class="lb" style="grid-template-columns:1fr">
+        {% for b in bots %}
+        <div class="lb-card">
+          <div class="uid">{{ b.name }} <span class="badge gray">{{ b.edition }}</span></div>
+          <div class="meta">{{ b.ip }}:{{ b.port }}</div>
+          <div class="foot">
+            <span>
+              <span class="pulse" style="display:inline-block;width:8px;height:8px;border-radius:50%;margin-right:6px;background:var(--green);box-shadow:0 0 8px var(--green);animation:pulse 2s infinite"></span>
+              <span style="color:var(--green);font-weight:600;font-size:12.5px">{{ 'Running' if b.running else 'Stopped' }}</span>
+            </span>
+            <span style="display:flex;align-items:center;gap:8px">
+              <span class="small" style="color:var(--dim);font-family:var(--mono)">{{ b.last_run }}</span>
+              {% if b.pk %}
+              <button class="btn sm danger ghost" type="button" data-post="/table/{{ b.tbl|urlencode }}/delete_row"
+                      data-rowid="{{ b.pk }}" data-next="{{ next_url }}"
+                      data-confirm="Delete bot {{ b.name }}? This cannot be undone." title="Delete bot">
+                <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2m3 0v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/></svg>
+                Delete
+              </button>
+              {% endif %}
+            </span>
+          </div>
+        </div>
+        {% else %}
+        <div class="empty">No bots.</div>
+        {% endfor %}
+      </div>
+    </div>
+  </div>
+</div>
+
+{% set groups = atp_groups %}
+
+<div class="panel">
+  <div class="p-head">
+    <span>Linked data</span>
+    <span class="sub">
+      every table that carries this user's id -
+      {{ linked_rows|num }} row(s) in {{ groups|length }} table(s), showing up to {{ per_table }} per table
+    </span>
+  </div>
+  <div class="p-body">
+    <div style="display:flex;flex-wrap:wrap;gap:8px">
+      {% set engine = atp_groups[0].engine if atp_groups else 'oracle' %}
+      <span class="chip"><span class="u">{{ engine|upper }}</span> {{ atp_groups|length }} table(s), {{ (atp_groups|sum(attribute='total'))|num }} rows</span>
+    </div>
+    {% if not groups %}
+    <div class="empty" style="margin-top:14px">No table holds a row for this user.</div>
+    {% endif %}
+  </div>
+</div>
+
+{% for g in groups %}
+<div class="panel">
+  <div class="p-head">
+    <span>
+      <span class="badge purple">{{ g.engine|upper }}</span>
+      <span class="mono" style="font-size:15px">{{ g.schema }}.{{ g.table }}</span>
+      <span class="badge gray">matched on {{ g.column }}</span>
+      <span class="badge green">{{ g.total|num }} rows</span>
+      {% if g.shown < g.total %}<span class="badge yellow">showing first {{ g.shown|num }}</span>{% endif %}
+    </span>
+    <a class="btn sm ghost" href="{{ g.href }}">Open table -&gt;</a>
+  </div>
+  <div class="p-body flush">
+    <form data-mass action="/table/{{ g.table|urlencode }}/delete_rows" method="post" data-confirm="Delete the selected row(s) from {{ g.table }}? This cannot be undone.">
+      <input type="hidden" name="next" value="{{ next_url }}">
+      <div style="display:flex;align-items:center;gap:8px;padding:8px 10px;border-bottom:1px solid rgba(255,255,255,.06)">
+        <label style="display:flex;align-items:center;gap:6px;font-size:12px;color:var(--muted2);cursor:pointer">
+          <input type="checkbox" data-check-all style="width:14px;height:14px;accent-color:#e74c3c">
+          <span>Select all</span>
+        </label>
+        <button class="btn sm danger ghost" type="submit" data-mass-btn disabled style="opacity:.45">
+          Delete selected (<span data-mass-count>0</span>)
+        </button>
+      </div>
+      <div class="table-wrap">
+        <table class="tbl">
+          <thead>
+            <tr>
+              <th style="width:28px"></th>
+              {% for c in g.columns %}<th>{{ c }}</th>{% endfor %}
+              <th></th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for r in g.rows %}
+            <tr>
+              <td><input type="checkbox" name="rowid" value="{{ r[0] }}" style="width:14px;height:14px;accent-color:#e74c3c;cursor:pointer"></td>
+              {% for v in r %}
+              {% set cname = g.columns[loop.index0] %}
+              <td class="mono {% if v is none %}null{% endif %}">
+                {% if v is not none and (v|string)|length > 140 %}
+                <span class="trunc" title="{{ v|cell(cname) }}">{{ v|cell(cname) }}</span>
+                {% else %}
+                {{ v|cell(cname) }}
+                {% endif %}
+              </td>
+              {% endfor %}
+              <td class="num">
+                <button class="action-icon del" type="button" title="Delete row"
+                        data-post="/table/{{ g.table|urlencode }}/delete_row"
+                        data-rowid="{{ r[0] }}"
+                        data-next="{{ next_url }}"
+                        data-confirm="Delete this row from {{ g.table }}? This cannot be undone.">&times;</button>
+              </td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    </form>
+  </div>
+</div>
+{% endfor %}
+
+<div class="panel danger-zone">
+  <div class="p-head">Delete ALL user data</div>
+  <div class="p-body">
+    <p style="margin:0 0 12px;color:var(--dim)">This will delete every row belonging to this user across all {{ groups|length }} table(s) ({{ linked_rows|num }} rows total).</p>
+    <button class="btn danger" type="button" data-post="/user/{{ u.id|urlencode }}/delete_all"
+            data-confirm="Delete ALL data for this user across every table? This cannot be undone.">Delete all user data</button>
+  </div>
+</div>
+
+{% endblock %}

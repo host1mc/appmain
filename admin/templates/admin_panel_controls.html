@@ -1,0 +1,75 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Panel Controls — Admin</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body data-guard="off">
+  <div id="script-gate">
+    <div class="js-required"><div><h1>JavaScript Required</h1><p>This site needs JavaScript enabled to continue. Please disable any script/content blocker for this site, then reload.</p></div></div>
+  </div>
+  <div class="nav">
+    <div class="brand"><a href="{{ url_for('admin_panel') }}"><span class="dot"></span> MC Status Hosting</a> <span class="pill">Admin</span></div>
+    <div class="links"><a href="{{ url_for('admin_panel') }}">Panel</a> <a href="/admin/bots">Fleet</a> <a href="{{ url_for('admin_panel_controls') }}" aria-current="page" style="color:var(--txt);background:var(--card2)">Hosting</a> <a href="/admin/nodes">Nodes</a> <a href="{{ url_for('admin_flags') }}">Flags</a> <a href="{{ url_for('admin_errors') }}">Errors</a> <a href="{{ url_for('admin_reviews') }}">Reviews</a> <a href="/admin/ads">Ads</a> <a href="{{ url_for('admin_database') }}">Database</a> <a href="/admin/account">Account</a></div>
+  </div>
+
+  <div class="container">
+    <div id="maint-banner"></div>
+
+    <div class="stat-strip" id="stat-strip"></div>
+
+    <div class="panel-grid">
+      <div>
+        <div class="card">
+          <h2>Maintenance Mode</h2>
+          <p style="font-size:13px;color:var(--muted)">The one switch that changes the panel for everyone at once. With it on the panel is closed: every page redirects to a maintenance notice carrying the text below, the JSON APIs answer 503 and the live console is refused. Containers keep running throughout.</p>
+          <div id="maint-control"><div class="empty">Loading…</div></div>
+          <div class="field" style="margin-top:16px">
+            <label for="maint-message">Notice text shown to users</label>
+            <textarea id="maint-message" rows="3" maxlength="240" placeholder="The panel is in maintenance…"></textarea>
+            <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;margin-top:8px">
+              <span style="font-size:11px;color:var(--muted2)"><span id="msg-count">0</span>/<span id="msg-max">240</span> characters — blank restores the default text</span>
+              <button class="btn btn-sm" id="msg-save">Save text</button>
+            </div>
+          </div>
+        </div>
+
+        <div class="card">
+          <h2>Feature Switches</h2>
+          <p style="font-size:13px;color:var(--muted)">What the panel lets accounts do. Each switch is a row in the shared settings table, so both load-balanced instances pick it up — no restart, no unit-file edit.</p>
+          <div id="flag-list"><div class="empty">Loading…</div></div>
+        </div>
+      </div>
+
+      <div>
+        <div class="card">
+          <h2>Resource Allocation</h2>
+          <p style="font-size:13px;color:var(--muted)">The figures the panel quotes and the node enforces on every new container. Changing one here changes what the deploy page shows <em>and</em> what the container actually gets — they used to be separate literals that could drift apart.</p>
+          <div id="limit-list"><div class="empty">Loading…</div></div>
+        </div>
+
+        <div class="card">
+          <h2>What Applies When</h2>
+          <p style="font-size:13px;color:var(--muted);line-height:1.7">Every control here is stored in the database, not the environment, so it takes effect on both panel instances within a few seconds of saving.</p>
+          <ul style="font-size:13px;color:var(--muted);line-height:1.8;padding-left:18px">
+            <li><strong>Immediately</strong> — feature switches and the maintenance notice: the panel re-reads them on request.</li>
+            <li><strong>On next deploy</strong> — memory, CPU and disk. A running container keeps the allocation it was created with; the node applies the new figures to containers made after the change.</li>
+            <li><strong>On next create</strong> — servers per account. Lowering it below what an account already has never deletes anything; that account simply cannot create more until it is under the new limit.</li>
+          </ul>
+          <p style="font-size:13px;color:var(--muted);line-height:1.7">A control that has never been changed has no row at all and follows its built-in default, shown beside each switch.</p>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="toast" id="toast"></div>
+
+<script src="{{ url_for('static', filename='admin_panel_controls.js') }}" defer></script>
+<!-- device fingerprint (sent as X-Device-Fingerprint on admin API calls) -->
+<script src="{{ url_for('static', filename='fp-guard.js') }}" defer></script>
+</body>
+</html>

@@ -1,0 +1,60 @@
+{% extends "base.html" %}
+{% block title %}Query Console{% endblock %}
+{% block h1 %}Query Console{% endblock %}
+{% block crumb %}tools / SQL query console{% endblock %}
+{% block content %}
+
+<div class="panel">
+  <div class="p-head">
+    <span>Query</span>
+    <span class="sub">runs on the selected database - Ctrl+Enter to run</span>
+  </div>
+  <div class="p-body">
+    <form id="queryForm">
+      <div class="sql-editor">
+        <div class="bar">
+          <span class="dotl r"></span><span class="dotl y"></span><span class="dotl g"></span>
+          <span style="margin-left:8px">SQL</span>
+        </div>
+        <textarea class="inp" id="sqlInput" rows="9" placeholder="SELECT * FROM users FETCH FIRST 10 ROWS ONLY"></textarea>
+      </div>
+      <div style="margin-top:14px;display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+        <button class="btn primary" type="submit">&#9654; Run query</button>
+        <button class="btn ghost" type="button" id="loadSample">Load sample</button>
+      </div>
+    </form>
+    <div class="sample-chips">
+      <span class="chip" data-sample="list_colls">list tables</span>
+      <span class="chip" data-sample="count_users">count users</span>
+      <span class="chip" data-sample="find_bots">show bots</span>
+    </div>
+  </div>
+</div>
+
+<div class="panel">
+  <div class="p-head"><span>Results</span></div>
+  <div class="p-body" id="queryOut">
+    <div class="empty">Run a query to see results here.</div>
+  </div>
+</div>
+
+<script>
+const SAMPLES = {
+  list_colls: "SELECT table_name FROM user_tables ORDER BY table_name",
+  count_users: "SELECT COUNT(*) FROM users",
+  find_bots: "SELECT * FROM bots FETCH FIRST 10 ROWS ONLY",
+};
+
+function setSql(v) {
+  document.getElementById("sqlInput").value = v;
+  document.getElementById("sqlInput").dispatchEvent(new Event("input"));
+  document.getElementById("sqlInput").focus();
+}
+
+document.getElementById("loadSample").addEventListener("click", () => setSql(SAMPLES.list_colls));
+document.querySelectorAll("[data-sample]").forEach((c) => {
+  c.addEventListener("click", () => setSql(SAMPLES[c.dataset.sample]));
+});
+</script>
+
+{% endblock %}

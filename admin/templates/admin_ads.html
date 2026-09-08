@@ -1,0 +1,298 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Advertising Control — Admin</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body data-guard="off">
+  <div id="script-gate">
+    <div class="js-required"><div><h1>JavaScript Required</h1><p>This site needs JavaScript enabled to continue. Please disable any script/content blocker for this site, then reload.</p></div></div>
+  </div>
+  <div class="nav">
+    <div class="brand"><a href="{{ url_for('admin_panel') }}"><span class="dot"></span> MC Status Hosting</a> <span class="pill">Admin</span></div>
+    <div class="links"><a href="{{ url_for('admin_panel') }}">Panel</a> <a href="/admin/bots">Fleet</a> <a href="{{ url_for('admin_panel_controls') }}">Hosting</a> <a href="/admin/nodes">Nodes</a> <a href="{{ url_for('admin_flags') }}">Flags</a> <a href="{{ url_for('admin_errors') }}">Errors</a> <a href="{{ url_for('admin_reviews') }}">Reviews</a> <a href="/admin/ads" aria-current="page" style="color:var(--txt);background:var(--card2)">Ads</a> <a href="{{ url_for('admin_database') }}">Database</a> <a href="/admin/account">Account</a></div>
+  </div>
+
+  <div class="container">
+    <div class="panel-grid">
+      <div>
+        <div class="card">
+          <h2>Ad Networks</h2>
+          <p style="font-size:13px;color:var(--muted)">The page-head loaders and the site's ad providers (Monetag MultiTag, Adstera…). A network that is off emits no loader tag for anyone. When <strong>every</strong> network is off, no advertising can work at all — every zone below resolves off for everyone, whatever its switch says. Turning the master off below kills the loaders too.</p>
+          <div id="network-list"><div class="empty">Loading…</div></div>
+        </div>
+
+        <div class="card">
+          <h2>Global Ad Switch</h2>
+          <p style="font-size:13px;color:var(--muted)">The master switch. When it is off, no advertising renders for anyone — not even the network loaders above.</p>
+          <div class="field" style="flex-direction:row;gap:8px">
+            <button class="btn" id="master-on">Enable ads</button>
+            <button class="btn btn-red" id="master-off">Disable all ads</button>
+            <span class="pill" id="master-state">…</span>
+          </div>
+        </div>
+
+        <div class="card">
+          <h2>Per-Zone Switches</h2>
+          <p style="font-size:13px;color:var(--muted)">Global per-zone toggles. A zone with no row has never been switched off, so it defaults on.</p>
+          <div id="zone-list"><div class="empty">Loading…</div></div>
+        </div>
+
+        <div class="card">
+          <h2>Consent &amp; Ad-Block Guard</h2>
+          <p style="font-size:13px;color:var(--muted);line-height:1.7">Ads do not depend on visitor consent, and a visitor running an ad blocker is sent to <strong>/blocked</strong> until it is off — search crawlers excepted, always treated as <strong>off</strong>.</p>
+        </div>
+
+        <div class="card">
+          <h2>Per-Page Switches</h2>
+          <p style="font-size:13px;color:var(--muted)">Which pages may carry advertising at all. A page switch and a zone switch are independent axes: <strong>both</strong> must be on for an ad to render. Turning a page on does not make a zone appear, and a zone that is on renders nothing on a page that is off.</p>
+          <p style="font-size:13px;color:var(--muted)">The account-page defaults reproduce a denylist that used to be hardcoded in the site's code: those six pages handle credentials, account data, bot tokens and reply content, so they ship off. Turning one on is a deliberate act.</p>
+          <div id="page-list"><div class="empty">Loading…</div></div>
+        </div>
+      </div>
+
+      <div>
+        <div class="card">
+          <h2>How It Resolves</h2>
+          <p style="font-size:13px;color:var(--muted);line-height:1.7">
+            A visitor's ads are decided by six switches, first "no" wins:
+          </p>
+          <ol style="font-size:13px;color:var(--muted);line-height:1.8;padding-left:18px">
+            <li><strong>Global master</strong> — this page. Off means nothing renders for anyone.</li>
+            <li><strong>Per-user "All Ads" toggle</strong> — set from the user's detail page (Advertising section). Off kills everything for that user.</li>
+            <li><strong>Ad network switch</strong> — the head loaders, this page. When every network is off, no zone renders for anyone.</li>
+            <li><strong>Per-page switch</strong> — this page. The page the visitor is on must be on.</li>
+            <li><strong>Global per-zone switch</strong> — this page. The zone must be on.</li>
+            <li><strong>Per-user per-zone override</strong> — set from the user's detail page.</li>
+          </ol>
+          <p style="font-size:13px;color:var(--muted);line-height:1.7">Page and zone are independent axes, not a hierarchy — <strong>both</strong> must be on. Turning a page on does not make a zone appear, and a zone that is on renders nothing on a page that is off.</p>
+          <p style="font-size:13px;color:var(--muted);line-height:1.7"><strong>Consent</strong> does not affect whether ads render.</p>
+          <p style="font-size:13px;color:var(--muted);line-height:1.7"><strong>Ad-block guard</strong> always gates a blocked visitor to /blocked, except search crawlers, which are treated as <em>off</em>.</p>
+          <p style="font-size:13px;color:var(--muted);line-height:1.7">Anonymous visitors only see 1, 3, 4 and 5. Per-user overrides live in the <a href="{{ url_for('admin_panel') }}">Users list</a> &rarr; select a user.</p>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="toast" id="toast"></div>
+
+<script>
+const $ = s => { try { return document.querySelector(s); } catch(e) { return null; } };
+function toast(msg, err=false){
+  const t = $('#toast'); if(!t) return;
+  t.textContent = msg;
+  t.className = 'toast show' + (err ? ' err' : '');
+  setTimeout(()=>{ if(t) t.className='toast'; }, 2600);
+}
+function api(url, opts={}){
+  return new Promise(resolve => {
+    try {
+      const xhr = new XMLHttpRequest();
+      xhr.open((opts.method || 'GET'), url, true);
+      xhr.setRequestHeader('Content-Type', 'application/json');
+      if(window.__deviceFingerprint) xhr.setRequestHeader('X-Device-Fingerprint', window.__deviceFingerprint);
+      xhr.timeout = 30000;
+      xhr.onload = () => { try { resolve(JSON.parse(xhr.responseText)); } catch(e) { resolve({ok:false, error:'Invalid JSON'}); } };
+      xhr.onerror = () => resolve({ok:false, error:'Network error'});
+      xhr.ontimeout = () => resolve({ok:false, error:'Request timed out'});
+      xhr.send(opts.body || null);
+    } catch(e) { resolve({ok:false, error:'Network error: ' + e.message}); }
+  });
+}
+function esc(s){ return String(s==null?'':s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+
+let STATE = { ads_enabled: true, networks: [], zones: [], pages: {} };
+// Only the newest overview fetch may paint, and a write repaints nothing but
+// its own control. Every write used to refetch and rebuild the whole zone list,
+// so flipping two switches in quick succession made the first one's refresh
+// revert the second from a response issued before that write had landed.
+let loadSeq = 0;
+
+// Grouping for the page list only. The split is the server's default_on flag,
+// shipped per page by get_all_ad_pages() — not a list of endpoint names kept
+// here, which would put a newly-added default-off page under a heading that says
+// "these default on". Anything the API somehow sends without the flag is treated
+// as default-on, matching how _ads_permitted() waves through an unlisted page.
+const PAGE_GROUPS = [
+  { title: 'Public pages', account: false,
+    note: 'Marketing and content pages. These default on.' },
+  { title: 'Account pages', account: true,
+    note: 'Credentials, account data, bot tokens and reply content. These default off — the old hardcoded denylist.' }
+];
+
+function renderMaster(){
+  const el = $('#master-state'); if(!el) return;
+  el.textContent = STATE.ads_enabled ? 'ADS ON' : 'ADS OFF';
+  el.className = 'pill ' + (STATE.ads_enabled ? '' : 'warn');
+}
+
+function renderNetworks(){
+  const list = $('#network-list'); if(!list) return;
+  list.innerHTML = STATE.networks.map(n => `
+    <div class="zone-row" style="display:flex;justify-content:space-between;align-items:center;gap:8px;padding:8px 0;border-bottom:1px solid var(--line)">
+      <div>
+        <div style="font-size:14px">${esc(n.label)}</div>
+        <div style="font-size:11px;color:var(--muted)">${n.configured ? 'loader configured' : 'no loader configured — the toggle is stored but nothing will load until ads_config.py gets the tag'}</div>
+      </div>
+      <div style="display:flex;align-items:center;gap:8px;flex-shrink:0">
+        <span class="pill ${n.enabled ? '' : 'warn'}">${n.enabled ? 'ON' : 'OFF'}</span>
+        <button class="btn" data-net="${esc(n.key)}" data-on="1" ${n.enabled ? 'disabled' : ''}>Enable</button>
+        <button class="btn btn-red" data-net="${esc(n.key)}" data-on="0" ${n.enabled ? '' : 'disabled'}>Disable</button>
+      </div>
+    </div>`).join('');
+  document.querySelectorAll('#network-list button[data-net]').forEach(el => {
+    el.addEventListener('click', () => setNetwork(el));
+  });
+}
+
+function renderPages(){
+  const list = $('#page-list'); if(!list) return;
+  const pages = STATE.pages || {}, keys = Object.keys(pages);
+  if(!keys.length){ list.innerHTML = '<div class="empty">No pages reported</div>'; return; }
+  const masterOff = !STATE.ads_enabled;
+  list.innerHTML = PAGE_GROUPS.map(g => {
+    const mine = keys.filter(k => ((pages[k] || {}).default_on === false) === g.account);
+    if(!mine.length) return '';
+    return `
+    <div style="margin-bottom:4px">
+      <div style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.5px;color:var(--muted2);margin:12px 0 2px">${esc(g.title)}</div>
+      <div style="font-size:11px;color:var(--muted);line-height:1.6;margin-bottom:4px">${g.note}</div>
+      ${mine.map(k => {
+        const p = pages[k] || {};
+        return `
+      <div class="zone-row" style="display:flex;justify-content:space-between;align-items:center;padding:8px 0;border-bottom:1px solid var(--line)">
+        <div>
+          <div style="font-size:14px${masterOff ? ';opacity:.55' : ''}">${esc(p.label || k)}</div>
+          <div style="font-size:11px;color:var(--muted)">${esc(k)}</div>
+        </div>
+        <label style="display:flex;align-items:center;gap:8px;font-size:13px;color:var(--muted)${masterOff ? ';opacity:.55' : ''}">
+          <input type="checkbox" ${!masterOff && p.enabled ? 'checked':''} data-page="${esc(k)}" style="width:auto" ${masterOff ? 'disabled' : ''}> <span>${masterOff ? 'off (master off)' : (p.enabled ? 'on' : 'off')}</span>
+        </label>
+      </div>`;
+      }).join('')}
+    </div>`;
+  }).join('');
+  document.querySelectorAll('#page-list input[data-page]').forEach(el => {
+    el.addEventListener('change', () => setPage(el.dataset.page, el.checked, el));
+  });
+}
+
+function render(){
+  renderMaster();
+  renderNetworks();
+  renderPages();
+  const masterOff = !STATE.ads_enabled;
+  $('#zone-list').innerHTML =
+    (masterOff ? '<div class="flag-banner sev-warn" style="margin-bottom:10px"><span class="fb-dot"></span> Global master is OFF — no advertising renders for anyone. The switches below are still configured on and will apply again once the master is re-enabled.</div>' : '')
+    + STATE.zones.map(z => `
+    <div class="zone-row" style="display:flex;justify-content:space-between;align-items:center;padding:8px 0;border-bottom:1px solid var(--line)">
+      <div>
+        <div style="font-size:14px${masterOff ? ';opacity:.55' : ''}">${esc(z.label)}</div>
+        <div style="font-size:11px;color:var(--muted)">${esc(z.key)}</div>
+      </div>
+      <label style="display:flex;align-items:center;gap:8px;font-size:13px;color:var(--muted)${masterOff ? ';opacity:.55' : ''}">
+        <input type="checkbox" ${!masterOff && z.enabled ? 'checked':''} data-zone="${esc(z.key)}" style="width:auto" ${masterOff ? 'disabled' : ''}> ${masterOff ? 'off (master off)' : (z.enabled ? 'on' : 'off')}
+      </label>
+    </div>`).join('');
+  document.querySelectorAll('#zone-list input[data-zone]').forEach(el => {
+    el.addEventListener('change', () => setZone(el));
+  });
+}
+
+async function loadAds(){
+  const seq = ++loadSeq;
+  const r = await api('/api/admin/ads');
+  if(seq !== loadSeq) return;
+  if(r && r.ok){
+    STATE = {
+      ads_enabled: !!r.ads_enabled, networks: r.networks || [], zones: r.zones || [],
+      pages: r.pages || {}
+    };
+    render();
+  }
+  else toast((r&&r.error) || 'Error loading ads', true);
+}
+
+async function setNetwork(el){
+  const key = el.dataset.net, enabled = el.dataset.on === '1';
+  el.disabled = true;
+  const r = await api('/api/admin/ads/networks/' + encodeURIComponent(key), {method:'PUT', body:JSON.stringify({enabled})});
+  if(r && r.ok){
+    const n = STATE.networks.find(x => x.key === key);
+    if(n) n.enabled = !!r.enabled;
+    renderNetworks();
+    toast(key + (r.enabled ? ' enabled' : ' disabled'));
+  } else {
+    toast((r&&r.error) || 'Failed', true);
+    renderNetworks();
+  }
+}
+
+// The zone rows carry the raw per-zone rows, not the resolved answer, so the
+// master switch cannot change them — repainting the pill is the whole update.
+async function setMaster(enabled){
+  const on = $('#master-on'), off = $('#master-off');
+  if(on) on.disabled = true;
+  if(off) off.disabled = true;
+  const r = await api('/api/admin/ads', {method:'PUT', body:JSON.stringify({ads_enabled: enabled})});
+  if(on) on.disabled = false;
+  if(off) off.disabled = false;
+  if(r && r.ok){
+    STATE.ads_enabled = !!r.ads_enabled;
+    render();
+    toast(enabled ? 'Ads enabled' : 'Ads disabled globally');
+  }
+  else toast((r&&r.error) || 'Failed', true);
+}
+
+async function setZone(el){
+  const zone = el.dataset.zone, enabled = el.checked;
+  el.disabled = true;
+  const r = await api('/api/admin/ads/zones/' + encodeURIComponent(zone), {method:'PUT', body:JSON.stringify({enabled})});
+  el.disabled = false;
+  if(r && r.ok){
+    const z = STATE.zones.find(x => x.key === zone);
+    if(z) z.enabled = !!r.enabled;
+    el.checked = !!r.enabled;
+    toast(zone + ' ' + (r.enabled?'on':'off'));
+  } else {
+    el.checked = !enabled;
+    toast((r&&r.error) || 'Failed', true);
+  }
+}
+
+// The page rows are not rebuilt on a write (that would detach the checkbox a
+// sibling write is still holding), so the on/off word next to the box is nudged
+// in place instead.
+async function setPage(endpoint, enabled, el){
+  if(el) el.disabled = true;
+  const r = await api('/api/admin/ads/pages/' + encodeURIComponent(endpoint), {method:'PUT', body:JSON.stringify({enabled})});
+  if(el) el.disabled = false;
+  if(r && r.ok){
+    const now = (r.enabled == null ? !!enabled : !!r.enabled);
+    const p = STATE.pages[endpoint];
+    if(p) p.enabled = now;
+    if(el){
+      el.checked = now;
+      if(el.nextElementSibling) el.nextElementSibling.textContent = now ? 'on' : 'off';
+    }
+    toast(endpoint + ' ' + (now ? 'on' : 'off'));
+  } else {
+    if(el) el.checked = !enabled;
+    toast((r&&r.error) || 'Failed', true);
+  }
+}
+
+$('#master-on').addEventListener('click', ()=>setMaster(true));
+$('#master-off').addEventListener('click', ()=>setMaster(false));
+loadAds();
+</script>
+
+<!-- device fingerprint (sent as X-Device-Fingerprint on admin API calls) -->
+<script src="{{ url_for('static', filename='fp-guard.js') }}" defer></script>
+</body>
+</html>

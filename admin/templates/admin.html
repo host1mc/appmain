@@ -1,0 +1,590 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Admin Panel</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+  <style>
+    .smtp-tab{padding:7px 14px;font-size:12px;border-radius:var(--radius-sm)}
+    .smtp-tab.active{border-color:var(--accent);background:rgba(var(--accent-rgb),.12);color:var(--accent)}
+  </style>
+</head>
+<body data-guard="off">
+  <div id="script-gate">
+    <div class="js-required"><div><h1>JavaScript Required</h1><p>This site needs JavaScript enabled to continue. Please disable any script/content blocker for this site, then reload.</p></div></div>
+  </div>
+  <div class="nav">
+    <div class="brand"><a href="{{ url_for('admin_panel') }}"><span class="dot"></span> MC Status Hosting</a> <span class="pill">Admin</span></div>
+    <div class="links"><a href="{{ url_for('admin_panel') }}" aria-current="page" style="color:var(--txt);background:var(--card2)">Panel</a> <a href="/admin/bots">Fleet</a> <a href="{{ url_for('admin_panel_controls') }}">Hosting</a> <a href="/admin/nodes">Nodes</a> <a href="{{ url_for('admin_flags') }}">Flags</a> <a href="{{ url_for('admin_errors') }}">Errors</a> <a href="{{ url_for('admin_reviews') }}">Reviews</a> <a href="/admin/ads">Ads</a> <a href="{{ url_for('admin_database') }}">Database</a> <a href="/admin/account">Account</a></div>
+  </div>
+
+  <div class="container">
+    <div class="panel-grid">
+      <div>
+        <div class="card">
+          <h2>Create User</h2>
+          <div class="field"><label>Username</label><input id="c_user" placeholder="e.g. endevil"></div>
+          <div class="field"><label>Display Name (optional)</label><input id="c_display" placeholder="Endevil's Zone"></div>
+          <div class="field"><label>Password</label><input id="c_pass" type="text" placeholder="set a password"></div>
+           <div class="field"><label>Account Type</label><select id="c_acct"><option value="trial">Trial (7 days)</option><option value="paid">Paid</option></select></div>
+           <div class="field"><label>Email</label><input id="c_email" placeholder="user@example.com"></div>
+           <div class="field" style="flex-direction:row;gap:8px"><label style="margin:0;display:flex;align-items:center;gap:6px"><input id="c_verified" type="checkbox" style="width:auto"> Email verified</label></div>
+           <div class="field"><label>Bot Slots <span class="muted">(0 = disabled)</span></label><input id="c_slots" type="number" value="1" min="0" max="20"></div>
+          <button class="btn btn-primary" onclick="createUser()">Create User</button>
+        </div>
+
+        <div class="card">
+          <h2>Users <span class="pill" id="user-count">0</span></h2>
+          <input id="user-q" placeholder="Filter users… (name, email, banned, trial, paid, flagged)" oninput="renderUsers()"
+                 style="width:100%;background:var(--bg2);border:1.5px solid var(--line);color:var(--txt);padding:9px 12px;border-radius:var(--radius-sm);font-size:13px;font-family:inherit;margin-bottom:10px">
+          <div id="user-list"><div class="empty">Loading…</div></div>
+        </div>
+
+        <div class="card">
+          <h2>SMTP Settings <span class="badge" id="smtp-status" style="font-size:11px">unconfigured</span></h2>
+          <div style="display:flex;gap:6px;margin:0 0 12px">
+            <button class="btn btn-ghost btn-sm smtp-tab active" id="smtp-tab-auth" onclick="smtpTab('auth')">Login / OTP</button>
+            <button class="btn btn-ghost btn-sm smtp-tab" id="smtp-tab-warn" onclick="smtpTab('warn')">Warnings</button>
+          </div>
+          <div id="smtp-pane-auth">
+            <div class="field"><label>SMTP Host</label><input id="smtp_host" placeholder="smtp.gmail.com"></div>
+            <div class="field"><label>Port</label><input id="smtp_port" type="number" value="587"></div>
+            <div class="field"><label>Username</label><input id="smtp_user" type="password" placeholder="Leave empty to keep current"><span class="note" style="display:block;text-align:left;margin-top:2px"></span></div>
+            <div class="field"><label>Password</label><input id="smtp_pass" type="password" placeholder="Leave empty to keep current"><span class="note" style="display:block;text-align:left;margin-top:2px"></span></div>
+            <div class="field"><label>From Address</label><input id="smtp_from" placeholder="noreply@yourdomain.com"></div>
+            <div class="field"><label>Send Test Email To</label><input id="smtp_test_to" type="email" placeholder="you@example.com"><span class="note" style="display:block;text-align:left;margin-top:2px">If set, the test actually sends an email to this address; otherwise it only checks the connection.</span></div>
+            <button class="btn btn-primary" onclick="saveSmtpConfig('auth')">Save Login/OTP SMTP</button>
+            <button class="btn btn-ghost btn-sm" onclick="testSmtpConfig('auth')" style="margin-top:6px">Test Connection</button>
+          </div>
+          <div id="smtp-pane-warn" style="display:none">
+            <div class="field"><label>SMTP Host</label><input id="wsmtp_host" placeholder="smtp.alerts.yourdomain.com"></div>
+            <div class="field"><label>Port</label><input id="wsmtp_port" type="number" value="587"></div>
+            <div class="field"><label>Username</label><input id="wsmtp_user" type="password" placeholder="Leave empty to keep current"><span class="note" style="display:block;text-align:left;margin-top:2px"></span></div>
+            <div class="field"><label>Password</label><input id="wsmtp_pass" type="password" placeholder="Leave empty to keep current"><span class="note" style="display:block;text-align:left;margin-top:2px"></span></div>
+            <div class="field"><label>From Address</label><input id="wsmtp_from" placeholder="alerts@yourdomain.com"></div>
+            <div class="field"><label>Send Test Email To</label><input id="wsmtp_test_to" type="email" placeholder="you@example.com"><span class="note" style="display:block;text-align:left;margin-top:2px">Warning emails (inactivity, expiry, stop notices) are sent from this SMTP. Falls back to the Login/OTP SMTP until configured.</span></div>
+            <button class="btn btn-primary" onclick="saveSmtpConfig('warn')">Save Warnings SMTP</button>
+            <button class="btn btn-ghost btn-sm" onclick="testSmtpConfig('warn')" style="margin-top:6px">Test Connection</button>
+          </div>
+        </div>
+      </div>
+
+      <div>
+        <div class="card" id="detail-card">
+          <h2>User Details</h2>
+          <div class="empty" id="detail-empty">Select a user from the list to view their info &amp; bots.</div>
+          <div id="detail-body" style="display:none"></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="toast" id="toast"></div>
+
+<script>
+const $ = s => { try { return document.querySelector(s); } catch(e) { return null; } };
+let selectedId = null;
+
+function toast(msg, err=false){
+  const t = $('#toast'); if(!t) return;
+  t.textContent = msg;
+  t.className = 'toast show' + (err ? ' err' : '');
+  setTimeout(()=>{ if(t) t.className='toast'; }, 2600);
+}
+
+function api(url, opts={}){
+  return new Promise(resolve => {
+    try {
+      const xhr = new XMLHttpRequest();
+      xhr.open((opts.method || 'GET'), url, true);
+      xhr.setRequestHeader('Content-Type', 'application/json');
+      if(window.__deviceFingerprint) xhr.setRequestHeader('X-Device-Fingerprint', window.__deviceFingerprint);
+      xhr.timeout = 30000;
+      xhr.onload = () => {
+        try { resolve(JSON.parse(xhr.responseText)); }
+        catch(e) { resolve({ok: false, error: 'Invalid JSON response'}); }
+      };
+      xhr.onerror = () => resolve({ok: false, error: 'Network error'});
+      xhr.ontimeout = () => resolve({ok: false, error: 'Request timed out'});
+      xhr.send(opts.body || null);
+    } catch(e) {
+      console.error('API error:', url, e);
+      resolve({ok: false, error: 'Network error: ' + e.message});
+    }
+  });
+}
+
+function fmtDate(s){
+  if(!s) return '—';
+  try{ return new Date(s).toLocaleString(); }catch(e){ return s; }
+}
+
+// Usernames, bot names and server IPs come straight from the database and are
+// attacker-controlled: nothing reaches innerHTML without going through esc().
+function esc(s){ return String(s==null?'':s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+// Inside onclick="fn('…')" the HTML entities are decoded *before* the JS is
+// parsed, so esc() alone still lets a quote break out of the string literal —
+// backslash-escape for JS first, then escape for HTML.
+function jsArg(s){ return esc(String(s==null?'':s).replace(/\\/g,'\\\\').replace(/'/g,"\\'")); }
+
+// ── server-observed IP ─────────────────────────────────────────────────────
+// On some request paths the IP is read out of a proxy header, so it is exactly
+// as attacker-controlled as a username: esc() for the cell text, jsArg() for the
+// onclick argument. Click copies it, so it can be pasted into the Flags filter.
+function ipCell(ip){
+  const v = (ip == null) ? '' : String(ip);
+  if(!v) return '<span class="log-ip">—</span>';
+  return `<span class="log-ip" style="font-size:13px;color:var(--txt);cursor:pointer" title="Click to copy this IP" onclick="copyIp('${jsArg(v)}')">${esc(v)}</span>`;
+}
+function copyIp(v){ try{ navigator.clipboard.writeText(v); toast('IP copied — paste it into the Flags filter'); }catch(e){ toast(v); } }
+// The user's own IP as far as the panel can see it. The browser reports its
+// public address over WebRTC (device_info), while the server-observed address
+// is where the request physically arrived from. When the observed address is
+// loopback or private (local testing, a tunnel, or a proxy hop count that left
+// remote_addr unrewritten), the browser-reported public IP is shown instead,
+// labelled so nobody mistakes a volunteered address for one the server saw.
+// Display-only: fingerprints.ip_address is untouched.
+function userIpCell(di, observedIp){
+  const r = webrtcRead(di, observedIp);
+  const reported = (r.stun.length ? r.stun[0] : '') || (r.routable.length ? r.routable[0] : '');
+  const obs = (observedIp == null) ? '' : String(observedIp);
+  if(reported && !isRoutableIp(obs)){
+    return `<span class="log-ip" style="font-size:13px;color:var(--txt);cursor:pointer" title="Browser-reported IP (WebRTC) — the request reached the server via a loopback or private address, so the observed IP is not public. Click to copy" onclick="copyIp('${jsArg(reported)}')">${esc(reported)} <span class="badge warn" style="font-size:9px;vertical-align:middle">REPORTED</span></span>`;
+  }
+  return ipCell(obs);
+}
+
+// ── WebRTC-revealed IPs ────────────────────────────────────────────────────
+// device_info is a blob the browser posted, so the shape is untrusted as well as
+// the values: every key is type-checked before use, and a blob stored before the
+// WebRTC probe shipped reads as "no signal" rather than as a clean result.
+// The collector asks a public STUN server for a reflexive candidate alongside the
+// host ones, so `publicIps` is the address the browser sees itself as, while a LAN
+// address is still the normal host answer. Only a *routable* candidate that the
+// server did not see is the proxy/VPN tell — comparing every candidate would flag
+// every ordinary user on a home router.
+function isRoutableIp(v){
+  const s = String(v);
+  if(s.indexOf(':') !== -1){
+    const h = s.toLowerCase();
+    if(h === '::1' || h === '::') return false;
+    if(h.startsWith('fe80') || h.startsWith('fc') || h.startsWith('fd')) return false;
+    return true;
+  }
+  const p = s.split('.');
+  if(p.length !== 4) return false;
+  const a = Number(p[0]), b = Number(p[1]);
+  if(!Number.isFinite(a) || !Number.isFinite(b)) return false;
+  if(a === 10 || a === 127 || a === 0) return false;
+  if(a === 192 && b === 168) return false;
+  if(a === 172 && b >= 16 && b <= 31) return false;
+  if(a === 169 && b === 254) return false;
+  if(a === 100 && b >= 64 && b <= 127) return false;  // CGNAT
+  return true;
+}
+function webrtcRead(di, serverIp){
+  const d = (di && typeof di === 'object') ? di : {};
+  const w = (d.webrtc && typeof d.webrtc === 'object' && !Array.isArray(d.webrtc)) ? d.webrtc : null;
+  const out = {state:'na', ips:[], routable:[], stun:[], types:[], mdns:false, foundations:0, sdp:'', error:''};
+  if(!w) return out;
+  out.ips = Array.isArray(w.ips) ? w.ips.filter(x => typeof x === 'string' && x !== '') : [];
+  out.routable = out.ips.filter(isRoutableIp);
+  out.stun = (Array.isArray(w.publicIps) ? w.publicIps.filter(x => typeof x === 'string' && x !== '') : []).filter(isRoutableIp);
+  out.types = Array.isArray(w.candidateTypes) ? w.candidateTypes.filter(x => typeof x === 'string' && x !== '') : [];
+  out.mdns = w.mdns === true;
+  // foundations arrives as a list of candidate foundation strings; the count is
+  // what is worth showing.
+  out.foundations = Array.isArray(w.foundations) ? w.foundations.length : (Number(w.foundations) || 0);
+  out.sdp = (typeof w.sdpHash === 'string') ? w.sdpHash : '';
+  out.error = (typeof w.error === 'string') ? w.error : '';
+  const srv = (typeof serverIp === 'string' && serverIp !== '' && isRoutableIp(serverIp)) ? serverIp : '';
+  if(out.error) out.state = 'err';
+  else if(!out.ips.length) out.state = out.mdns ? 'mdns' : 'none';
+  else if(!out.routable.length) out.state = 'local';
+  else if(!srv) out.state = 'nosrv';
+  else out.state = (out.routable.indexOf(srv) === -1) ? 'mismatch' : 'ok';
+  return out;
+}
+// Only a routable candidate the server never saw is the proxy/VPN tell, so only
+// that gets the red tint. A LAN-only answer is what an ordinary home router
+// gives and is reported as normal.
+function webrtcBadge(di, serverIp){
+  const s = webrtcRead(di, serverIp).state;
+  if(s === 'na') return '<span class="badge off">NO SIGNAL</span>';
+  if(s === 'err') return '<span class="badge warn">WEBRTC ERROR</span>';
+  if(s === 'none') return '<span class="badge warn">NO CANDIDATES</span>';
+  if(s === 'mdns') return '<span class="badge on">mDNS HIDDEN</span>';
+  if(s === 'local') return '<span class="badge on">LOCAL ONLY</span>';
+  if(s === 'nosrv') return '<span class="badge warn">NO PUBLIC SERVER IP</span>';
+  if(s === 'mismatch') return '<span class="badge off" style="background:rgba(239,68,68,.12);color:var(--red)">PROXY / VPN</span>';
+  return '<span class="badge on">MATCHES SERVER IP</span>';
+}
+function webrtcDetail(di, serverIp){
+  const r = webrtcRead(di, serverIp);
+  if(r.state === 'na') return '<div style="color:var(--muted);font-size:11px;margin:-4px 0 6px">No WebRTC probe in this device record — nothing collected, not a clean result.</div>';
+  const bits = [];
+  if(r.stun.length) bits.push('public IP the browser sees (STUN) — ' + r.stun.map(x => ipCell(x)).join(' '));
+  if(r.ips.length) bits.push('candidates — ' + r.ips.map(x => ipCell(x)).join(' '));
+  if(r.types.length) bits.push('types: ' + r.types.map(x => esc(x)).join(', '));
+  if(r.mdns) bits.push('mDNS obfuscation on');
+  if(r.foundations) bits.push('foundations: ' + r.foundations);
+  if(r.sdp) bits.push('sdp ' + esc(r.sdp.substring(0,16)));
+  if(r.error) bits.push('probe error — ' + esc(r.error));
+  if(r.state === 'local') bits.push('LAN addresses only — no public candidate to compare');
+  if(r.state === 'nosrv') bits.push('the server saw a loopback or private address, so there is nothing public to compare against — local testing, or TRUSTED_PROXY_HOPS does not match the real proxy chain');
+  if(r.state === 'mismatch') bits.push('routable candidate absent from the server-observed IP — proxy or VPN');
+  if(!bits.length) return '';
+  return `<div style="color:var(--muted);font-size:11px;margin:-4px 0 6px;word-break:break-all">${bits.join(' &middot; ')}</div>`;
+}
+
+let USERS = [];
+
+async function loadUsers(){
+  try {
+    const users = await api('/api/admin/users');
+    if (!Array.isArray(users)) {
+      $('#user-list').innerHTML = '<div class="empty">Error loading users</div>';
+      return;
+    }
+    USERS = users;
+    renderUsers();
+  } catch(e) { console.error('loadUsers error:', e); }
+}
+
+// one haystack per user so the filter box also answers "banned", "trial",
+// "flagged" — the words an admin actually types
+function userHay(u){
+  return [u.username, u.display_name, u.email, u.account_type || 'trial', u.uid,
+          u.is_banned && u.is_banned != '0' ? 'banned' : 'active',
+          u.has_fingerprint ? 'fp' : 'nofp',
+          u.flag_count ? 'flagged' : ''].join(' ').toLowerCase();
+}
+
+function renderUsers(){
+  const q = (($('#user-q') || {}).value || '').trim().toLowerCase();
+  const users = q ? USERS.filter(u => userHay(u).includes(q)) : USERS;
+  $('#user-count').textContent = q ? `${users.length}/${USERS.length}` : USERS.length;
+  const list = $('#user-list');
+  if(!USERS.length){ list.innerHTML = '<div class="empty">No users yet. Create one above.</div>'; return; }
+  if(!users.length){ list.innerHTML = '<div class="empty">No user matches that filter.</div>'; return; }
+list.innerHTML = users.map(u => `
+    <div class="user-row ${selectedId===u.uid?'active':''}" onclick="selectUser('${jsArg(u.uid)}')">
+      <div class="uinfo">
+        <span class="uname">${esc(u.display_name || u.username)} <span class="muted" style="font-weight:400">@${esc(u.username)}</span></span>
+        <span class="umeta">Created ${esc(fmtDate(u.created_at))} &middot; ${u.slots || 1} slot${(u.slots||1)!=1?'s':''} &middot; ${u.bot_count||0} bot${(u.bot_count||0)!=1?'s':''}</span>
+      </div>
+      <div style="display:flex;gap:4px;align-items:center">
+        ${(u.is_banned && u.is_banned != '0') ? '<span class="badge" style="font-size:10px;background:rgba(239,68,68,.14);color:var(--red)" title="Account is banned">⊘ BANNED</span>' : ''}
+        <span class="badge ${(u.account_type||'trial')==='paid'?'on':'off'}" style="font-size:10px">${esc(String(u.account_type||'trial').toUpperCase())}</span>
+        <span class="badge ${u.has_fingerprint? 'on':'off'}" style="font-size:10px" title="Device fingerprint">${u.has_fingerprint? '☑ FP':'☐ FP'}</span>
+        ${u.flag_count? `<a class="badge warn" style="font-size:10px" title="Unreviewed device flags — open the flag queue for this account" href="/admin/flags?q=${encodeURIComponent(u.username)}" onclick="event.stopPropagation()">⚑ ${esc(u.flag_count)}</a>` : ''}
+        <span class="badge ${u.bots_running? 'on':'off'}">${u.bots_running? '● BOTS ON':'○ BOTS OFF'}</span>
+      </div>
+    </div>`).join('');
+}
+
+// The row hands over the id only; the username is looked up here so an
+// attacker-chosen name never travels through an onclick attribute.
+function unameOf(id){
+  const u = USERS.find(x => String(x.uid) === String(id));
+  return u ? (u.username || id) : id;
+}
+
+async function banUser(id){
+  const name = unameOf(id);
+  if(!confirm('Ban user "'+name+'"? They will be locked out of the panel immediately.')) return;
+  try {
+    // bp_users.py's ban handler stores its own reason string and reads nothing
+    // out of the body; an empty object still keeps a get_json(force=True) happy.
+    const res = await api('/api/admin/users/'+encodeURIComponent(id)+'/ban',
+      {method:'POST', body:'{}'});
+    if(res && res.ok){ toast('User banned'); selectUser(id); loadUsers(); }
+    else toast((res&&res.error) || 'Error', true);
+  } catch(e) { console.error('banUser error:', e); toast('Error banning user', true); }
+}
+
+async function unbanUser(id){
+  try {
+    const res = await api('/api/admin/users/'+encodeURIComponent(id)+'/unban', {method:'POST'});
+    if(res && res.ok){ toast('User unbanned'); selectUser(id); loadUsers(); }
+    else toast((res&&res.error) || 'Error', true);
+  } catch(e) { console.error('unbanUser error:', e); toast('Error unbanning user', true); }
+}
+
+async function createUser(){
+  try {
+    const username = $('#c_user').value.trim();
+    const password = $('#c_pass').value;
+    const display_name = $('#c_display').value.trim();
+    const slots = Math.max(0, parseInt($('#c_slots').value) || 0);
+    const email = $('#c_email').value.trim();
+    const email_verified = $('#c_verified').checked ? true : false;
+    const account_type = $('#c_acct')?.value || 'trial';
+    if(!username || !password){ toast('Username & password required', true); return; }
+    const res = await api('/api/admin/users', {method:'POST', body:JSON.stringify({username,password,display_name,email,email_verified,slots,account_type})});
+    if(res && res.ok){ toast('User created'); 
+      if($('#c_user'))$('#c_user').value=''; if($('#c_pass'))$('#c_pass').value=''; 
+      if($('#c_display'))$('#c_display').value=''; if($('#c_email'))$('#c_email').value='';
+      if($('#c_verified'))$('#c_verified').checked=false; loadUsers(); }
+    else toast((res&&res.error) || 'Error', true);
+  } catch(e) { console.error('createUser error:', e); toast('Error creating user', true); }
+}
+
+// Only the newest section fetch may paint: two ad controls flipped in quick
+// succession used to repaint each other from whichever response landed last,
+// and switching users mid-flight painted the previous user's ad state.
+let adsSeq = 0;
+
+async function setUserAdsSection(id){
+  const host = $('#ads-body'); if(!host) return;
+  const seq = ++adsSeq;
+  const r = await api('/api/admin/users/'+encodeURIComponent(id)+'/ads');
+  if(seq !== adsSeq || String(selectedId) !== String(id)) return;
+  if(!r || !r.ok){ host.innerHTML = '<div class="empty">Could not load ad state</div>'; return; }
+  const on = !!r.ads_enabled && !r.ads_disabled;
+  const stateEl = $('#ads-state');
+  if(stateEl) stateEl.innerHTML = on ? '<span class="badge on">ON</span>' : '<span class="badge off">OFF</span>';
+  const ov = (r.overrides && typeof r.overrides === 'object') ? r.overrides : {};
+  const zrows = (r.zones||[]).map(z => {
+    const has = z.key in ov;
+    const sel = has ? (ov[z.key] ? 'on' : 'off') : 'global';
+    return `<div style="display:flex;justify-content:space-between;align-items:center;padding:4px 0;font-size:13px;border-bottom:1px solid var(--line)">
+      <span>${esc(z.label)} <span class="muted" style="font-size:11px">${esc(z.key)}</span></span>
+      <select data-zone="${esc(z.key)}" data-prev="${sel}" onchange="setUserZone('${jsArg(id)}',this)" style="background:var(--bg2);color:var(--txt);border:1px solid var(--line);padding:4px 6px;border-radius:6px;font-size:12px">
+        <option value="global" ${sel==='global'?'selected':''}>Global</option>
+        <option value="on" ${sel==='on'?'selected':''}>On</option>
+        <option value="off" ${sel==='off'?'selected':''}>Off</option>
+      </select>
+    </div>`;
+  }).join('');
+  host.innerHTML = `
+    <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:4px">
+      ${r.ads_disabled
+        ? '<button class="btn btn-green btn-sm" onclick="setUserAds(\''+jsArg(id)+'\',false,this)">Enable ads for this user</button>'
+        : '<button class="btn btn-red btn-sm" onclick="setUserAds(\''+jsArg(id)+'\',true,this)">Disable all ads for this user</button>'}
+      <span class="muted" style="font-size:12px">Per-zone overrides:</span>
+    </div>
+    ${zrows}`;
+}
+
+async function setUserAds(id, disabled, btn){
+  if(btn) btn.disabled = true;
+  const r = await api('/api/admin/users/'+encodeURIComponent(id)+'/ads',
+    {method:'PUT', body:JSON.stringify({ads_disabled: disabled})});
+  if(r && r.ok){ toast(disabled ? 'Ads disabled for this user' : 'Ads enabled for this user'); setUserAdsSection(id); }
+  else { if(btn) btn.disabled = false; toast((r&&r.error)||'Failed', true); }
+}
+
+// One override per call, and the select already shows the new value — so this
+// repaints nothing, and a slow write can no longer revert a zone the admin
+// changed afterwards. A failed write puts just that select back.
+async function setUserZone(id, el){
+  const zone = el.dataset.zone, val = el.value, prev = el.dataset.prev;
+  const body = val === 'global' ? JSON.stringify({}) : JSON.stringify({enabled: val === 'on'});
+  el.disabled = true;
+  const r = await api('/api/admin/users/'+encodeURIComponent(id)+'/ads/zones/'+encodeURIComponent(zone),
+    {method:'PUT', body});
+  el.disabled = false;
+  if(r && r.ok){ el.dataset.prev = val; toast(zone + ' → ' + val); }
+  else { el.value = prev; toast((r&&r.error)||'Failed', true); }
+}
+
+async function selectUser(id){
+  try {
+    selectedId = id;
+    const res = await api('/api/admin/users/'+id);
+    if(!res || !res.ok){ toast('Failed to load user details', true); return; }
+    const u = res.user, bots = res.bots || [], fp = res.fingerprint || {};
+  $('#detail-empty').style.display = 'none';
+  const body = $('#detail-body');
+  body.style.display = 'block';
+
+  const acct = u.account_type || 'trial';
+  const trialExpired = u.trial_expires_at && new Date(u.trial_expires_at) < new Date();
+  const banned = u.is_banned ? true : false;
+
+  const slots = u.slots || 1;
+  let slotsHtml = '';
+  for(let i=0;i<slots;i++){
+    const bot = bots.find(b => b.slot_index === i);
+    if(bot){const r=bot.running;slotsHtml+=`<div class="bot-slot"><div style="display:flex;justify-content:space-between;align-items:center;width:100%"><div><strong>${esc(bot.name)}</strong> <span class="badge ${r?'on':'off'}">${r?'RUNNING':'STOPPED'}</span></div><div style="display:flex;gap:6px">${r?`<button class="btn btn-red btn-sm" onclick="botAction('${jsArg(bot.id)}','stop')">Stop</button>`:`<button class="btn btn-green btn-sm" onclick="botAction('${jsArg(bot.id)}','start')" ${bot.server_ip&&bot.channel_id?'':'disabled title="not configured"'}>Start</button>`}<button class="btn btn-ghost btn-sm" onclick="deleteBot('${jsArg(bot.id)}')">Delete</button></div></div><div style="font-size:13px;color:var(--muted);margin-top:6px;width:100%">${bot.server_ip?esc(bot.server_ip)+':'+esc(bot.server_port||25565):'not configured'} &middot; Token: ${esc(bot.token_masked||'not set')} &middot; Guild: ${esc(bot.guild_id||'—')} &middot; Channel: ${esc(bot.channel_id||'—')}</div></div>`;}
+    else{slotsHtml+=`<div class="bot-slot empty-slot"><span style="color:var(--muted)">Slot #${i+1} — empty</span></div>`;}
+  }
+
+  body.innerHTML = `
+    <div class="kv"><span class="k">Display Name</span><span class="v">${esc(u.display_name||'—')}</span></div>
+    <div class="kv"><span class="k">Username</span><span class="v">@${esc(u.username)}</span></div>
+    <div class="kv"><span class="k">User ID</span><span class="v">${esc(u.uid)}</span></div>
+    <div class="kv"><span class="k">Email</span><span class="v">${esc(u.email||'—')} ${u.email_verified?'<span class="badge on">Verified</span>':'<span class="badge off">Unverified</span>'}</span></div>
+    <div class="kv"><span class="k">Device Fingerprint</span><span class="v">${fp.registered?'<span class="badge on">Registered</span> <span style="font-size:12px;color:var(--muted);display:block;margin-top:4px">Since '+esc(fmtDate(fp.created_at))+'</span>':'<span class="badge off">Not Registered</span>'}</span></div>
+    <div class="kv"><span class="k" title="fingerprints.ip_address — rewritten on every login, so this is the newest IP the server saw, not the one used at signup">Last Known IP</span><span class="v">${userIpCell(fp.device_info, fp.ip_address)}</span></div>
+    <div class="kv"><span class="k" title="IPs the browser itself revealed over WebRTC — compared against the IP the server saw">Browser IPs (WebRTC)</span><span class="v">${webrtcBadge(fp.device_info, fp.ip_address)}</span></div>
+    ${webrtcDetail(fp.device_info, fp.ip_address)}
+    <div class="kv"><span class="k">Account Type</span><span class="v"><span class="badge ${acct==='paid'?'on':'off'}">${esc(String(acct).toUpperCase())}</span> ${acct==='trial'&&u.trial_expires_at?'(expires '+esc(fmtDate(u.trial_expires_at))+')':''} ${trialExpired?'<span class="badge off">EXPIRED</span>':''}</span></div>
+    <div class="kv"><span class="k">Status</span><span class="v">${banned?'<span class="badge off" style="background:rgba(239,68,68,.12);color:var(--red)">BANNED</span>':'<span class="badge on" style="background:rgba(34,197,94,.12);color:var(--green)">Active</span>'}</span></div>
+    <div class="kv"><span class="k">Advertising</span><span class="v" id="ads-state">…</span></div>
+    <div id="ads-body" style="margin-top:6px;padding-bottom:4px"></div>
+    <div class="kv"><span class="k">Created At</span><span class="v">${esc(fmtDate(u.created_at))}</span></div>
+    <div class="kv"><span class="k">Last Login</span><span class="v">${esc(fmtDate(u.last_login))}</span></div>
+    <hr class="sep">
+    <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:10px">
+      <a class="btn btn-blurple btn-sm" href="/admin/user/${encodeURIComponent(u.uid)}">View Full Details &amp; Manage</a>
+      <button class="btn btn-green btn-sm" onclick="loginAsUser('${jsArg(u.uid)}')">Login As User</button>
+    </div>
+    <hr class="sep">
+    <div style="display:flex;gap:8px;flex-wrap:wrap">
+      ${acct==='trial'?'<button class="btn btn-green btn-sm" onclick="setAccountType(\''+jsArg(u.uid)+'\',\'paid\')">Upgrade to Paid</button>':'<button class="btn btn-ghost btn-sm" onclick="setAccountType(\''+jsArg(u.uid)+'\',\'trial\')">Downgrade to Trial</button>'}
+      ${banned?'<button class="btn btn-green btn-sm" onclick="unbanUser(\''+jsArg(u.uid)+'\')">Unban User</button>':'<button class="btn btn-red btn-sm" aria-label="Ban this user — destructive, locks them out immediately" onclick="banUser(\''+jsArg(u.uid)+'\')">Ban User</button>'}
+    </div>
+    <hr class="sep">
+    <div style="display:flex;justify-content:space-between;align-items:center"><h2 style="font-size:15px">Bot Slots</h2><div style="display:flex;gap:8px;align-items:center"><label style="font-size:13px;color:var(--muted)" for="edit-slots">Slots:</label><input id="edit-slots" type="number" value="${slots}" min="0" max="20" style="width:70px;background:var(--bg2);border:1px solid var(--line);color:var(--txt);padding:6px 10px;border-radius:8px;font-size:14px"><button class="btn btn-ghost btn-sm" onclick="updateSlots('${jsArg(u.uid)}')">Update</button></div></div>
+    <div style="margin-top:10px">${slotsHtml}</div>
+    <hr class="sep">
+    <div class="row-actions"><button class="btn btn-ghost btn-sm" onclick="resetFingerprint('${jsArg(u.uid)}')" ${fp.registered?'':'disabled title="No device fingerprint on file"'}>Reset Device Fingerprint</button><button class="btn btn-red btn-sm" aria-label="Delete this user and all their bots — destructive and permanent" onclick="deleteUser('${jsArg(u.uid)}')">Delete User</button></div>`;
+    setUserAdsSection(u.uid);
+  } catch(e) { console.error('selectUser error:', e); toast('Error loading user details', true); }
+}
+
+async function botAction(botId, action){
+  try {
+    const res = await api(`/api/admin/bots/${botId}/${action}`, {method:'POST'});
+    if(res && res.ok){ toast('Bot '+(action==='start'?'started':'stopped')); selectUser(selectedId); }
+    else toast((res&&res.error)||'Error', true);
+  } catch(e) { console.error('botAction error:', e); }
+}
+
+async function deleteBot(botId){
+  if(!confirm('Delete this bot configuration?')) return;
+  try {
+    const res = await api('/api/admin/bots/'+botId, {method:'DELETE'});
+    if(res && res.ok){ toast('Bot deleted'); selectUser(selectedId); }
+  } catch(e) { console.error('deleteBot error:', e); }
+}
+
+async function loginAsUser(userId){
+  try {
+    const r = await api('/api/admin/users/'+userId+'/login-as', {method:'POST', body:'{}'});
+    if(r && r.ok){
+      window.open('/admin/embed?token=' + encodeURIComponent(r.token) + '&uid=' + encodeURIComponent(userId), '_blank');
+      toast('User session opened in embedded view');
+    } else toast((r&&r.error)||'Error', true);
+  } catch(e) { console.error('loginAsUser error:', e); toast('Error', true); }
+}
+
+async function setAccountType(userId, type){
+  try {
+    const res = await api('/api/admin/users/'+userId+'/account-type', {method:'PUT', body:JSON.stringify({account_type:type})});
+    if(res && res.ok){ toast('Account type changed to '+type); selectUser(userId); loadUsers(); }
+    else toast((res&&res.error)||'Error', true);
+  } catch(e) { console.error('setAccountType error:', e); }
+}
+
+async function updateSlots(userId){
+  try {
+    const slots = parseInt($('#edit-slots').value) || 0;
+    const res = await api(`/api/admin/users/${userId}/slots`, {method:'PUT', body:JSON.stringify({slots})});
+    if(res && res.ok){ toast('Slots updated'); selectUser(userId); loadUsers(); }
+    else toast((res&&res.error) || 'Error', true);
+  } catch(e) { console.error('updateSlots error:', e); }
+}
+
+async function deleteUser(id){
+  const name = unameOf(id);
+  if(!confirm('Permanently delete user "'+name+'" and all their bots?')) return;
+  try {
+    const res = await api('/api/admin/users/'+encodeURIComponent(id), {method:'DELETE'});
+    if(res && res.ok){ toast('User deleted'); selectedId=null;
+      const db = $('#detail-body'); if(db) db.style.display='none';
+      const de = $('#detail-empty'); if(de) de.style.display='block';
+      loadUsers(); }
+  } catch(e) { console.error('deleteUser error:', e); }
+}
+
+async function resetFingerprint(id){
+  if(!confirm('Reset this user\'s device fingerprint? They will be able to log in and bind a new device on next login.')) return;
+  try {
+    const res = await api('/api/admin/users/'+id+'/reset-fingerprint', {method:'POST'});
+    if(res && res.ok){ toast('Fingerprint reset'); selectUser(id); loadUsers(); }
+    else toast((res&&res.error)||'Error', true);
+  } catch(e) { console.error('resetFingerprint error:', e); }
+}
+
+async function revokeSessions(id){
+  if(!confirm('Revoke all active sessions for this user? They will be logged out.')) return;
+  try {
+    const res = await api('/api/admin/sessions/user/'+id+'/revoke-all', {method:'POST'});
+    if(res && res.ok){ toast('All sessions revoked'); selectUser(id); }
+    else toast((res&&res.error)||'Error', true);
+  } catch(e) { console.error('revokeSessions error:', e); }
+}
+
+function smtpTab(p){
+  const auth = p !== 'warn';
+  const on  = el => { if(el) el.classList.add('active'); };
+  const off = el => { if(el) el.classList.remove('active'); };
+  if(auth){ on($('#smtp-tab-auth')); off($('#smtp-tab-warn')); }
+  else    { on($('#smtp-tab-warn')); off($('#smtp-tab-auth')); }
+  if($('#smtp-pane-auth')) $('#smtp-pane-auth').style.display = auth ? '' : 'none';
+  if($('#smtp-pane-warn')) $('#smtp-pane-warn').style.display = auth ? 'none' : '';
+  loadSmtpConfig(p);
+}
+
+async function loadSmtpConfig(p='auth'){
+  try {
+    const res = await api('/api/admin/smtp-config?profile='+p);
+    if(res && res.ok && res.config) {
+      const w = (p==='warn'), pre = w?'wsmtp':'smtp', cp = w?'warn_smtp':'smtp';
+      const fill = (id, def) => { const el = $('#'+pre+'_'+id); if(el) el.value = res.config[cp+'_'+id] || def; };
+      fill('host', ''); fill('port', '587'); fill('from', '');
+      // The credentials are never sent back to the browser, so these two stay
+      // empty and "leave empty to keep current" is literally what happens.
+      const note = (el, set) => { const n = el && el.parentElement.querySelector('.note');
+                                  if(n) n.textContent = set ? 'stored' : 'not set'; };
+      note($('#'+pre+'_user'), res.has_user);
+      note($('#'+pre+'_pass'), res.has_pass);
+      const st = $('#smtp-status');
+      if(st) st.textContent = (w?'Warnings ':'Login/OTP ') + (res.config[cp+'_host'] ? 'configured' : 'unconfigured');
+    }
+  } catch(e) { console.error('loadSmtpConfig error:', e); }
+}
+
+async function saveSmtpConfig(p='auth'){
+  try {
+    const pre = (p==='warn')?'wsmtp':'smtp';
+    const cfg = {
+      profile: p,
+      host: ($('#'+pre+'_host')?.value||'').trim(),
+      port: parseInt($('#'+pre+'_port')?.value) || 587,
+      user: ($('#'+pre+'_user')?.value||'').trim(),
+      password: ($('#'+pre+'_pass')?.value||'').trim(),
+      from_addr: ($('#'+pre+'_from')?.value||'').trim(),
+    };
+    const res = await api('/api/admin/smtp-config', {method:'PUT', body:JSON.stringify(cfg)});
+    if(res && res.ok){ toast((p==='warn'?'Warnings':'Login/OTP')+' SMTP saved'); loadSmtpConfig(p); }
+    else toast((res&&res.error)||'Save failed', true);
+  } catch(e) { console.error('saveSmtpConfig error:', e); }
+}
+
+async function testSmtpConfig(p='auth'){
+  try {
+    toast('Testing '+(p==='warn'?'warnings':'login/OTP')+' SMTP...');
+    const pre = (p==='warn')?'wsmtp':'smtp';
+    const body = {profile: p, to_addr: ($('#'+pre+'_test_to')?.value||'').trim()};
+    const res = await api('/api/admin/smtp-test', {method:'POST', body:JSON.stringify(body)});
+    if(res && res.ok) toast('SMTP test passed: ' + (res.message||''));
+    else toast((res&&res.error)||'Test failed', true);
+  } catch(e) { console.error('testSmtpConfig error:', e); }
+}
+
+loadUsers();
+loadSmtpConfig();
+setInterval(loadUsers, 8000);
+</script>
+
+<!-- device fingerprint (sent as X-Device-Fingerprint on admin API calls) -->
+<script src="{{ url_for('static', filename='fp-guard.js') }}" defer></script>
+</body>
+</html>

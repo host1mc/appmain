@@ -1,0 +1,667 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Fingerprint — {{ user.username }} — Admin</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+  <style>
+    .fp-chips{display:flex;flex-wrap:wrap;gap:6px;padding-top:4px}
+    .fp-chip{font-size:11px;padding:3px 8px;border:1px solid var(--line);border-radius:999px;background:var(--bg2);color:var(--txt)}
+    .fp-chip-seen{display:flex;align-items:center;gap:6px;font-size:11px;padding:3px 8px;border-radius:999px;background:var(--bg2);border:1px solid var(--line)}
+    .fp-pill{display:inline-block;font-size:11px;padding:2px 9px;border-radius:999px;font-weight:600}
+    .fp-pill.ok{color:var(--green);background:rgba(46,204,113,.12)}
+    .fp-pill.no{color:var(--muted2);background:var(--bg2)}
+    .fp-mono{font-family:Consolas,monospace;word-break:break-all}
+    .fp-big{font-size:22px;font-weight:800;letter-spacing:.3px;color:var(--accent);font-family:Consolas,monospace}
+    .fp-count{display:inline-flex;align-items:center;gap:8px;font-size:12px;color:var(--muted)}
+    .fp-count b{color:var(--txt);font-size:16px}
+    .fp-pill.bad{color:var(--red);background:rgba(239,68,68,.12)}
+    .fp-pill.warn{color:var(--amber);background:rgba(245,158,11,.12)}
+    .fp-verdict{display:flex;align-items:center;gap:10px;flex-wrap:wrap;padding:10px 12px;margin-bottom:12px;border:1px solid var(--line);border-radius:10px;background:var(--bg2);font-size:11px;color:var(--muted)}
+    .fp-verdict .vt{font-size:13px;font-weight:800;letter-spacing:.4px;color:var(--muted2)}
+    .fp-verdict.ok{border-color:var(--green)}
+    .fp-verdict.ok .vt{color:var(--green)}
+    .fp-verdict.warn{border-color:var(--amber)}
+    .fp-verdict.warn .vt{color:var(--amber)}
+    .fp-verdict.bad{border-color:var(--red);background:rgba(239,68,68,.12)}
+    .fp-verdict.bad .vt{color:var(--red)}
+    .fp-sub{font-size:11px;color:var(--muted);padding:8px 0 0;line-height:1.7}
+    .fp-sub b{color:var(--txt);font-weight:600}
+    .fp-chip.bad{color:var(--red);border-color:var(--red);background:rgba(239,68,68,.12)}
+    .fp-chip.warn{color:var(--amber);border-color:var(--amber);background:rgba(245,158,11,.12)}
+    .fp-params{max-height:340px;overflow:auto}
+  </style>
+</head>
+<body data-guard="off">
+  <div class="nav">
+    <div class="brand"><a href="{{ url_for('admin_panel') }}"><span class="dot"></span> MC Status Hosting</a> <span class="pill">Admin</span></div>
+    <div class="links">
+      <a href="{{ url_for('admin_panel') }}">Panel</a>
+      <a href="/admin/bots">Fleet</a>
+      <a href="{{ url_for('admin_panel_controls') }}">Hosting</a>
+      <a href="/admin/nodes">Nodes</a>
+      <a href="{{ url_for('admin_flags') }}">Flags</a> <a href="{{ url_for('admin_errors') }}">Errors</a>
+      <a href="{{ url_for('admin_reviews') }}">Reviews</a>
+      <a href="/admin/ads">Ads</a>
+      <a href="{{ url_for('admin_database') }}">Database</a>
+      <a href="/admin/account">Account</a>
+    </div>
+  </div>
+
+  {# shorthands — every field is defensive so a partial/older payload never 500s #}
+  {% set di = fp.device_info or {} %}
+  {% set scr = di.screen or {} %}
+  {% set net = di.network or {} %}
+  {% set wgl = di.webglDetail or {} %}
+  {% set vis = di.visual or {} %}
+  {% set stg = di.storage or {} %}
+  {% set med = di.mediaDevices or {} %}
+  {% set mcnt = med.counts if (med and med.counts) else {} %}
+  {% set bat = di.battery or {} %}
+  {% set uaud = di.userAgentData or {} %}
+  {% set uah = di.userAgentDataHighEntropy or {} %}
+
+  {# CreepJS-derived tamper probes. Key names moved between collector builds and
+     an old stored blob has none of them, so each one is resolved through a
+     fallback chain and every branch ends in a defined value. #}
+  {% set autom = di.automation if di.automation is mapping else {} %}
+  {% set wmis = di.workerMismatch or [] %}
+  {% set ahits = autom.hits or [] %}
+  {% set averdict = autom.verdict or '' %}
+  {% set eng = di.jsEngine if di.jsEngine is mapping else {} %}
+  {% set rects = di.domRect if di.domRect is mapping else {} %}
+  {% set tmet = di.textMetrics if di.textMetrics is mapping else {} %}
+  {% set rect_dig = rects.hash or rects.digest or di.domRectDigest or di.domRectHash or (di.domRect if di.domRect is string else '') %}
+  {% set tmet_dig = tmet.hash or tmet.digest or di.textMetricsDigest or di.textMetricsHash or (di.textMetrics if di.textMetrics is string else '') %}
+  {% set math_dig = eng.mathDigest or eng.digest or di.mathDigest or di.mathHash or di.jsEngineDigest or (di.jsEngine if di.jsEngine is string else '') %}
+  {% set eng_errs = eng.errors or di.jsEngineErrors or di.engineErrors or [] %}
+  {% set feats = di.features if di.features is mapping else (di.featureDetection if di.featureDetection is mapping else {}) %}
+  {% set syscol = di.systemColors if di.systemColors is mapping else (di.cssSystemColors if di.cssSystemColors is mapping else {}) %}
+  {% set spch = di.speech if di.speech is mapping else (di.speechVoices if di.speechVoices is mapping else {}) %}
+  {% set vlist = spch.names or spch.voices or ((di.speechVoices or di.voices or []) if (di.speechVoices is not mapping and di.voices is not mapping) else []) %}
+  {% set vcount = spch.count or di.speechVoiceCount or di.voicesCount or (vlist|length if (vlist and vlist is not string) else '') %}
+
+  {# Second-generation CreepJS probes. Same rule as the block above: a stored
+     blob from an older collector build has none of these keys, so each mapping
+     is normalised here and each list is rejected unless it is really a list. #}
+  {% set lies = di.lies if di.lies is mapping else {} %}
+  {% set lie_hits = lies.hits if (lies.hits and lies.hits is not string) else [] %}
+  {% set resist = di.resistance if di.resistance is mapping else {} %}
+  {% set resist_hits = resist.hits if (resist.hits and resist.hits is not string) else [] %}
+  {% set rtc = di.webrtc if di.webrtc is mapping else {} %}
+  {% set rtc_ips = rtc.ips if (rtc.ips and rtc.ips is not string) else [] %}
+  {% set rtc_pub = rtc.publicIps if (rtc.publicIps and rtc.publicIps is not string) else [] %}
+  {% set rtc_cand = rtc.candidateTypes if (rtc.candidateTypes and rtc.candidateTypes is not string) else [] %}
+  {% set rtc_found = rtc.foundations if (rtc.foundations and rtc.foundations is not string) else [] %}
+  {% set intl = di.intl if di.intl is mapping else {} %}
+  {% set tzh = di.timezoneHistory if di.timezoneHistory is mapping else {} %}
+  {% set tzh_offsets = tzh.offsets if (tzh.offsets and tzh.offsets is not string) else [] %}
+  {% set svgm = di.svg if di.svg is mapping else {} %}
+  {% set cssm = di.cssMedia if di.cssMedia is mapping else {} %}
+  {% set cssq = cssm.queries if cssm.queries is mapping else {} %}
+  {% set wprops = di.windowProps if di.windowProps is mapping else {} %}
+  {% set wp_extra = wprops.extra if (wprops.extra and wprops.extra is not string) else [] %}
+  {% set wp_missing = wprops.missing if (wprops.missing and wprops.missing is not string) else [] %}
+  {% set cvar = di.canvasVariants if di.canvasVariants is mapping else {} %}
+  {% set glp = di.webglParams if di.webglParams is mapping else {} %}
+  {% set glparams = glp.params if glp.params is mapping else {} %}
+  {% set docinf = di.documentInfo if di.documentInfo is mapping else {} %}
+  {% set trash = di.trash if di.trash is mapping else {} %}
+  {% set trash_hits = trash.hits if (trash.hits and trash.hits is not string) else [] %}
+  {% set fpjs = di.fingerprintjs if di.fingerprintjs is mapping else {} %}
+  {% set fpjs_comps = fpjs.components if fpjs.components is mapping else {} %}
+  {# 'headless' or any worker/main-thread disagreement is loud; 'suspect' is
+     intermediate; 'na' means the blob predates the probe and must not read as
+     a clean bill of health. #}
+  {# Hard tamper signals fold into the same three states: a patched native or an
+     injected window property is as loud as a headless verdict. Privacy
+     hardening is deliberately NOT one of them — Brave and resistFingerprinting
+     are ordinary consumer choices, so they are reported beside the verdict as
+     context and never move it. |int keeps a non-numeric count from throwing and
+     reads as 0. #}
+  {% set f_wmis = (wmis and wmis is not string and wmis|length > 0) %}
+  {# only a verdict that actually accuses the client belongs in the reason line;
+     'clean' is the absence of an accusation and must not be listed as one. #}
+  {% set f_auto = (averdict != '' and averdict != 'clean' and averdict != 'ok') %}
+  {% set f_lies = ((lies.count|default(0, true)|int) > 0) %}
+  {% set f_wp = (wp_extra|length > 0) %}
+  {% set f_resist = (resist.mode is defined and resist.mode is not none and resist.mode != '') %}
+  {% set tamper_known = (averdict != '') or (di.workerMismatch is defined and di.workerMismatch is not none) or (di.lies is mapping) or (di.windowProps is mapping) or (di.resistance is mapping) %}
+  {% set tamper_state = 'bad' if (averdict == 'headless' or f_wmis or f_lies or f_wp) else ('warn' if averdict == 'suspect' else ('ok' if tamper_known else 'na')) %}
+  {% set tamper_label = {'bad': 'TAMPER DETECTED', 'warn': 'SUSPECT', 'ok': 'CLEAN', 'na': 'NO SIGNAL'}[tamper_state] %}
+
+  {% macro val(v) %}{% if v is defined and v is not none and v != '' %}{{ v }}{% else %}<span class="fp-na">—</span>{% endif %}{% endmacro %}
+  {% macro kv(l, v) %}<div class="fp-row"><span class="fl">{{ l }}</span><span class="fv">{{ v }}</span></div>{% endmacro %}
+  {% macro yesno(v) %}{% if v is not none %}{% if v %}<span class="fp-pill ok">YES</span>{% else %}<span class="fp-pill no">NO</span>{% endif %}{% else %}<span class="fp-na">—</span>{% endif %}{% endmacro %}
+  {# yesno() reads a missing key as NO; anything the collector only started
+     sending recently needs the third state instead. #}
+  {% macro tri(v) %}{% if v is defined and v is not none %}{% if v %}<span class="fp-pill ok">YES</span>{% else %}<span class="fp-pill no">NO</span>{% endif %}{% else %}<span class="fp-na">—</span>{% endif %}{% endmacro %}
+  {# digests are unbounded attacker-supplied strings: cut them so one long token
+     cannot stretch the grid, and let .fp-mono wrap whatever is left #}
+  {% macro dig(v, n=28) %}{% if v is defined and v is not none and v != '' %}{% set s = v|string %}<span class="fp-mono">{{ s[:n] }}{% if s|length > n %}…{% endif %}</span>{% else %}<span class="fp-na">—</span>{% endif %}{% endmacro %}
+  {% macro vname(v) %}{% if v is mapping %}{{ v.name or v.voiceURI or '?' }}{% else %}{{ v }}{% endif %}{% endmacro %}
+
+  <div class="fp-page">
+    <div class="fp-user-info">
+      <div class="fp-avatar">{{ user.display_name[:1] or user.username[:1] }}</div>
+      <div>
+        <div class="fp-uname">{{ user.display_name or user.username }} <span style="font-weight:400;color:var(--muted)">@{{ user.username }}</span></div>
+        <div class="fp-umeta">User ID: {{ user.uid }} &middot; {{ user.account_type|upper }}</div>
+      </div>
+    </div>
+
+    {% if fp.registered %}
+    {# The browser reports its public address over WebRTC; when the
+       server-observed address is loopback or private (local testing, a tunnel,
+       or a proxy hop count that left remote_addr unrewritten) that observed
+       value is no help for identifying the user, so the reported public IP is
+       shown instead — display only, clearly flagged. #}
+    {% set fpip_raw = (fp.ip_address or di.ip_address) or '' %}
+    {% set _oct = (fpip_raw|string).split('.') %}
+    {% set fpip_private = ((fpip_raw|string) in ['::1','::']) or ((_oct|length == 4) and
+      (_oct[0] in ['0','10','127'] or (_oct[0] == '192' and _oct[1] == '168') or
+       (_oct[0] == '169' and _oct[1] == '254') or
+       (_oct[0] == '100' and _oct[1]|int >= 64 and _oct[1]|int <= 127) or
+       (_oct[0] == '172' and _oct[1]|int >= 16 and _oct[1]|int <= 31))) %}
+    {% set fpip_reported = ((rtc_pub[0] if rtc_pub else '') or (rtc_ips[0] if rtc_ips else '') or '') %}
+    {% set fpip_note = fpip_reported if (fpip_private and fpip_reported) else '' %}
+    {% set fpip = fpip_note or fpip_raw %}
+    <div class="fp-grid">
+      <div class="fp-section">
+        <h3>Identity &amp; Trust</h3>
+        <div class="fp-verdict {{ tamper_state }}">
+          <span class="vt">{{ tamper_label }}</span>
+          <span>{% if tamper_state == 'ok' %}worker agreed with the main thread, no automation, native-code or window tampering markers{% elif tamper_state == 'na' %}this device blob was captured before tamper probing existed — absence of a signal, not a clean result{% else %}{% if f_wmis %}the client contradicted itself between the main thread and its worker{% endif %}{% if f_lies %}{% if f_wmis %} &middot; {% endif %}<b>{{ (lies.count|string)[:8] }}</b> native function(s) failed the integrity check{% endif %}{% if f_wp %}{% if f_wmis or f_lies %} &middot; {% endif %}<b>{{ wp_extra|length }}</b> injected window propert{{ 'y' if wp_extra|length == 1 else 'ies' }}{% endif %}{% if f_auto %}{% if f_wmis or f_lies or f_wp %} &middot; {% endif %}automation verdict <b>{{ averdict }}</b>{% if averdict == 'suspect' %} (heuristics only, no hard headless marker){% endif %}{% endif %}{% if f_resist %}{% if f_wmis or f_lies or f_wp or f_auto %} &middot; {% endif %}privacy-hardening mode <b>{{ (resist.mode|string)[:32] }}</b> — a hardened browser is not a bot{% endif %}{% endif %}</span>
+        </div>
+        {{ kv('Automation', val(averdict)) }}
+        {{ kv('Automation Hits', val(ahits|length if (di.automation is mapping and ahits is not string) else '')) }}
+        {{ kv('Worker Mismatch', val(wmis|length if (di.workerMismatch is defined and di.workerMismatch is not none and wmis is not string) else '')) }}
+        {{ kv('Worker Scope', val(di.workerScope)) }}
+        {% if wmis and wmis is not string %}
+        <div class="fp-sub"><b>Properties that disagreed with the worker</b>
+          <div class="fp-chips">{% for p in wmis %}<span class="fp-chip">{{ p }}</span>{% endfor %}</div>
+        </div>
+        {% endif %}
+        {% if ahits and ahits is not string %}
+        <div class="fp-sub"><b>Automation checks that fired</b>
+          <div class="fp-chips">{% for h in ahits %}<span class="fp-chip">{{ h }}</span>{% endfor %}</div>
+        </div>
+        {% elif ahits is string %}
+        <div class="fp-sub"><b>Automation checks that fired</b> {{ ahits }}</div>
+        {% endif %}
+        <div class="fp-row"><span class="fl">IP Address</span><span class="fv">{% if fpip %}<span style="color:var(--accent);font-weight:700">{{ fpip }}</span>{% if fpip_note %} <span class="fp-pill warn">REPORTED</span> <span style="color:var(--muted);font-weight:400;font-size:11px">observed {{ fpip_raw }}</span>{% endif %}{% else %}<span class="fp-na">Not captured</span>{% endif %}</span></div>
+        <div class="fp-row"><span class="fl">Account Type</span><span class="fv">{{ user.account_type|upper }} <span class="fp-pill" style="background:var(--bg2);color:var(--muted2)">ID {{ user.uid }}</span></span></div>
+        <div class="fp-row"><span class="fl">Registered</span><span class="fv" style="font-size:12px;color:var(--muted)">{{ fp.created_at }}</span></div>
+      </div>
+
+      <div class="fp-section">
+        <h3>Fingerprint Hash</h3>
+        <div class="fp-hash-box" id="fp-hash">{{ fp.hash }}</div>
+        <div class="fp-count" style="margin-top:10px">
+          <span>Entropy <b>H</b></span>
+          <button class="btn btn-ghost btn-sm" onclick="copyHash()">Copy Hash</button>
+        </div>
+      </div>
+
+      {# Second, independent fingerprint: vendored FingerprintJS v3.4.1 (MIT),
+         merged into the same detail payload. Its murmur-hash ID is computed
+         from a different signal weighting than our SHA-256 hash above, so two
+         agreeing IDs are stronger evidence than either alone. #}
+      <div class="fp-section">
+        <h3>FingerprintJS <span class="fp-pill" style="background:var(--bg2);color:var(--muted2)">MERGE</span></h3>
+        {% if fpjs.visitorId is defined and fpjs.visitorId != '' %}
+        {% set fpjs_conf = (fpjs.confidence if fpjs.confidence is number else 0) %}
+        <div class="fp-hash-box" id="fpjs-id" style="font-size:13px">{{ fpjs.visitorId }}</div>
+        <div class="fp-count" style="margin-top:10px">
+          <span>Confidence <b>{{ (fpjs_conf * 100)|round(1) }}%</b> &middot; {{ fpjs.componentCount|default(0, true) }} components &middot; {{ fpjs.version }}</span>
+          <button class="btn btn-ghost btn-sm" onclick="copyFpjs()">Copy ID</button>
+        </div>
+        <div class="fp-row"><span class="fl">Relation to our hash</span><span class="fv"><span class="fp-pill ok">SECOND OPINION</span></span></div>
+        {% if fpjs.components is mapping and fpjs_comps|length %}
+        <div class="fp-sub"><b>Component samples</b></div>
+        <div class="fp-params">
+        {% for k, v in fpjs_comps|dictsort %}
+        {% if v is mapping %}
+        {% set p = [] %}
+        {% for kk, vv in v.items() %}{% set _ = p.append((kk|string) ~ '=' ~ (vv|string)[:20]) %}{% endfor %}
+        {{ kv((k|string)[:40], (p[:5]|join(' · '))|e) }}
+        {% elif v is sequence and v is not string and v is not mapping %}
+        {{ kv((k|string)[:40], (v[:6]|join(', '))|e) }}
+        {% else %}
+        {{ kv((k|string)[:40], dig(v, 48)) }}
+        {% endif %}
+        {% endfor %}
+        </div>
+        {% endif %}
+        {% else %}
+        <div class="fp-row"><span class="fl">FingerprintJS</span><span class="fv"><span class="fp-na">Not captured</span>
+        {%- if fpjs is mapping and fpjs.error %} <span style="margin-left:8px;color:var(--muted)">({{ (fpjs.error|string)[:40] }})</span>
+        {%- elif fpjs is mapping %} <span style="margin-left:8px;color:var(--muted)">(library loaded, no visitor id)</span>
+        {%- else %} <span style="margin-left:8px;color:var(--muted)">(blob stored before FingerprintJS shipped — appears on next login)</span>{% endif %}</span></div>
+        {% endif %}
+      </div>
+
+      {% if di %}
+      {# CreepJS-style entropy grid — every section is defensive against partial/older payloads #}
+      <div class="fp-section">
+        <h3>Network &amp; Connectivity</h3>
+        {% if di.network %}
+        {{ kv('Online', yesno(net.onLine)) }}
+        {{ kv('Effective Type', val(net.effectiveType)) }}
+        {{ kv('Downlink', val(net.downlink)) }}
+        {{ kv('RTT', val(net.rtt)) }}
+        {{ kv('Save-Data', yesno(net.saveData)) }}
+        {% else %}
+        <div class="fp-row"><span class="fl">Network</span><span class="fv"><span class="fp-na">Not captured</span></span></div>
+        {% endif %}
+      </div>
+
+      <div class="fp-section">
+        <h3>Location &amp; Time</h3>
+        {{ kv('Timezone', val(di.timezone)) }}
+        {{ kv('Offset', val(di.timezoneOffset)) }}
+        {{ kv('Language', val(di.language)) }}
+        {{ kv('Languages', val(di.languages|join(', ') if di.languages else '')) }}
+      </div>
+
+      <div class="fp-section">
+        <h3>Hardware</h3>
+        {{ kv('Platform', val(di.platform)) }}
+        {{ kv('CPU Cores', val(di.hardwareConcurrency)) }}
+        {{ kv('Device Memory', val((di.deviceMemory ~ ' GB') if di.deviceMemory else '')) }}
+        {{ kv('Max Touch Points', val(di.maxTouchPoints)) }}
+        {{ kv('Battery', val((bat.level ~ '%' ~ (' (charging)' if bat.charging else '')) if bat.level is not none else '')) }}
+      </div>
+
+      <div class="fp-section">
+        <h3>Screen</h3>
+        {{ kv('Resolution', val((scr.width ~ 'x' ~ scr.height) if scr.width else '')) }}
+        {{ kv('Available', val((scr.availWidth ~ 'x' ~ scr.availHeight) if scr.availWidth else '')) }}
+        {{ kv('Pixel Ratio', val(scr.pixelRatio)) }}
+        {{ kv('Color Depth', val((scr.colorDepth ~ '-bit') if scr.colorDepth else '')) }}
+        {{ kv('Orientation', val(scr.orientation)) }}
+        {{ kv('HDR / Gamut', val(scr.hdr)) }}
+      </div>
+
+      <div class="fp-section">
+        <h3>Browser</h3>
+        {{ kv('Cookies', yesno(di.cookiesEnabled)) }}
+        {{ kv('Do Not Track', val(di.doNotTrack)) }}
+        {{ kv('Plugins', val(di.pluginsCount)) }}
+        {{ kv('Brands', val(uaud.brands|join(', ') if uaud.brands else '')) }}
+        {{ kv('UA Mobile', yesno(uaud.mobile)) }}
+        {{ kv('Architecture', val(uah.architecture)) }}
+        {{ kv('Bitness', val(uah.bitness)) }}
+        {{ kv('Model', val(uah.model)) }}
+      </div>
+
+      <div class="fp-section">
+        <h3>Fonts</h3>
+        {% if di.fonts %}
+        <div class="fp-chips">{% for f in di.fonts %}<span class="fp-chip">{{ f }}</span>{% endfor %}</div>
+        {% else %}
+        <span class="fp-na">Not captured</span>
+        {% endif %}
+      </div>
+
+      <div class="fp-section">
+        <h3>Visual Preferences</h3>
+        {{ kv('Color Scheme', val(vis.colorScheme)) }}
+        {{ kv('Reduced Motion', yesno(vis.reducedMotion)) }}
+        {{ kv('Reduced Data', yesno(vis.reducedData)) }}
+        {{ kv('Forced Colors', yesno(vis.forcedColors)) }}
+        {{ kv('Contrast', val(vis.contrast)) }}
+      </div>
+
+      <div class="fp-section">
+        <h3>Graphics</h3>
+        {{ kv('Canvas 2D', yesno(di.canvas)) }}
+        {{ kv('WebGL', yesno(di.webgl)) }}
+        {{ kv('Canvas Hash', val(di.canvasHash)) }}
+        {{ kv('WebGL Vendor', val(wgl.vendor)) }}
+        {{ kv('WebGL Renderer', val(wgl.renderer)) }}
+        {{ kv('WebGL Version', val(wgl.version)) }}
+        {{ kv('Shader Version', val(wgl.shadingLanguageVersion)) }}
+        {{ kv('Max Texture', val(wgl.maxTextureSize)) }}
+        {{ kv('High-Float Precision', val(wgl.highFloatPrecision)) }}
+        {{ kv('Extensions', val(wgl.extensionCount)) }}
+      </div>
+
+      <div class="fp-section">
+        <h3>Audio &amp; Media</h3>
+        {{ kv('Audio Hash', val(di.audio.hash if di.audio and di.audio.hash else '')) }}
+        {{ kv('Audio Inputs', val(mcnt.audioinput)) }}
+        {{ kv('Video Inputs', val(mcnt.videoinput)) }}
+        {{ kv('Audio Outputs', val(mcnt.audiooutput)) }}
+        {{ kv('Labels Visible', yesno(med.labelsVisible)) }}
+      </div>
+
+      <div class="fp-section">
+        <h3>Storage</h3>
+        {{ kv('localStorage', yesno(stg.localStorage)) }}
+        {{ kv('sessionStorage', yesno(stg.sessionStorage)) }}
+        {{ kv('IndexedDB', yesno(stg.indexedDB)) }}
+      </div>
+
+      <div class="fp-section">
+        <h3>Geometry Digests</h3>
+        {{ kv('DOMRect', dig(rect_dig)) }}
+        {{ kv('TextMetrics', dig(tmet_dig)) }}
+        {{ kv('DOMRect Samples', val(rects.count)) }}
+        {{ kv('TextMetrics Samples', val(tmet.count)) }}
+      </div>
+
+      <div class="fp-section">
+        <h3>Engine Identity</h3>
+        {{ kv('Math / JS Digest', dig(math_dig)) }}
+        {{ kv('Engine Name', val(eng.name)) }}
+        {{ kv('Engine Errors', val(eng_errs|length if (eng_errs and eng_errs is not string) else '')) }}
+        {% if eng_errs is string %}
+        <div class="fp-sub fp-mono">{{ eng_errs[:300] }}{% if eng_errs|length > 300 %}…{% endif %}</div>
+        {% elif eng_errs %}
+        <div class="fp-sub">{% for e in eng_errs %}<div class="fp-mono">{% set es = e|string %}{{ es[:160] }}{% if es|length > 160 %}…{% endif %}</div>{% endfor %}</div>
+        {% endif %}
+      </div>
+
+      <div class="fp-section">
+        <h3>Environment</h3>
+        {{ kv('Plugin/MIME Consistent', tri(di.pluginMimeConsistent)) }}
+        {{ kv('PDF Viewer Enabled', tri(di.pdfViewerEnabled)) }}
+        {{ kv('Speech Voices', val(vcount)) }}
+        {% if vlist and vlist is not string %}
+        <div class="fp-chips">{% for v in vlist %}<span class="fp-chip">{{ vname(v) }}</span>{% endfor %}</div>
+        {% endif %}
+      </div>
+
+      <div class="fp-section">
+        <h3>System Colours</h3>
+        {# CSS system colours are attacker-supplied text: they are printed as
+           text and never fed back into a style attribute. #}
+        {% if syscol %}
+        {% for k, v in syscol|dictsort %}
+        {{ kv(k, val(v)) }}
+        {% endfor %}
+        {% else %}
+        <span class="fp-na">Not captured</span>
+        {% endif %}
+      </div>
+
+      <div class="fp-section">
+        <h3>Feature Detection</h3>
+        {% if feats %}
+        {% for k, v in feats|dictsort %}
+        {{ kv(k, tri(v)) }}
+        {% endfor %}
+        {% else %}
+        <span class="fp-na">Not captured</span>
+        {% endif %}
+      </div>
+
+      <div class="fp-section">
+        <h3>Native Code Integrity</h3>
+        {# di.lies.hits are attacker-supplied names: printed as text, sliced so a
+           padded name cannot widen the grid. #}
+        {% if di.lies is mapping %}
+        <div class="fp-row"><span class="fl">Lies Detected</span><span class="fv">{% if lies.count is defined and lies.count is not none %}<span class="fp-pill {{ 'bad' if f_lies else 'ok' }}">{{ (lies.count|string)[:8] }}</span>{% else %}<span class="fp-na">—</span>{% endif %}</span></div>
+        {{ kv('Lie Hash', dig(lies.hash)) }}
+        {% if lie_hits %}
+        <div class="fp-sub"><b>Natives that failed the integrity check</b>
+          <div class="fp-chips">{% for h in lie_hits %}<span class="fp-chip{{ ' bad' if f_lies else '' }}">{{ (h|string)[:64] }}</span>{% endfor %}</div>
+        </div>
+        {% elif lies.hits is string %}
+        <div class="fp-sub"><b>Natives that failed the integrity check</b> {{ (lies.hits|string)[:300] }}</div>
+        {% endif %}
+        {% else %}
+        <span class="fp-na">Not captured</span>
+        {% endif %}
+      </div>
+
+      <div class="fp-section">
+        <h3>Privacy Resistance</h3>
+        {% if di.resistance is mapping %}
+        {{ kv('Engine', dig(resist.engine, 32)) }}
+        {{ kv('Mode', dig(resist.mode, 32)) }}
+        {{ kv('Signals', val(resist_hits|length if resist_hits else '')) }}
+        {% if resist_hits %}
+        <div class="fp-sub"><b>Hardening checks that fired</b>
+          <div class="fp-chips">{% for h in resist_hits %}<span class="fp-chip">{{ (h|string)[:64] }}</span>{% endfor %}</div>
+        </div>
+        {% elif resist.hits is string %}
+        <div class="fp-sub"><b>Hardening checks that fired</b> {{ (resist.hits|string)[:300] }}</div>
+        {% endif %}
+        {% else %}
+        <span class="fp-na">Not captured</span>
+        {% endif %}
+      </div>
+
+      <div class="fp-section">
+        <h3>WebRTC</h3>
+        {% if di.webrtc is mapping %}
+        {{ kv('Candidate Types', dig(rtc_cand|join(', ') if rtc_cand else '', 48)) }}
+        {{ kv('Foundations', val(rtc_found|length if rtc_found else '')) }}
+        {{ kv('mDNS Obfuscated', tri(rtc.mdns)) }}
+        {{ kv('SDP Hash', dig(rtc.sdpHash)) }}
+        {% if rtc.error %}{{ kv('Error', dig(rtc.error, 120)) }}{% endif %}
+        {% if rtc_pub %}
+        <div class="fp-sub"><b>Public address the browser sees itself as (STUN)</b>
+          <div class="fp-chips">{% for ip in rtc_pub %}<span class="fp-chip fp-mono">{{ (ip|string)[:48] }}</span>{% endfor %}</div>
+        </div>
+        {% endif %}
+        {% if rtc_ips %}
+        <div class="fp-sub"><b>Local addresses the browser revealed</b>
+          <div class="fp-chips">{% for ip in rtc_ips %}<span class="fp-chip fp-mono">{{ (ip|string)[:48] }}</span>{% endfor %}</div>
+        </div>
+        {% elif rtc.ips is string %}
+        <div class="fp-sub"><b>Local addresses the browser revealed</b> <span class="fp-mono">{{ (rtc.ips|string)[:200] }}</span></div>
+        {% endif %}
+        {% else %}
+        <span class="fp-na">Not captured</span>
+        {% endif %}
+      </div>
+
+      <div class="fp-section">
+        <h3>Internationalization</h3>
+        {# iterated rather than field-by-field so a key the collector adds later
+           still shows up; keys are attacker text and .fl does not wrap, so they
+           are sliced too. #}
+        {% if intl %}
+        {% for k, v in intl|dictsort %}
+        {{ kv((k|string)[:32], dig(v, 40)) }}
+        {% endfor %}
+        {% else %}
+        <span class="fp-na">Not captured</span>
+        {% endif %}
+      </div>
+
+      <div class="fp-section">
+        <h3>Timezone History</h3>
+        {% if di.timezoneHistory is mapping %}
+        {{ kv('Hash', dig(tzh.hash)) }}
+        {{ kv('Samples', val(tzh.samples)) }}
+        {{ kv('DST Shift', val(tzh.dstShift)) }}
+        {{ kv('Offsets', dig(tzh_offsets|join(', ') if tzh_offsets else '', 48)) }}
+        {{ kv('Date String', dig(tzh.dateString, 44)) }}
+        {{ kv('ISO String', dig(tzh.isoString, 44)) }}
+        {% else %}
+        <span class="fp-na">Not captured</span>
+        {% endif %}
+      </div>
+
+      <div class="fp-section">
+        <h3>SVG Metrics</h3>
+        {% if di.svg is mapping %}
+        {{ kv('Hash', dig(svgm.hash)) }}
+        {{ kv('Samples', val(svgm.count)) }}
+        {{ kv('bBox', dig(svgm.bBox, 40)) }}
+        {{ kv('subStringLength', dig(svgm.subStringLength, 40)) }}
+        {{ kv('extentOfChar', dig(svgm.extentOfChar, 40)) }}
+        {{ kv('computedLength', dig(svgm.computedLength, 40)) }}
+        {% else %}
+        <span class="fp-na">Not captured</span>
+        {% endif %}
+      </div>
+
+      <div class="fp-section">
+        <h3>CSS Media Queries</h3>
+        {# a query value is a bool for a match test and a string for a computed
+           value, so the renderer is chosen per value. #}
+        {% if di.cssMedia is mapping %}
+        {{ kv('Hash', dig(cssm.hash)) }}
+        {% if cssq %}
+        {% for k, v in cssq|dictsort %}
+        {{ kv((k|string)[:32], tri(v) if v is boolean else dig(v, 32)) }}
+        {% endfor %}
+        {% else %}
+        <div class="fp-row"><span class="fl">Queries</span><span class="fv"><span class="fp-na">Not captured</span></span></div>
+        {% endif %}
+        {% else %}
+        <span class="fp-na">Not captured</span>
+        {% endif %}
+      </div>
+
+      <div class="fp-section">
+        <h3>Window Properties</h3>
+        {% if di.windowProps is mapping %}
+        {{ kv('Hash', dig(wprops.hash)) }}
+        {{ kv('Property Count', val(wprops.count)) }}
+        <div class="fp-row"><span class="fl">Injected</span><span class="fv">{% if wp_extra %}<span class="fp-pill warn">{{ wp_extra|length }}</span>{% elif wprops.extra is defined and wprops.extra is not none %}<span class="fp-pill ok">0</span>{% else %}<span class="fp-na">—</span>{% endif %}</span></div>
+        <div class="fp-row"><span class="fl">Missing</span><span class="fv">{% if wp_missing %}<span class="fp-pill warn">{{ wp_missing|length }}</span>{% elif wprops.missing is defined and wprops.missing is not none %}<span class="fp-pill ok">0</span>{% else %}<span class="fp-na">—</span>{% endif %}</span></div>
+        {% if wp_extra %}
+        <div class="fp-sub"><b>Injected into window</b>
+          <div class="fp-chips">{% for p in wp_extra %}<span class="fp-chip warn">{{ (p|string)[:48] }}</span>{% endfor %}</div>
+        </div>
+        {% endif %}
+        {% if wp_missing %}
+        <div class="fp-sub"><b>Deleted from window</b>
+          <div class="fp-chips">{% for p in wp_missing %}<span class="fp-chip">{{ (p|string)[:48] }}</span>{% endfor %}</div>
+        </div>
+        {% endif %}
+        {% else %}
+        <span class="fp-na">Not captured</span>
+        {% endif %}
+      </div>
+
+      <div class="fp-section">
+        <h3>Canvas Variants</h3>
+        {% if di.canvasVariants is mapping %}
+        {{ kv('Hash', dig(cvar.hash)) }}
+        {{ kv('2D', dig(cvar.twoD)) }}
+        {{ kv('WebGL', dig(cvar.webgl)) }}
+        {{ kv('WebGL2', dig(cvar.webgl2)) }}
+        {{ kv('Emoji', dig(cvar.emoji)) }}
+        {{ kv('Text Baseline', dig(cvar.textBaseline)) }}
+        {% else %}
+        <span class="fp-na">Not captured</span>
+        {% endif %}
+      </div>
+
+      <div class="fp-section">
+        <h3>Document</h3>
+        {# referrer is attacker text and stays text: never an href. #}
+        {% if di.documentInfo is mapping %}
+        {{ kv('Hash', dig(docinf.hash)) }}
+        {{ kv('Elements', val(docinf.elementCount)) }}
+        {{ kv('Document Keys', val(docinf.keysCount)) }}
+        {{ kv('Referrer', dig(docinf.referrer, 60)) }}
+        {{ kv('Visibility', dig(docinf.visibilityState, 24)) }}
+        {{ kv('Character Set', dig(docinf.characterSet, 24)) }}
+        {{ kv('Compat Mode', dig(docinf.compatMode, 24)) }}
+        {{ kv('Doctype', dig(docinf.doctype, 60)) }}
+        {% else %}
+        <span class="fp-na">Not captured</span>
+        {% endif %}
+      </div>
+
+      <div class="fp-section">
+        <h3>Deprecated APIs</h3>
+        {% if di.trash is mapping %}
+        <div class="fp-row"><span class="fl">Junk APIs Present</span><span class="fv">{% if trash.count is defined and trash.count is not none %}<span class="fp-pill {{ 'warn' if (trash.count|default(0, true)|int) > 0 else 'ok' }}">{{ (trash.count|string)[:8] }}</span>{% else %}<span class="fp-na">—</span>{% endif %}</span></div>
+        {% if trash_hits %}
+        <div class="fp-chips">{% for h in trash_hits %}<span class="fp-chip">{{ (h|string)[:48] }}</span>{% endfor %}</div>
+        {% elif trash.hits is string %}
+        <div class="fp-sub fp-mono">{{ (trash.hits|string)[:300] }}</div>
+        {% endif %}
+        {% else %}
+        <span class="fp-na">Not captured</span>
+        {% endif %}
+      </div>
+
+      <div class="fp-section full">
+        <h3>WebGL Parameters</h3>
+        {# ~50 rows, so this takes the full grid width and scrolls; a value can
+           arrive as a number, a string or a short list. #}
+        {% if di.webglParams is mapping %}
+        {{ kv('Hash', dig(glp.hash)) }}
+        {{ kv('Parameter Count', val(glp.count)) }}
+        {% if glparams %}
+        <div class="fp-params">
+        {% for k, v in glparams|dictsort %}
+        {{ kv((k|string)[:48], dig(v|join(', ') if (v is sequence and v is not string and v is not mapping) else v, 64)) }}
+        {% endfor %}
+        </div>
+        {% else %}
+        <div class="fp-row"><span class="fl">Parameters</span><span class="fv"><span class="fp-na">Not captured</span></span></div>
+        {% endif %}
+        {% else %}
+        <span class="fp-na">Not captured</span>
+        {% endif %}
+      </div>
+
+      <div class="fp-section full">
+        <h3>User Agent</h3>
+        <div style="font-size:12px;color:var(--txt);word-break:break-all;line-height:1.6;background:var(--bg2);border:1px solid var(--line);border-radius:10px;padding:14px;font-family:Consolas,monospace">{{ di.userAgent }}</div>
+      </div>
+
+      {% if fpip %}
+      <div class="fp-section full">
+        <h3>IP Intelligence</h3>
+        <div class="fp-row"><span class="fl">IP Address</span><span class="fv fp-mono" style="font-size:14px;color:var(--accent)">{{ fpip }}{% if fpip_note %} <span class="fp-pill warn">REPORTED</span>{% endif %}</span></div>
+        <div class="fp-row"><span class="fl">Captured At</span><span class="fv">{{ fp.created_at }}</span></div>
+      </div>
+      {% endif %}
+      {% else %}
+      <div class="fp-section full">
+        <div class="empty" style="padding:40px">No device details captured for this user. They will be captured on next login.</div>
+      </div>
+      {% endif %}
+    </div>
+    {% else %}
+    <div class="fp-grid">
+      <div class="fp-section full">
+        <div class="empty" style="padding:60px">
+          <div style="font-size:40px;margin-bottom:16px">☐</div>
+          <div style="font-weight:600;margin-bottom:6px">No Fingerprint Registered</div>
+          <div style="color:var(--muted);font-size:14px">This user has no device fingerprint on file.</div>
+        </div>
+      </div>
+    </div>
+    {% endif %}
+  </div>
+
+  <div class="toast" id="toast"></div>
+
+<script>
+function toast(msg, err){
+  const t = document.getElementById('toast');
+  if(!t) return;
+  t.textContent = msg;
+  t.className = 'toast show' + (err ? ' err' : '');
+  setTimeout(() => { if(t) t.className = 'toast'; }, 2600);
+}
+function copyHash(){
+  const el = document.getElementById('fp-hash');
+  if(!el) return;
+  navigator.clipboard.writeText(el.textContent).then(() => toast('Fingerprint hash copied')).catch(() => toast('Failed to copy', true));
+}
+function copyFpjs(){
+  const el = document.getElementById('fpjs-id');
+  if(!el) return;
+  navigator.clipboard.writeText(el.textContent).then(() => toast('FingerprintJS ID copied')).catch(() => toast('Failed to copy', true));
+}
+</script>
+<script src="{{ url_for('static', filename='fp-guard.js') }}" defer></script>
+</body>
+</html>

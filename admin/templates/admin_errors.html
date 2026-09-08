@@ -1,0 +1,181 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>System Errors</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+  <style>
+    .err-card { margin-bottom: 12px; text-align: left; }
+    .err-head { display: flex; justify-content: space-between; align-items: center; gap: 12px; flex-wrap: wrap; margin-bottom: 8px; }
+    .err-type { font-weight: 700; font-size: 15px; color: var(--txt); }
+    .err-mod { font-size: 11px; padding: 2px 8px; border-radius: 4px; background: rgba(255,255,255,0.08); text-transform: uppercase; letter-spacing: 0.5px; }
+    .err-reason { display: inline-block; padding: 2px 6px; border-radius: 4px; font-size: 11px; font-weight: 600; background: rgba(239,68,68,0.15); color: #f87171; margin-left: 6px; }
+    .err-count { display: inline-block; padding: 2px 8px; border-radius: 999px; font-size: 11px; font-weight: 700; background: rgba(245,158,11,0.16); color: #fbbf24; margin-left: 6px; }
+    .stack-pre { background: var(--bg2, #111); border: 1px solid var(--line, #222); padding: 10px; border-radius: 6px; font-family: monospace; font-size: 12px; overflow-x: auto; max-height: 250px; white-space: pre-wrap; color: #e2e8f0; margin-top: 8px; }
+  </style>
+</head>
+<body data-guard="off">
+  <div class="nav">
+    <div class="brand"><a href="{{ url_for('admin_panel') }}"><span class="dot"></span> MC Status Hosting</a> <span class="pill">Admin</span></div>
+    <div class="links">
+      <a href="{{ url_for('admin_panel') }}">Panel</a>
+      <a href="/admin/bots">Fleet</a>
+      <a href="{{ url_for('admin_panel_controls') }}">Hosting</a>
+      <a href="/admin/nodes">Nodes</a>
+      <a href="{{ url_for('admin_flags') }}">Flags</a>
+      <a href="{{ url_for('admin_errors') }}" aria-current="page" style="color:var(--txt);background:var(--card2)">Errors</a>
+      <a href="{{ url_for('admin_reviews') }}">Reviews</a>
+      <a href="/admin/ads">Ads</a>
+      <a href="{{ url_for('admin_database') }}">Database</a>
+      <a href="/admin/account">Account</a>
+    </div>
+  </div>
+
+  <div class="log-page log-wide">
+    <h2 class="page-title">System & HeatWave Errors <span class="pill" id="flagged-count">—</span></h2>
+    <p class="note page-sub">Operational system errors, runtime exceptions, and multi-account security flags logged directly to HeatWave DB.</p>
+
+    <div class="toolbar">
+      <div class="filter-tabs" role="tablist" aria-label="Error category">
+        <button class="tab on" data-cat="system_error" onclick="setCategory('system_error')">Internal System Errors</button>
+        <button class="tab" data-cat="user_flag" onclick="setCategory('user_flag')">User & Device Security Flags</button>
+        <button class="tab" data-cat="all" onclick="setCategory('all')">All Events</button>
+      </div>
+      <input id="q" type="search" class="filter-input" placeholder="Filter by type, module, message, reason…" oninput="renderErrors()" style="flex:1;max-width:320px;">
+      <button class="btn btn-ghost btn-sm" onclick="load()">Refresh</button>
+    </div>
+
+    <div id="error-list"></div>
+  </div>
+
+  <div class="toast" id="toast"></div>
+
+<script>
+const $ = s => { try { return document.querySelector(s); } catch(e){ return null; } };
+let ALL_ERRORS = [];
+let currentCat = 'system_error';
+
+function toast(msg, err){
+  const t = $('#toast'); if(!t) return;
+  t.textContent = msg;
+  t.className = 'toast show' + (err ? ' err' : '');
+  setTimeout(() => { if(t) t.className = 'toast'; }, 2600);
+}
+
+function api(path, opts){
+  return fetch(path, {headers:{'Content-Type':'application/json'}, ...opts}).then(r=>r.json()).catch(()=>({ok:false}));
+}
+
+function esc(s){ return String(s==null?'':s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+function fmtDate(s){ if(!s) return '—'; try{ return new Date(s).toLocaleString(); }catch(e){ return esc(s); } }
+function busy(sel, on){ const el = typeof sel==='string'?$(sel):sel; if(el) el.disabled = !!on; }
+
+function setCategory(cat){
+  currentCat = cat;
+  document.querySelectorAll('.filter-tabs .tab').forEach(b => b.classList.toggle('on', b.dataset.cat === cat));
+  load();
+}
+
+async function load(){
+  const catParam = currentCat !== 'all' ? `?category=${currentCat}` : '';
+  const r = await api('/api/admin/errors' + catParam);
+  const fc = $('#flagged-count');
+  if(fc) fc.textContent = (r && r.flagged != null) ? r.flagged : '—';
+  
+  if(!r || !r.ok){
+    $('#error-list').innerHTML = '<p class="note" style="color:#f87171">Could not load HeatWave error logs.</p>';
+    return;
+  }
+  ALL_ERRORS = r.errors || [];
+  renderErrors();
+}
+
+function renderErrors(){
+  const list = $('#error-list');
+  if(!list) return;
+  const query = ($('#q')?.value || '').toLowerCase().trim();
+  
+  const filtered = ALL_ERRORS.filter(item => {
+    if(!query) return true;
+    const searchStr = `${item.error_type || ''} ${item.module || ''} ${item.message || ''} ${item.flag_reason || ''}`.toLowerCase();
+    return searchStr.includes(query);
+  });
+
+  if(!filtered.length){
+    list.innerHTML = '<div class="card" style="padding:20px;text-align:center;"><p class="note">No HeatWave errors found matching the criteria.</p></div>';
+    return;
+  }
+
+  list.innerHTML = filtered.map(row => {
+    const isFlagged = Boolean(row.flagged);
+    const trace = row.stack_trace ? esc(row.stack_trace) : '';
+    const traceId = 'trace-' + row.id;
+    const seen = Number(row.occurrences) || 1;
+    return `
+      <div class="card err-card">
+        <div class="err-head">
+          <div>
+            <span class="err-type">${esc(row.error_type)}</span>
+            ${seen > 1 ? `<span class="err-count" title="Seen ${seen} times">&times;${seen}</span>` : ''}
+            <span class="err-mod">${esc(row.module || 'app')}</span>
+            ${row.flag_reason ? `<span class="err-reason">${esc(row.flag_reason)}</span>` : ''}
+            ${isFlagged ? '<span class="badge bad" style="margin-left:6px">FLAGGED</span>' : '<span class="badge on" style="margin-left:6px">REVIEWED</span>'}
+          </div>
+          <div class="note">${fmtDate(row.created_at)}</div>
+        </div>
+        <p style="margin:6px 0 10px;font-size:14px;word-break:break-word;">${esc(row.message)}</p>
+        
+        ${trace ? `
+          <details style="margin-bottom:10px;">
+            <summary style="cursor:pointer;font-size:12px;color:var(--muted);user-select:none;">View Stack Trace / Details</summary>
+            <pre class="stack-pre">${trace}</pre>
+          </details>
+        ` : ''}
+
+        <div style="display:flex;gap:8px;align-items:center;">
+          <button class="btn ${isFlagged ? 'btn-ghost' : 'btn-ghost'} btn-sm" onclick="toggleFlag(${row.id}, ${!isFlagged})">
+            ${isFlagged ? 'Mark Reviewed' : 'Mark Flagged'}
+          </button>
+          <button class="btn btn-red btn-sm" onclick="deleteError(${row.id}, this)">Delete Log</button>
+        </div>
+      </div>
+    `;
+  }).join('');
+}
+
+async function toggleFlag(id, flagState){
+  const r = await api('/api/admin/errors/flag', {
+    method: 'POST',
+    body: JSON.stringify({ id: id, flag: flagState })
+  });
+  if(r && r.ok){
+    toast(flagState ? 'Flagged error' : 'Marked error reviewed');
+    load();
+  } else {
+    toast((r && r.error) || 'Failed to update error flag', true);
+  }
+}
+
+async function deleteError(id, btn){
+  if(!confirm('Permanently delete this error log entry from HeatWave DB?')) return;
+  busy(btn, true);
+  const r = await api('/api/admin/errors/purge', {
+    method: 'POST',
+    body: JSON.stringify({ id: id })
+  });
+  if(r && r.ok){
+    toast('Error log deleted');
+    load();
+  } else {
+    busy(btn, false);
+    toast((r && r.error) || 'Delete failed', true);
+  }
+}
+
+load();
+</script>
+</body>
+</html>
