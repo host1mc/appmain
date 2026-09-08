@@ -105,8 +105,8 @@ _ORACLE_ENABLED = False
 _ORACLE_CFG = {}
 _ORACLE_POOL = None
 # Extra ATPs (ORACLE_DSN_1, ORACLE_DSN_2, …). Same user/password unless
-# ORACLE_USER_N / ORACLE_PASSWORD_N are set. Used only when the current
-# target will not hand out a session (host down / DPY-4005 on a cold pool).
+# ORACLE_USER_N / ORACLE_PASSWORD_N are set. Used when the current target
+# is down, times out, or its pool/session cap is full.
 _ORACLE_TARGETS = []
 _ORACLE_TARGET_I = 0
 _ORACLE_POOLS = {}
@@ -495,16 +495,20 @@ def _oracle_conn():
             return pool.acquire()
         except Exception as ex:
             last_ex = ex
-            # DPY-4005 on a saturated pool is local contention — do not hop DSN.
-            if _is_pool_exhausted(ex) and _pool_saturated(pool):
-                raise
+            # Local pool wait once, then hop — a full primary must not 503
+            # while ORACLE_DSN_n still has sessions.
             if _is_pool_exhausted(ex) and not _pool_saturated(pool):
                 try:
                     return pool.acquire()
                 except Exception as ex2:
                     last_ex = ex2
                     ex = ex2
-            if not _is_oracle_unreachable(ex):
+            hop = (
+                _is_oracle_unreachable(ex)
+                or _is_pool_exhausted(ex)
+                or _pool_saturated(pool)
+            )
+            if not hop:
                 raise
             if not _failover_oracle(ex):
                 raise
@@ -5690,3 +5694,4 @@ def verify_user_email(uid, verified=True):
 if __name__ == "__main__":
     init_db()
     _debug_print("Oracle schema initialised")
+
