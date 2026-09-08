@@ -254,7 +254,6 @@ def _pipe_reader(stream, label):
                 sys.stdout.write(line)
             else:
                 sys.stdout.write(f"{label} {line}")
-            sys.stdout.flush()
     except ValueError:
         pass
 

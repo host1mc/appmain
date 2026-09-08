@@ -220,7 +220,7 @@ def _start_reconcile_task():
                     reviews_db.log_app_error("ReconcileSweepFailed", f"[panel] reconcile sweep failed: {type(exc).__name__}: {exc}", module="asgi_panel", flagged=1)
                 except Exception:
                     pass
-                _debug_print(f"[panel] reconcile sweep failed: {type(exc).__name__}: {exc}",
+                _debug__debug_print(f"[panel] reconcile sweep failed: {type(exc).__name__}: {exc}",
                              file=sys.stderr)
 
     return asyncio.ensure_future(_loop())
@@ -245,13 +245,12 @@ def _bind_host():
     """
     host = os.environ.get("PANEL_BIND", _PANEL_BIND_DEFAULT).strip()
     if host in _WILDCARD_HOSTS:
-        print(
+        _debug_print(
             f"[panel] refusing to start: PANEL_BIND={host!r} would expose the hosting "
             "panel beyond this host. It has no login of its own — it trusts the site "
             "session cookie, which only reaches it from the same host. Set PANEL_BIND "
             "to a specific private interface address, or leave it unset for 127.0.0.1.",
             file=sys.stderr,
-            flush=True,
         )
         sys.exit(2)
     return host
