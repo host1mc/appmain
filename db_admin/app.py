@@ -413,6 +413,75 @@ def collection_count(coll_name):
     return 0
 
 
+def _fmt_bytes(n):
+    n = float(n or 0)
+    for unit in ("B", "KB", "MB", "GB", "TB"):
+        if n < 1024 or unit == "TB":
+            if unit == "B":
+                return f"{int(n)} {unit}"
+            return f"{n:.2f} {unit}"
+        n /= 1024.0
+    return f"{n:.2f} TB"
+
+
+def storage_report():
+    """Used vs remaining storage on the current data plane."""
+    used = 0
+    quota = 0
+    note = ""
+    s = _get_shard_id()
+    try:
+        if _is_oracle(s):
+            rows = _oracle_query(
+                "SELECT NVL(SUM(bytes), 0) AS used FROM user_segments", shard_id=s
+            )
+            used = int(rows[0]["USED"] if rows else 0)
+            qrows = _oracle_query(
+                "SELECT NVL(SUM(CASE WHEN max_bytes < 0 THEN NULL ELSE max_bytes END), 0) AS q "
+                "FROM user_ts_quotas",
+                shard_id=s,
+            )
+            quota = int(qrows[0]["Q"] if qrows else 0)
+            if quota <= 0:
+                try:
+                    quota = int(float(os.environ.get("ORACLE_STORAGE_GB", "20"))) * (1024 ** 3)
+                    note = "quota from ORACLE_STORAGE_GB (default 20 GB ATP)"
+                except (TypeError, ValueError):
+                    quota = 20 * (1024 ** 3)
+                    note = "default 20 GB ATP cap"
+        elif _is_heatwave(s):
+            rows = _heatwave_query(
+                "SELECT COALESCE(SUM(data_length + index_length), 0) AS used "
+                "FROM information_schema.tables WHERE table_schema = DATABASE()"
+            )
+            used = int(rows[0]["used"] if rows else 0)
+            try:
+                quota = int(float(os.environ.get("MYSQL_STORAGE_GB", "50"))) * (1024 ** 3)
+            except (TypeError, ValueError):
+                quota = 50 * (1024 ** 3)
+            note = "quota from MYSQL_STORAGE_GB (default 50 GB)"
+        elif _is_mongo(s):
+            stats = _mongo(s).command("dbStats")
+            used = int(stats.get("dataSize") or 0) + int(stats.get("indexSize") or 0)
+            quota = int(stats.get("fsTotalSize") or 0)
+            note = "Mongo dbStats"
+    except Exception as exc:
+        print(f"[db_admin] storage_report: {exc}")
+        note = str(exc)
+    remaining = max(0, quota - used) if quota else 0
+    pct = (100.0 * used / quota) if quota else 0.0
+    return {
+        "used": used,
+        "quota": quota,
+        "remaining": remaining,
+        "pct": min(100.0, pct),
+        "used_h": _fmt_bytes(used),
+        "quota_h": _fmt_bytes(quota) if quota else "unknown",
+        "remaining_h": _fmt_bytes(remaining) if quota else "unknown",
+        "note": note,
+    }
+
+
 def collections_report():
     if has_request_context() and getattr(g, "_collections_report", None) is not None:
         return g._collections_report
@@ -649,15 +718,15 @@ def _known_table(tname):
 @app.route("/")
 def dashboard():
     tables, totals = collections_report()
-    users = users_report()
-    top_tables = sorted(tables, key=lambda t: -t["rows"])[:8]
+    storage = storage_report()
+    live = sum(1 for t in tables if t.get("rows"))
     return render_template(
         "dashboard.html",
         tables=tables,
         totals=totals,
-        users=users[:10],
-        user_count=len(users),
-        top_tables=top_tables,
+        storage=storage,
+        live_count=live,
+        field_count=sum(t.get("fields") or 0 for t in tables),
     )
 
 
