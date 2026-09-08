@@ -371,21 +371,32 @@ def _ensure_schema(conn):
             CREATE TABLE IF NOT EXISTS pending_container_deletions (
                 server_id VARCHAR(64) PRIMARY KEY,
                 node_id VARCHAR(64) NOT NULL DEFAULT '',
+                node_name VARCHAR(100) NOT NULL DEFAULT '',
                 node_ip VARCHAR(255) NOT NULL DEFAULT '',
                 `purge` TINYINT NOT NULL DEFAULT 1,
                 requested_at VARCHAR(50) NOT NULL,
                 KEY pcd_node (node_id)
             ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
         """)
-        try:
-            cur.execute("SHOW COLUMNS FROM pending_container_deletions LIKE 'node_ip'")
-            if not cur.fetchone():
-                cur.execute(
-                    "ALTER TABLE pending_container_deletions "
-                    "ADD COLUMN node_ip VARCHAR(255) NOT NULL DEFAULT '' AFTER node_id"
-                )
-        except Exception as ex:
-            _debug_print(f"[reviews_db] column check failed for pending_container_deletions.node_ip: {ex}")
+        for col, ddl in (
+            ("node_ip", "ADD COLUMN node_ip VARCHAR(255) NOT NULL DEFAULT '' AFTER node_id"),
+            ("node_name", "ADD COLUMN node_name VARCHAR(100) NOT NULL DEFAULT '' AFTER node_id"),
+        ):
+            try:
+                cur.execute(f"SHOW COLUMNS FROM pending_container_deletions LIKE '{col}'")
+                if not cur.fetchone():
+                    cur.execute("ALTER TABLE pending_container_deletions " + ddl)
+            except Exception as ex:
+                _debug_print(f"[reviews_db] column check failed for pending_container_deletions.{col}: {ex}")
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS retired_nodes (
+                node_id VARCHAR(64) PRIMARY KEY,
+                name VARCHAR(100) NOT NULL DEFAULT '',
+                url VARCHAR(255) NOT NULL DEFAULT '',
+                token_enc VARCHAR(2000) NOT NULL DEFAULT '',
+                retired_at VARCHAR(50) NOT NULL
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+        """)
         conn.commit()
         cur.close()
         _SCHEMA_READY = True
@@ -733,12 +744,12 @@ def delete_review(review_id):
 
 # ── HeatWave Pending Container Deletions ─────────────────────────
 
-def enqueue_container_deletion(server_id, node_id="", node_ip="", purge=True):
+def enqueue_container_deletion(server_id, node_id="", node_ip="", node_name="", purge=True):
     """Record a container whose node delete was not confirmed (node offline).
 
-    ``node_ip`` is the address(es) the node registry had for the node at delete
-    time, kept so the admin panel can show which host holds the container
-    without a registry lookup succeeding later.
+    ``node_ip`` / ``node_name`` are the registry values at delete time, kept so
+    the admin panel can still name the host and reach it after the Oracle node
+    row is gone.
 
     Best-effort: a HeatWave outage must never block the delete, so this
     degrades to a no-op like every other function here. Idempotent on
@@ -750,11 +761,14 @@ def enqueue_container_deletion(server_id, node_id="", node_ip="", purge=True):
     try:
         cur = conn.cursor()
         cur.execute(
-            "INSERT INTO pending_container_deletions(server_id, node_id, node_ip, `purge`, requested_at) "
-            "VALUES(%(s)s, %(n)s, %(ip)s, %(p)s, %(now)s) "
-            "ON DUPLICATE KEY UPDATE node_id=%(n)s, node_ip=%(ip)s, `purge`=%(p)s, requested_at=%(now)s",
+            "INSERT INTO pending_container_deletions"
+            "(server_id, node_id, node_name, node_ip, `purge`, requested_at) "
+            "VALUES(%(s)s, %(n)s, %(nm)s, %(ip)s, %(p)s, %(now)s) "
+            "ON DUPLICATE KEY UPDATE node_id=%(n)s, node_name=%(nm)s, "
+            "node_ip=%(ip)s, `purge`=%(p)s, requested_at=%(now)s",
             {
                 "s": str(server_id), "n": str(node_id or ""),
+                "nm": str(node_name or "")[:100],
                 "ip": str(node_ip or "")[:255], "p": 1 if purge else 0, "now": _now(),
             },
         )
@@ -779,7 +793,7 @@ def list_container_deletions():
     try:
         cur = conn.cursor(dictionary=True)
         cur.execute(
-            "SELECT server_id, node_id, node_ip, `purge`, requested_at "
+            "SELECT server_id, node_id, node_name, node_ip, `purge`, requested_at "
             "FROM pending_container_deletions ORDER BY requested_at"
         )
         rows = cur.fetchall() or []
@@ -788,6 +802,7 @@ def list_container_deletions():
             out.append({
                 "server_id": str(row.get("server_id") or ""),
                 "node_id": str(row.get("node_id") or ""),
+                "node_name": str(row.get("node_name") or ""),
                 "node_ip": str(row.get("node_ip") or ""),
                 "purge": bool(row.get("purge")),
                 "requested_at": str(row.get("requested_at") or ""),
@@ -806,6 +821,97 @@ def get_container_deletion(server_id):
         if row["server_id"] == str(server_id or "").strip():
             return row
     return None
+
+
+def stamp_pending_node_identity(node_id, node_name="", node_ip=""):
+    """Keep name/IP on every pending row for this node after Oracle delete."""
+    nid = str(node_id or "").strip()
+    if not nid:
+        return 0
+    conn = _conn()
+    if conn is None:
+        return 0
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            "UPDATE pending_container_deletions "
+            "SET node_name=%(nm)s, node_ip=%(ip)s WHERE node_id=%(n)s",
+            {
+                "n": nid,
+                "nm": str(node_name or "")[:100],
+                "ip": str(node_ip or "")[:255],
+            },
+        )
+        conn.commit()
+        return max(0, cur.rowcount)
+    except Exception as ex:
+        _debug_print(f"[reviews_db] could not stamp pending node {nid}: {ex}")
+        return 0
+    finally:
+        _close_quietly(conn)
+
+
+def retire_node(node_id, name="", url="", token_enc=""):
+    """Keep last-known agent contact after the Oracle nodes row is gone."""
+    nid = str(node_id or "").strip()
+    if not nid:
+        return False
+    conn = _conn()
+    if conn is None:
+        return False
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            "INSERT INTO retired_nodes(node_id, name, url, token_enc, retired_at) "
+            "VALUES(%(n)s, %(nm)s, %(u)s, %(t)s, %(now)s) "
+            "ON DUPLICATE KEY UPDATE name=%(nm)s, url=%(u)s, "
+            "token_enc=%(t)s, retired_at=%(now)s",
+            {
+                "n": nid,
+                "nm": str(name or "")[:100],
+                "u": str(url or "")[:255],
+                "t": str(token_enc or "")[:2000],
+                "now": _now(),
+            },
+        )
+        conn.commit()
+        return True
+    except Exception as ex:
+        _debug_print(f"[reviews_db] could not retire node {nid}: {ex}")
+        return False
+    finally:
+        _close_quietly(conn)
+
+
+def get_retired_node(node_id):
+    nid = str(node_id or "").strip()
+    if not nid:
+        return None
+    conn = _conn()
+    if conn is None:
+        return None
+    try:
+        cur = conn.cursor(dictionary=True)
+        cur.execute(
+            "SELECT node_id, name, url, token_enc, retired_at "
+            "FROM retired_nodes WHERE node_id=%(n)s",
+            {"n": nid},
+        )
+        row = cur.fetchone()
+        if not row:
+            return None
+        return {
+            "node_id": str(row.get("node_id") or ""),
+            "name": str(row.get("name") or ""),
+            "url": str(row.get("url") or ""),
+            "token_enc": str(row.get("token_enc") or ""),
+            "retired_at": str(row.get("retired_at") or ""),
+        }
+    except Exception as ex:
+        _debug_print(f"[reviews_db] could not read retired node {nid}: {ex}")
+        return None
+    finally:
+        _close_quietly(conn)
 
 
 def clear_container_deletions(server_ids):

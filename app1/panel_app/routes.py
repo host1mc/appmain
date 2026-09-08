@@ -1536,6 +1536,7 @@ def build_routes(runtime, config):
                     server_id,
                     node_id=node_id_of_server(server),
                     node_ip=await _node_address_of(server),
+                    node_name=await _node_name_of(server),
                     purge=True,
                 )
             except Exception:
@@ -2463,6 +2464,14 @@ def build_routes(runtime, config):
         Route("/api/servers/{server_id}/files", api_files, methods=["GET"]),
         Route("/api/servers/{server_id}/file", api_file, methods=["GET", "PUT", "DELETE"]),
         Route("/api/servers/{server_id}/directory", api_directory, methods=["POST"]),
+        Route("/api/servers/{server_id}/upload", api_upload, methods=["POST"]),
+        Route("/api/servers/{server_id}/extract", api_extract, methods=["POST"]),
+        Route("/activity", activity_page, methods=["GET"]),
+        Route("/account", account_page, methods=["GET"]),
+        Route("/account/password", account_change_password, methods=["POST"]),
+        WebSocketRoute("/ws/console/{server_id}", console_ws),
+    ]
+vers/{server_id}/directory", api_directory, methods=["POST"]),
         Route("/api/servers/{server_id}/upload", api_upload, methods=["POST"]),
         Route("/api/servers/{server_id}/extract", api_extract, methods=["POST"]),
         Route("/activity", activity_page, methods=["GET"]),
