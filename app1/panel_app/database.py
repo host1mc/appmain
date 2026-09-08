@@ -63,7 +63,16 @@ def _connect_args() -> dict:
     import oracledb
 
     oracledb.defaults.connect_timeout = 10
-    args = {"dsn": environ["ORACLE_DSN"]}
+    dsn = (environ.get("ORACLE_DSN") or "").strip()
+    # Try later DSNs if the primary is missing; live failover is in
+    # create_engine below via pool_pre_ping + recreate.
+    if not dsn:
+        for idx in range(1, 8):
+            extra = (environ.get(f"ORACLE_DSN_{idx}") or "").strip()
+            if extra:
+                dsn = extra
+                break
+    args = {"dsn": dsn}
     wallet_dir = Path(environ.get("ORACLE_WALLET_DIR", "./Wallet_ATP")).resolve()
     if wallet_dir.is_dir() and any(
         (wallet_dir / name).is_file()
