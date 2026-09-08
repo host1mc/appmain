@@ -93,6 +93,12 @@ def _enc_or_none(value):
 _ORACLE_ENABLED = False
 _ORACLE_CFG = {}
 _ORACLE_POOL = None
+# Extra ATPs (ORACLE_DSN_1, ORACLE_DSN_2, …). Same user/password unless
+# ORACLE_USER_N / ORACLE_PASSWORD_N are set. Used only when the current
+# target will not hand out a session (host down / DPY-4005 on a cold pool).
+_ORACLE_TARGETS = []
+_ORACLE_TARGET_I = 0
+_ORACLE_POOLS = {}
 # Pool creation is not idempotent — two threads racing here would each build a
 # pool and only one would be kept, leaking the other's sessions against the ATP
 # session cap. One lock, one pool.
@@ -183,7 +189,7 @@ def _wallet_files_present(wallet_dir):
 
 
 def _load_config():
-    global _ORACLE_ENABLED, _ORACLE_CFG
+    global _ORACLE_ENABLED, _ORACLE_CFG, _ORACLE_TARGETS, _ORACLE_TARGET_I
     _load_env_file()
     enabled = _setting("ORACLE_ENABLED", "false").strip().lower() == "true"
     if enabled:
@@ -194,18 +200,42 @@ def _load_config():
                          "fastapi-oracle-app",
                          _setting("ORACLE_WALLET_DIR", "./Wallet_ATP")))
         wallet_present = _wallet_files_present(wallet_dir)
-        _ORACLE_CFG = {
-            "user": _required_setting("ORACLE_USER"),
-            "password": _required_setting("ORACLE_PASSWORD"),
-            "dsn": _required_setting("ORACLE_DSN"),
-            "wallet_dir": wallet_dir if wallet_present else None,
-            "wallet_password": _setting("ORACLE_WALLET_PASSWORD", ""),
-        }
+        default_user = _required_setting("ORACLE_USER")
+        default_password = _required_setting("ORACLE_PASSWORD")
+        wallet = wallet_dir if wallet_present else None
+        wallet_password = _setting("ORACLE_WALLET_PASSWORD", "")
+        targets = []
+        seen = set()
+        primary = _required_setting("ORACLE_DSN")
+        extras = [primary]
+        for idx in range(1, 8):
+            extra = _setting(f"ORACLE_DSN_{idx}", "").strip()
+            if extra:
+                extras.append(extra)
+        for i, dsn in enumerate(extras):
+            if not dsn or dsn in seen:
+                continue
+            seen.add(dsn)
+            suffix = "" if i == 0 else f"_{i}"
+            targets.append({
+                "user": _setting(f"ORACLE_USER{suffix}", default_user) or default_user,
+                "password": _setting(f"ORACLE_PASSWORD{suffix}", default_password) or default_password,
+                "dsn": dsn,
+                "wallet_dir": wallet,
+                "wallet_password": wallet_password,
+                "label": "primary" if i == 0 else f"failover-{i}",
+            })
+        _ORACLE_TARGETS = targets
+        _ORACLE_TARGET_I = 0
+        _ORACLE_CFG = dict(targets[0])
         # Only the mTLS (wallet) path needs the driver pointed at a wallet
         # directory; walletless one-way TLS reads nothing from disk.
         if wallet_present:
             os.environ["TNS_ADMIN"] = wallet_dir
         _ORACLE_ENABLED = True
+        if len(targets) > 1:
+            _debug_print(f"[database] Oracle failover: {len(targets)} DSN(s) "
+                         f"({', '.join(t['label'] for t in targets)})")
 
 def _tier_name() -> str:
     """Which tier this process is, from the launcher that started it.
@@ -251,54 +281,56 @@ def _oracle_pool_timeout() -> int:
     return max(1, val)
 
 
+def _pool_kwargs_for(cfg):
+    import oracledb
+    oracledb.defaults.fetch_lobs = False
+    oracledb.defaults.connect_timeout = 10
+    pool_max = _oracle_pool_max()
+    pool_wait = _oracle_pool_timeout()
+    pool_kwargs = dict(
+        user=cfg["user"],
+        password=cfg["password"],
+        dsn=cfg["dsn"],
+        min=0,
+        max=pool_max,
+        increment=1,
+        getmode=getattr(oracledb, "POOL_GETMODE_TIMEDWAIT", getattr(oracledb, "POOL_GETMODE_WAIT", 2)),
+        wait_timeout=pool_wait * 1000,
+        timeout=30,
+    )
+    if cfg.get("wallet_dir"):
+        pool_kwargs.update(
+            config_dir=cfg["wallet_dir"],
+            wallet_location=cfg["wallet_dir"],
+            wallet_password=cfg.get("wallet_password", ""),
+        )
+    return pool_kwargs, pool_max
+
+
+def _oracle_pool_for(cfg):
+    key = cfg["dsn"]
+    pool = _ORACLE_POOLS.get(key)
+    if pool is not None:
+        return pool
+    with _ORACLE_POOL_LOCK:
+        pool = _ORACLE_POOLS.get(key)
+        if pool is not None:
+            return pool
+        import oracledb
+        pool_kwargs, pool_max = _pool_kwargs_for(cfg)
+        pool = oracledb.create_pool(**pool_kwargs)
+        _ORACLE_POOLS[key] = pool
+        _debug_print(f"[database] Oracle pool created ({cfg.get('label', 'dsn')} max={pool_max}"
+              + (f", tier={_tier_name()}" if _tier_name() else "") + ")")
+    return pool
+
+
 def _oracle_pool():
     global _ORACLE_POOL
-    if _ORACLE_POOL is not None:
-        return _ORACLE_POOL
-    with _ORACLE_POOL_LOCK:
-        # re-check inside the lock: the loser of the race must reuse the winner's
-        # pool, not build a second one
-        if _ORACLE_POOL is not None:
-            return _ORACLE_POOL
-        import oracledb
-        oracledb.defaults.fetch_lobs = False
-        oracledb.defaults.connect_timeout = 10
-        pool_max = _oracle_pool_max()
-        pool_wait = _oracle_pool_timeout()
-        # Shed, don't queue. The ATP grants the whole fleet only ~20 concurrent
-        # sessions, and the default getmode (POOL_GETMODE_WAIT) waits for a free
-        # one with no bound — so under load every acquire() past the pool's max
-        # parks its caller's web-server thread indefinitely and the tier stalls
-        # behind the pool instead of staying responsive. POOL_GETMODE_TIMEDWAIT
-        # caps that wait at wait_timeout, after which acquire() raises and the
-        # request fails fast: a fast 503 keeps a thread free to serve the next
-        # caller, where a 30s park would have held it hostage. wait_timeout is in
-        # milliseconds and governs *waiting for a session from the pool* — which
-        # is the acquire wait we want short. It is a distinct knob from `timeout`
-        # below, which is the idle-session eviction time (seconds a session may
-        # sit unused before the pool closes it) and is left as it was.
-        pool_kwargs = dict(
-            user=_ORACLE_CFG["user"],
-            password=_ORACLE_CFG["password"],
-            dsn=_ORACLE_CFG["dsn"],
-            min=0,
-            max=pool_max,
-            increment=1,
-            getmode=getattr(oracledb, "POOL_GETMODE_TIMEDWAIT", getattr(oracledb, "POOL_GETMODE_WAIT", 2)),
-            wait_timeout=pool_wait * 1000,
-            timeout=30,
-        )
-        # Wallet kwargs only when a wallet is actually on disk; otherwise this is
-        # a walletless one-way TLS connection driven entirely by the descriptor.
-        if _ORACLE_CFG.get("wallet_dir"):
-            pool_kwargs.update(
-                config_dir=_ORACLE_CFG["wallet_dir"],
-                wallet_location=_ORACLE_CFG["wallet_dir"],
-                wallet_password=_ORACLE_CFG.get("wallet_password", ""),
-            )
-        _ORACLE_POOL = oracledb.create_pool(**pool_kwargs)
-        _debug_print(f"[database] Oracle pool created (max={pool_max}"
-              + (f", tier={_tier_name()}" if _tier_name() else "") + ")")
+    cfg = _ORACLE_CFG or (_ORACLE_TARGETS[0] if _ORACLE_TARGETS else None)
+    if not cfg:
+        raise RuntimeError("Oracle is not configured")
+    _ORACLE_POOL = _oracle_pool_for(cfg)
     return _ORACLE_POOL
 
 def _pool_saturated(pool) -> bool:
@@ -315,30 +347,68 @@ def _pool_saturated(pool) -> bool:
         return True
 
 
+_ORACLE_DOWN_MARKERS = (
+    "DPY-4005", "DPY-6005", "DPY-4011", "DPY-3010", "DPY-4027",
+    "ORA-12541", "ORA-12514", "ORA-12170", "ORA-12537", "ORA-03113",
+    "ORA-03114", "ORA-01033", "ORA-01034", "ORA-01109", "NJS-500",
+    "timed out", "connection refused", "could not connect",
+)
+
+
+def _is_oracle_unreachable(exc) -> bool:
+    msg = str(exc or "")
+    return any(tag in msg for tag in _ORACLE_DOWN_MARKERS)
+
+
+def _failover_oracle(reason):
+    """Move the live target to the next DSN. Returns True if there is one."""
+    global _ORACLE_CFG, _ORACLE_POOL, _ORACLE_TARGET_I, _SCHEMA_ENSURED
+    if len(_ORACLE_TARGETS) < 2:
+        return False
+    nxt = (_ORACLE_TARGET_I + 1) % len(_ORACLE_TARGETS)
+    if nxt == _ORACLE_TARGET_I:
+        return False
+    prev = _ORACLE_TARGETS[_ORACLE_TARGET_I]
+    _ORACLE_TARGET_I = nxt
+    _ORACLE_CFG = dict(_ORACLE_TARGETS[nxt])
+    _ORACLE_POOL = None
+    # The standby ATP may not have this process's schema pass yet.
+    _SCHEMA_ENSURED = False
+    _debug_print(f"[database] Oracle failover {prev.get('label')} -> "
+                 f"{_ORACLE_CFG.get('label')}: {reason}", file=sys.stderr)
+    return True
+
+
 def _oracle_conn():
-    pool = _oracle_pool()
-    try:
-        return pool.acquire()
-    except Exception as ex:
-        # DPY-4005 means only "no session within wait_timeout", and that covers two
-        # states that want opposite handling. Either the pool is at max with every
-        # session busy — contention, and the fast failure above is the point — or the
-        # pool is still below max and the wait expired while a *new* session was
-        # being dialled. The second is a cold pool, which min=0 plus the 30s idle
-        # timeout makes the normal state of any tier that touches Oracle less often
-        # than that, and it could never succeed when the ATP took longer than
-        # wait_timeout (5s) to hand over a session even though connect_timeout allows
-        # it 10s. The maintenance daemon showed it plainly: its sweep is
-        # single-threaded and every task closes its connection before the next one
-        # acquires, so its pool of 2 cannot be exhausted, yet each sweep reported
-        # DPY-4005 and logged "shedding with 503" against nothing.
-        #
-        # So retry once, and only while the pool was still growing: the connect then
-        # gets its full connect_timeout across the two waits, and a saturated pool
-        # still sheds on the first failure.
-        if not _is_pool_exhausted(ex) or _pool_saturated(pool):
-            raise
-    return pool.acquire()
+    last_ex = None
+    tried = set()
+    for _ in range(max(1, len(_ORACLE_TARGETS) or 1)):
+        cfg = _ORACLE_CFG
+        key = cfg.get("dsn")
+        if key in tried:
+            break
+        tried.add(key)
+        pool = _oracle_pool()
+        try:
+            return pool.acquire()
+        except Exception as ex:
+            last_ex = ex
+            # DPY-4005 on a saturated pool is local contention — do not hop DSN.
+            if _is_pool_exhausted(ex) and _pool_saturated(pool):
+                raise
+            if _is_pool_exhausted(ex) and not _pool_saturated(pool):
+                try:
+                    return pool.acquire()
+                except Exception as ex2:
+                    last_ex = ex2
+                    ex = ex2
+            if not _is_oracle_unreachable(ex):
+                raise
+            if not _failover_oracle(ex):
+                raise
+    if last_ex:
+        raise last_ex
+    raise RuntimeError("Oracle is not configured")
 
 # One per object _ensure_oracle_cols_on() can create, so a cold start that loses
 # every race in turn still converges. Five tiers boot at once and the function
