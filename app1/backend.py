@@ -47,6 +47,7 @@ import internal_auth
 import internal_peers
 import creds
 import error_codes as ec
+import turnstile
 
 from urllib.parse import urlsplit as _urlsplit  # used by _load_cors_origins
 
@@ -489,6 +490,30 @@ def _text_field(data, field):
     if any("\ud800" <= ch <= "\udfff" for ch in value):
         abort(400)
     return value.strip()
+
+
+def _turnstile_token(data):
+    """Widget token from the login/register body. Either field name is accepted."""
+    return (
+        _text_field(data, "cf-turnstile-response")
+        or _text_field(data, "turnstile_token")
+    )
+
+
+def _require_turnstile(data):
+    """Refuse unless Cloudflare vouches for the widget token.
+
+    Login abuse is decided here, not on the frontend: the public site only
+    collects the token. Hitting this API with the internal bearer still has
+    to solve Turnstile before Argon2 or OTP work runs.
+    """
+    if turnstile.verify(_turnstile_token(data), _get_client_ip()):
+        return None
+    return ec.err(
+        ec.TURNSTILE_FAILED,
+        "Please complete the verification check and try again.",
+        403,
+    )
 
 
 def _raw_field(data, field):
@@ -983,6 +1008,9 @@ def api_internal_probe():
                key_func=lambda: _body_value("email"))
 def api_send_otp():
     data = _json_object()
+    blocked = _require_turnstile(data)
+    if blocked is not None:
+        return blocked
     email = _text_field(data, "email").lower()
     if len(email) > EMAIL_MAX_LEN or not db.EMAIL_RE.match(email):
         return ec.err(ec.EMAIL_INVALID, "Only @gmail.com or @outlook.com emails allowed", 400)
@@ -1107,6 +1135,9 @@ def api_cleanup_sessions():
 @limiter.limit("5 per minute; 20 per hour; 50 per day")
 def api_auth_register():
     data = _json_object()
+    blocked = _require_turnstile(data)
+    if blocked is not None:
+        return blocked
     username = _text_field(data, "username")
     password = _raw_field(data, "password")
     email = _text_field(data, "email").lower()
@@ -1351,6 +1382,9 @@ def api_discard_registration():
 @limiter.limit("10 per minute; 40 per hour", key_func=lambda: _body_value("username"))
 def api_auth_login():
     data = _json_object()
+    blocked = _require_turnstile(data)
+    if blocked is not None:
+        return blocked
     username = _text_field(data, "username")
     password = _raw_field(data, "password")
     fp, fp_anomaly = _clean_fingerprint(_text_field(data, "fingerprint"))

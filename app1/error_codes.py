@@ -65,6 +65,7 @@ REGISTRATION_FAILED = "registration_failed"
 FINGERPRINT_INVALID = "fingerprint_invalid"
 DEVICE_BLOCKED = "device_blocked"
 DEVICE_ERROR = "device_error"
+TURNSTILE_FAILED = "turnstile_failed"
 TRIAL_EXPIRED = "trial_expired"
 
 # ── bot / engine ───────────────────────────────────────────────────────────

@@ -1685,6 +1685,7 @@ _LOGIN_ERRORS = {
         "Please verify your email first. Check your inbox for the OTP code.",
     ec.RATE_LIMITED: "Too many attempts. Please wait a minute and try again.",
     ec.BACKEND_UNAVAILABLE: "Service temporarily unavailable. Please try again.",
+    ec.TURNSTILE_FAILED: "Please complete the verification check and try again.",
 }
 _LOGIN_ERROR_FALLBACK = "Invalid username or password"
 
@@ -1700,6 +1701,7 @@ _REGISTER_ERRORS = {
     ec.OTP_SEND_FAILED: "Failed to send OTP. Please try again later.",
     ec.RATE_LIMITED: "Too many attempts. Please wait a minute and try again.",
     ec.BACKEND_UNAVAILABLE: "Service temporarily unavailable. Please try again.",
+    ec.TURNSTILE_FAILED: "Please complete the verification check and try again.",
 }
 _REGISTER_ERROR_FALLBACK = "Registration failed"
 
@@ -1798,12 +1800,6 @@ def user_register():
                 return render_template("user_register.html", step="1")
 
 
-            if not turnstile.verify(request.form.get("cf-turnstile-response", ""),
-                                    _get_client_ip()):
-                flash("Please complete the verification check and try again.", "error")
-                return render_template("user_register.html", step="1")
-
-
             resp = _api("POST", "/api/auth/register", json_data={
                 "username": u,
                 "password": p,
@@ -1811,6 +1807,7 @@ def user_register():
                 "display_name": d,
                 "fingerprint": fp,
                 "fingerprint_detail": (request.form.get("fingerprint_detail", "") or "").strip(),
+                "cf-turnstile-response": request.form.get("cf-turnstile-response", "") or "",
             }, read_timeout=BACKEND_EMAIL_READ_TIMEOUT)
             if not resp.get("ok"):
                 if resp.get("banned"):
@@ -1892,20 +1889,15 @@ def user_login():
         p = request.form.get("password", "")
 
 
-        if not turnstile.verify(request.form.get("cf-turnstile-response", ""),
-                                _get_client_ip()):
-            g._login_precheck_failed = True
-            flash("Please complete the verification check and try again.", "error")
-            return render_template("user_login.html")
         fp = (request.form.get("fingerprint", "") or "").strip()
         fp_detail = _capped_fp_detail(request.form.get("fingerprint_detail", ""))
-
 
         resp = _api("POST", "/api/auth/login", json_data={
             "username": u,
             "password": p,
             "fingerprint": fp,
             "fingerprint_detail": fp_detail,
+            "cf-turnstile-response": request.form.get("cf-turnstile-response", "") or "",
         })
         if resp.get("ok"):
             user = resp.get("user") or {}
