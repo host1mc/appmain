@@ -6,25 +6,25 @@
    ───────────────────────────────────────────────────────────── */
 
 :root {
-  --bg: #07080d;
-  --bg2: #0c0e16;
-  --panel: rgba(25, 27, 39, .78);
-  --panel-solid: #191b27;
-  --panel2: #0f1119;
-  --border: rgba(255, 255, 255, .075);
-  --border2: rgba(255, 255, 255, .13);
-  --text: #e8e9f2;
-  --muted: #9aa0b6;
-  --dim: #62677c;
-  --purple: #9b59b6;
-  --purple2: #7b46d6;
-  --violet: #b15fe0;
-  --cyan: #3ad1c4;
-  --blue: #4f9cf9;
-  --green: #43b581;
-  --red: #ed4245;
-  --yellow: #f0b429;
-  --grad: linear-gradient(135deg, #7b46d6, #b15fe0 55%, #3ad1c4);
+  --bg: #0b1016;
+  --bg2: #111821;
+  --panel: rgba(17, 24, 33, .88);
+  --panel-solid: #151c26;
+  --panel2: #0e141c;
+  --border: rgba(110, 208, 224, .08);
+  --border2: rgba(110, 208, 224, .16);
+  --text: #dce6ef;
+  --muted: #8ea0b3;
+  --dim: #5d6d7e;
+  --purple: #b877d9;
+  --purple2: #3274d9;
+  --violet: #6ed0e0;
+  --cyan: #6ed0e0;
+  --blue: #5794f2;
+  --green: #73bf69;
+  --red: #f2495c;
+  --yellow: #faad14;
+  --grad: linear-gradient(135deg, #3274d9, #6ed0e0 58%, #73bf69);
   --mono: Consolas, "Cascadia Mono", Menlo, monospace;
   --sans: "Segoe UI", system-ui, -apple-system, Roboto, Helvetica, Arial, sans-serif;
   --radius: 14px;
@@ -829,6 +829,31 @@ kbd {
 .tbl thead th[data-dir="asc"]::after { content: " ▲"; color: var(--violet); font-size: 9px; }
 .tbl thead th[data-dir="desc"]::after { content: " ▼"; color: var(--violet); font-size: 9px; }
 .results-panel .table-wrap { max-height: 70vh; }
+
+.heatgrid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(92px, 1fr));
+  gap: 8px;
+}
+.heatcell {
+  display: flex; flex-direction: column; justify-content: space-between;
+  min-height: 72px; padding: 8px 9px; border-radius: 10px;
+  border: 1px solid var(--border);
+  color: var(--text);
+  background: rgba(110, 208, 224, .04);
+  transition: transform .12s, border-color .12s;
+}
+.heatcell:hover { transform: translateY(-2px); border-color: var(--cyan); color: #fff; }
+.heatcell .hn { font-family: var(--mono); font-size: 10.5px; opacity: .85; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.heatcell .hv { font-family: var(--mono); font-size: 13px; font-weight: 700; }
+.heatcell.h0 { background: rgba(255,255,255,.03); }
+.heatcell.h1 { background: rgba(50, 116, 217, .22); }
+.heatcell.h2 { background: rgba(110, 208, 224, .22); }
+.heatcell.h3 { background: rgba(115, 191, 105, .28); }
+.heatcell.h4 { background: rgba(250, 173, 20, .32); }
+.heatcell.h5 { background: rgba(242, 73, 92, .38); }
+.spark { display: block; }
+body.iot .sidebar { background: linear-gradient(180deg, #101820, #0b1016); }
 
 @media (max-width: 900px) {
   .layout { flex-direction: column; }

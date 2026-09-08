@@ -1,0 +1,138 @@
+{% extends "base.html" %}
+{% block title %}Analytics{% endblock %}
+{% block h1 %}IoT analytics{% endblock %}
+{% block crumb %}observe / heat · share · signal{% endblock %}
+{% block content %}
+
+{% set pal = ['#3274d9', '#6ed0e0', '#73bf69', '#faad14', '#b877d9', '#f2495c', '#5794f2', '#ff9830'] %}
+{% set max_rows = (tables[0].rows if tables else 0) or 1 %}
+{% set total = totals.rows or 1 %}
+
+<div class="stat-grid">
+  <div class="stat" style="--accent:#6ed0e0">
+    <div class="top"><div class="k">Active sensors</div><div class="ic">◈</div></div>
+    <div class="v" data-anim="num" data-n="{{ live_count }}">{{ live_count }}</div>
+    <div class="d">tables with at least one sample</div>
+  </div>
+  <div class="stat" style="--accent:#73bf69">
+    <div class="top"><div class="k">Idle / empty</div><div class="ic">○</div></div>
+    <div class="v" data-anim="num" data-n="{{ idle_count }}">{{ idle_count }}</div>
+    <div class="d">no rows yet — still in catalog</div>
+  </div>
+  <div class="stat" style="--accent:#3274d9">
+    <div class="top"><div class="k">Peak node</div><div class="ic">▲</div></div>
+    <div class="v" style="font-size:18px">{{ peak.name if peak else '—' }}</div>
+    <div class="d">{{ (peak.rows if peak else 0)|num }} samples · {{ '%.1f'|format(peak_share) }}% of fleet</div>
+  </div>
+  <div class="stat" style="--accent:#faad14">
+    <div class="top"><div class="k">Avg fields / node</div><div class="ic">▤</div></div>
+    <div class="v">{{ avg_fields }}</div>
+    <div class="d">schema width across {{ tables|length }} tables</div>
+  </div>
+</div>
+
+<div class="grid-2">
+  <div class="panel">
+    <div class="p-head">
+      <span>Heat map · sample density</span>
+      <span class="sub">each cell is a table; brightness = row volume</span>
+    </div>
+    <div class="p-body">
+      <div class="heatgrid">
+        {% for t in tables %}
+        {% set lvl = ((t.rows / max_rows) * 5)|int %}
+        <a class="heatcell h{{ lvl }}" href="/table/{{ t.name }}" title="{{ t.name }} · {{ t.rows|num }} rows">
+          <span class="hn">{{ t.name[:10] }}</span>
+          <span class="hv">{{ t.rows|num }}</span>
+        </a>
+        {% else %}
+        <div class="empty">No tables on this plane.</div>
+        {% endfor %}
+      </div>
+    </div>
+  </div>
+
+  <div class="panel">
+    <div class="p-head">
+      <span>Share of samples</span>
+      <span class="sub">top 8 nodes</span>
+    </div>
+    <div class="p-body">
+      <div class="donut-wrap">
+        <svg class="donut" viewBox="0 0 120 120">
+          <circle class="bg" cx="60" cy="60" r="46"></circle>
+          {% set ns = namespace(off=0) %}
+          {% for t in tables[:8] %}
+          {% set frac = (t.rows / total) if total else 0 %}
+          {% set dash = (frac * 289.027)|round(2) %}
+          <circle class="fg" cx="60" cy="60" r="46"
+            style="color:{{ pal[loop.index0 % 8] }};stroke-dasharray:0 289;transform:rotate({{ ns.off }}deg);transform-origin:60px 60px"
+            data-anim="donut" data-dash="{{ dash }}" data-circ="289.027"></circle>
+          {% set ns.off = ns.off + (frac * 360) %}
+          {% endfor %}
+          <text class="lbl" x="60" y="58">{{ tables|length }}</text>
+          <text class="lbl" x="60" y="74" style="font-size:9px;fill:var(--dim);font-weight:400">nodes</text>
+        </svg>
+        <ul class="legend">
+          {% for t in tables[:8] %}
+          <li><span><i style="background:{{ pal[loop.index0 % 8] }}"></i>{{ t.name }}</span><b>{{ '%.1f'|format((t.rows / total * 100) if total else 0) }}%</b></li>
+          {% endfor %}
+        </ul>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="panel">
+  <div class="p-head">
+    <span>Signal board</span>
+    <span class="sub">treat each table as a telemetry stream</span>
+  </div>
+  <div class="p-body flush">
+    <div class="table-wrap">
+      <table class="tbl sortable">
+        <thead>
+          <tr>
+            <th data-key>Sensor</th>
+            <th data-key class="num">Samples</th>
+            <th data-key class="num">Channels</th>
+            <th data-key class="num">Share</th>
+            <th>Trend</th>
+            <th>Status</th>
+            <th></th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for t in tables %}
+          {% set share = (t.rows / total * 100) if total else 0 %}
+          <tr>
+            <td class="mono fw-bold">{{ t.name }}</td>
+            <td class="num mono" data-v="{{ t.rows }}">{{ t.rows|num }}</td>
+            <td class="num mono" data-v="{{ t.fields }}">{{ t.fields }}</td>
+            <td class="num" data-v="{{ share }}">{{ '%.2f'|format(share) }}%</td>
+            <td>
+              <svg class="spark" viewBox="0 0 80 24" width="80" height="24" aria-hidden="true">
+                {% set h = 4 + ((t.rows / max_rows) * 16) %}
+                <polyline fill="none" stroke="#6ed0e0" stroke-width="1.6"
+                  points="0,20 16,{{ 22 - h*0.4 }} 32,{{ 22 - h*0.7 }} 48,{{ 22 - h*0.55 }} 64,{{ 22 - h }} 80,{{ 22 - h*0.85 }}"/>
+              </svg>
+            </td>
+            <td>
+              {% if t.rows == 0 %}
+              <span class="badge gray">idle</span>
+              {% elif share > 25 %}
+              <span class="badge yellow">hot</span>
+              {% else %}
+              <span class="badge green">live</span>
+              {% endif %}
+            </td>
+            <td class="num"><a class="btn sm" href="/table/{{ t.name }}">Inspect</a></td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </div>
+</div>
+
+{% endblock %}

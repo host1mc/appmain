@@ -661,6 +661,27 @@ def dashboard():
     )
 
 
+@app.route("/analytics")
+def analytics_page():
+    tables, totals = collections_report()
+    live_count = sum(1 for t in tables if t.get("rows"))
+    idle_count = max(0, len(tables) - live_count)
+    peak = tables[0] if tables else None
+    peak_share = (100.0 * peak["rows"] / totals["rows"]) if peak and totals.get("rows") else 0.0
+    field_sum = sum(t.get("fields") or 0 for t in tables)
+    avg_fields = round(field_sum / len(tables), 1) if tables else 0
+    return render_template(
+        "analytics.html",
+        tables=tables,
+        totals=totals,
+        live_count=live_count,
+        idle_count=idle_count,
+        peak=peak,
+        peak_share=peak_share,
+        avg_fields=avg_fields,
+    )
+
+
 @app.route("/tables")
 def tables_page():
     tables, totals = collections_report()
