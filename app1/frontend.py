@@ -2213,12 +2213,16 @@ def _inject_guard_mode():
     return dict(guard_mode="gate")
 
 
+def _is_local_dev_host():
+    host = (request.host or "").split(":")[0].lower()
+    return host in {"localhost", "127.0.0.1", "0.0.0.0", "::1"} or host.endswith(".localhost")
+
+
 def _skip_intrusive_ads():
     """Push + vignette ads spam the console, request notifications, and
     register a third-party service worker. Skip them on localhost (they
     never fill anyway) and on the logged-in dashboard (/user…)."""
-    host = (request.host or "").split(":")[0].lower()
-    if host in {"localhost", "127.0.0.1", "0.0.0.0", "::1"} or host.endswith(".localhost"):
+    if _is_local_dev_host():
         return True
     path = request.path or ""
     if path == "/user" or path.startswith("/user/"):
