@@ -544,6 +544,10 @@ def username_map():
     if has_request_context():
         g._username_map = names
     return names
+
+
+def users_report():
+    """Per-uid row counts across tables that link back to a user."""
     all_cols = all_collections()
     shard_id = _get_shard_id()
     per_user = {}
