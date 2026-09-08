@@ -259,6 +259,14 @@ class NodeAgentAppTests(unittest.TestCase):
         )
         self.assertEqual(self.runtime.follow_calls[0]["tail"], 1000)
 
+        self.runtime.follow_calls.clear()
+        self.client.get(
+            f"/api/v1/servers/{self.server_id}/logs/follow?tail=0&since=1710000000",
+            headers=self.headers,
+        )
+        self.assertEqual(self.runtime.follow_calls[0]["tail"], 0)
+        self.assertEqual(self.runtime.follow_calls[0]["since"], 1710000000.0)
+
         def boom(container, since=None, tail=200):
             yield "before the failure\n"
             raise RuntimeError("docker went away")

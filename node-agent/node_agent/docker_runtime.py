@@ -175,11 +175,41 @@ class DockerRuntime:
         """
         decoder = codecs.getincrementaldecoder("utf-8")("replace")
         buffer = ""
+        # Docker/json-file and Python input() both hold a prompt until a newline.
+        # Waiting only on "\n" meant `input("Do you like Python? ")` never reached
+        # the panel. Idle-flush the partial line so the prompt shows while the
+        # process waits on stdin.
+        incoming = queue.Queue()
+        _END = object()
+
+        def _reader():
+            try:
+                for chunk in container.logs(
+                    stdout=True, stderr=True, follow=True, stream=True, since=since,
+                    tail=tail, timestamps=True
+                ):
+                    incoming.put(chunk)
+            except Exception as exc:
+                incoming.put(exc)
+            finally:
+                incoming.put(_END)
+
+        worker = threading.Thread(target=_reader, name="dchost-logs-follow", daemon=True)
+        worker.start()
         try:
-            for chunk in container.logs(
-                stdout=True, stderr=True, follow=True, stream=True, since=since,
-                tail=tail, timestamps=True
-            ):
+            while True:
+                try:
+                    item = incoming.get(timeout=0.12)
+                except queue.Empty:
+                    if buffer:
+                        yield visible_line(buffer)
+                        buffer = ""
+                    continue
+                if item is _END:
+                    break
+                if isinstance(item, Exception):
+                    raise item
+                chunk = item
                 if isinstance(chunk, bytes):
                     chunk = decoder.decode(chunk)
                 if not chunk:

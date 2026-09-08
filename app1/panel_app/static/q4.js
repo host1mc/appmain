@@ -54,6 +54,7 @@
   let currentPath = '';
   let logsCleared = false;
   let consoleSince = 0;
+  let streamEpoch = 0;
   let lastState = null;
   const commandHistory = [];
   let historyIndex = -1;
@@ -492,12 +493,12 @@
   document.getElementById('clear-console')?.addEventListener('click', () => {
     logsCleared = true;
     consoleSince = Date.now() / 1000;
+    streamEpoch += 1;
     output.textContent = '';
-    if (ws) {
-      ws.close();
-      ws = null;
-      wsConnected = false;
-    }
+    const stale = ws;
+    ws = null;
+    wsConnected = false;
+    try { stale?.close(); } catch (_) {}
     if (wsShouldConnect) connectWs();
   });
 
@@ -1212,11 +1213,13 @@
 
   function connectWs() {
     if (ws || !wsShouldConnect) return;
+    const epoch = streamEpoch;
     try {
       ws = new WebSocket(wsUrl());
     } catch (_) { scheduleWsReconnect(); return; }
 
     ws.onopen = () => {
+      if (epoch !== streamEpoch) return;
       wsConnected = true;
       wsRetryDelay = WS_BASE_INTERVAL;
       if (!logsCleared) {
@@ -1225,6 +1228,7 @@
     };
 
     ws.onmessage = (event) => {
+      if (epoch !== streamEpoch) return;
       try {
         const msg = JSON.parse(event.data);
         if (msg.type === 'connected') {
@@ -1240,6 +1244,7 @@
     };
 
     ws.onclose = () => {
+      if (epoch !== streamEpoch) return;
       wsConnected = false;
       ws = null;
       if (wsShouldConnect) scheduleWsReconnect();

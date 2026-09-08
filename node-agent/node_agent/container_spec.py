@@ -165,6 +165,8 @@ def build_container_spec(server_id, name, image, startup, data_directory, runtim
             "SERVER_MEMORY_MB": str(MEMORY_MB),
             "HOME": "/home/container",
             "TERM": "xterm-256color",
+            "PYTHONUNBUFFERED": "1",
+            "PYTHONIOENCODING": "utf-8",
             **_load_user_env(data_directory),
             **_no_log_env(),
             **_no_cache_env(),
