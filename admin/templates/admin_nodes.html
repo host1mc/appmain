@@ -364,7 +364,7 @@ function renderConfig(id, d){
 // is a real fault, so it is shown as one rather than smoothed over.
 function serverRow(s){
   const wanted = String(s.desired_state || '').toLowerCase();
-  const live = s.container || null;
+  const live = s.live || s.container || null;
   const status = live ? String(live.status || '').toLowerCase() : '';
   let actual;
   if(s.container_missing === true){
@@ -762,7 +762,7 @@ async function loadPending(){
         <th scope="col">Actions</th>
       </tr></thead>
       <tbody>${d.pending.map(pendingRow).join('')}</tbody>
-    </table>
+    </table>`;
   } catch(e) {
     box.innerHTML = '<div class="empty">Error loading pending deletions</div>';
   }
