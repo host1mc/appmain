@@ -2234,11 +2234,20 @@ def _inject_ad_enabled():
     def ad_head():
 
 
-        if not _ads_permitted() or not enabled or _is_local_dev_host():
+        if not _ads_permitted() or not enabled:
             return Markup("")
         is_mobile = bool(request.user_agent and request.user_agent.is_mobile)
+        is_auth_or_home = (
+            request.path == "/"
+            or request.path.startswith("/") and request.path.endswith("/")
+            or request.path.startswith("/user/login")
+            or request.path.startswith("/user/register")
+            or request.path.startswith("/api/auth/")
+            or request.path.startswith("/otp")
+            or request.path.startswith("/user/otp")
+        )
         effective_networks = dict(networks) if networks is not None else {k: v for k, v in ads_config.AD_NETWORKS.items() if v.get("default_on", True)}
-        if is_mobile or _skip_intrusive_ads():
+        if is_mobile or is_auth_or_home:
             effective_networks["vignette"] = False
         return Markup(ads_config.ad_head_html(
             getattr(request, "csp_nonce", ""), effective_networks))
@@ -2532,24 +2541,6 @@ def _serve_hard_close():
                     continue
                 _debug_print("[frontend] edge_gate hard close cleared: listener rebound",
                       file=sys.stderr, flush=True)
-                closed = False
-                break
-
-
-def serve():
-    from waitress import serve as wserve
-    init()
-    _debug_print(f"[frontend] web server running on http://0.0.0.0:{FRONTEND_PORT}")
-    _debug_print(f"[frontend] backend API: {BACKEND_URL}")
-    if edge_gate.hard_close_enabled():
-        _serve_hard_close()
-        return
-    wserve(app, **_waitress_tuning())
-
-
-if __name__ == "__main__":
-    serve()
-lush=True)
                 closed = False
                 break
 
