@@ -82,6 +82,10 @@ BACKEND_EMAIL_READ_TIMEOUT = _env_positive_float(
 
 
 PANEL_PROXY_TIMEOUT = _env_positive_float("PANEL_PROXY_TIMEOUT", 8.0)
+# Runtime/image changes pull a Docker image on the node (up to ~120s). The
+# default 8s proxy timeout is what turned those into a 504 mid-change.
+PANEL_PROXY_SLOW_TIMEOUT = _env_positive_float("PANEL_PROXY_SLOW_TIMEOUT", 180.0)
+_PANEL_SLOW_PATH_MARKERS = ("/image", "/rebuild", "/reinstall")
 PANEL_PROXY_MAX_CONCURRENCY = _env_clamped_int(
     "PANEL_PROXY_MAX_CONCURRENCY", 6, 1, 8)
 _panel_proxy_slots = threading.BoundedSemaphore(PANEL_PROXY_MAX_CONCURRENCY)
@@ -1227,6 +1231,10 @@ def panel_proxy(subpath=""):
             True,
             lambda: ec.err(ec.BACKEND_UNAVAILABLE, "Panel server busy", 503))
 
+    path_l = (request.path or "").lower()
+    proxy_timeout = PANEL_PROXY_TIMEOUT
+    if "/api/servers/" in path_l and any(m in path_l for m in _PANEL_SLOW_PATH_MARKERS):
+        proxy_timeout = PANEL_PROXY_SLOW_TIMEOUT
     try:
         resp = http_requests.request(
             method=request.method,
@@ -1234,7 +1242,7 @@ def panel_proxy(subpath=""):
             headers=headers,
             data=request.get_data(),
             params=request.args,
-            timeout=PANEL_PROXY_TIMEOUT,
+            timeout=proxy_timeout,
             allow_redirects=False,
         )
     except http_requests.ConnectionError:
@@ -2479,7 +2487,7 @@ def _waitress_tuning():
         port=FRONTEND_PORT,
         threads=8,
         connection_limit=200,
-        channel_timeout=30,
+        channel_timeout=200,
         max_request_body_size=app.config["MAX_CONTENT_LENGTH"],
         expose_tracebacks=False,
         ident="MCStatusFrontend",

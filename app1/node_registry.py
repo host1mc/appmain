@@ -89,14 +89,12 @@ _UPDATE_NODE_ENABLED = "UPDATE nodes SET enabled=:enabled WHERE id=:nid"
 _DELETE_NODE = "DELETE FROM nodes WHERE id=:nid"
 
 _COUNT_SERVERS_ON_NODE = (
-    "SELECT COUNT(*) FROM panel_servers s WHERE s.node_id IS NOT NULL AND " + _SERVER_NODE_ID + "=:nid"
+    "SELECT COUNT(*) FROM panel_servers s WHERE " + _SERVER_NODE_ID + "=:nid"
 )
 
-# Exclude servers with no explicit node_id from capacity counts:
-# such rows are unplaced/orphaned and should not block any node.
-# (The _SERVER_NODE_ID NVL fallback remains for display queries only;
-# _COUNT_SERVERS_ON_NODE and _SELECT_NODE_WITH_FREE_CAPACITY now filter
-# with s.node_id IS NOT NULL to avoid counting unplaced servers.)
+# Count every row that NVL-places onto this node, including node_id NULL
+# (those follow the lowest-id node). Skipping NULLs let a second create
+# land on a node whose capacity was already filled by an unplaced row.
 #
 # LEFT JOIN on the owner rather than an inner one. panel_servers.user_id has a
 # CASCADE constraint so an ownerless row should not exist, but an inner join
@@ -115,10 +113,16 @@ _COUNT_NODES = "SELECT COUNT(*) FROM nodes"
 
 _SELECT_NODE_WITH_FREE_CAPACITY = (
     "SELECT n.id FROM nodes n WHERE n.enabled=1 AND n.capacity>0 AND "
-    "(SELECT COUNT(*) FROM panel_servers s WHERE s.node_id IS NOT NULL AND "
+    "(SELECT COUNT(*) FROM panel_servers s WHERE "
     + _SERVER_NODE_ID + "=n.id) < n.capacity "
     "ORDER BY n.id FETCH FIRST 1 ROWS ONLY"
 )
+
+_LOCK_NODE_ROW = "SELECT id FROM nodes WHERE id=:nid FOR UPDATE"
+
+_SELECT_NODE_CAP = "SELECT capacity, enabled FROM nodes WHERE id=:nid"
+
+_placement_mutex = threading.Lock()
 
 _NODES_TABLE = "NODES"
 
@@ -882,16 +886,37 @@ def pick_node_for_new_server(conn=None):
         cur = placement_conn.cursor()
         cur.execute(_SELECT_NODE_WITH_FREE_CAPACITY)
         row = cur.fetchone()
-        if row is not None:
-            return int(row[0])
-        cur.execute(_COUNT_NODES)
-        if _fetch_count(cur) > 0:
+        if row is None:
+            cur.execute(_COUNT_NODES)
+            if _fetch_count(cur) > 0:
+                raise NodeCapacityError(
+                    "every configured node is full or disabled, so there is no room "
+                    "for a new server right now; raise a node's capacity or add "
+                    "another node"
+                )
+            return None
+        nid = int(row[0])
+        # Serialize concurrent pickers on this node row, then recount so a
+        # second transaction cannot both see capacity 1 free.
+        cur.execute(_LOCK_NODE_ROW, {"nid": nid})
+        if cur.fetchone() is None:
             raise NodeCapacityError(
                 "every configured node is full or disabled, so there is no room "
                 "for a new server right now; raise a node's capacity or add "
                 "another node"
             )
-        return None
+        used = _servers_on_node(cur, nid)
+        cur.execute(_SELECT_NODE_CAP, {"nid": nid})
+        cap_row = cur.fetchone()
+        capacity = int(cap_row[0] or 0) if cap_row else 0
+        enabled = int(cap_row[1] or 0) if cap_row else 0
+        if used >= capacity or enabled != 1:
+            raise NodeCapacityError(
+                "every configured node is full or disabled, so there is no room "
+                "for a new server right now; raise a node's capacity or add "
+                "another node"
+            )
+        return nid
 
     try:
         if conn is None:

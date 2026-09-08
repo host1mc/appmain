@@ -355,6 +355,7 @@ class OracleStore:
             "desired_state": int(row.desired_state or 0),
             "delivery_mode": _delivery_mode(row.delivery_config),
             "created_at": _iso(row.created_at),
+            "node_id": None if row.node_id is None else int(row.node_id),
         }
 
     async def initialize(self):
@@ -573,9 +574,22 @@ class OracleStore:
             raise ValueError("a server row requires an owner")
 
         async def _insert():
+            import node_registry
+            from .oracle_models import PanelServer as _PanelServer
+
+            def _place():
+                with node_registry._placement_mutex:
+                    return node_registry.pick_node_for_new_server()
+
+            try:
+                node_id = await run_in_threadpool(_place)
+            except node_registry.NodeCapacityError as exc:
+                err = ValueError(str(exc))
+                err.code = "node_capacity_exhausted"
+                raise err from exc
             async with self._sessions()() as db:
                 db.add(
-                    PanelServer(
+                    _PanelServer(
                         id=server_id,
                         user_id=owner,
                         name=_clip_text((name or "").strip(), NAME_MAX_CHARS),
@@ -587,11 +601,13 @@ class OracleStore:
                         cpu_percent=35,
                         desired_state=0,
                         created_at=_utc_now(),
+                        node_id=node_id,
                     )
                 )
                 await db.commit()
+            return node_id
 
-        await self._run_with_heal(_insert)
+        return await self._run_with_heal(_insert)
 
     async def list_servers_for_user(self, user_id):
         from sqlalchemy import select
