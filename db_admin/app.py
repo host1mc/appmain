@@ -1056,9 +1056,14 @@ def _drop_on_best_shard(tname):
     try:
         tq = _ident(tname)
         if _is_oracle(shard_id):
-            _oracle_query(f"DROP TABLE {_ora_ident(tq)}", shard_id=shard_id)
+            # CASCADE CONSTRAINTS drops FKs that point at this table
+            # (ORA-02449) as well as its own constraints.
+            _oracle_query(
+                f"DROP TABLE {_ora_ident(tq)} CASCADE CONSTRAINTS PURGE",
+                shard_id=shard_id,
+            )
         elif _is_heatwave(shard_id):
-            _heatwave_query(f"DROP TABLE {_my_ident(tq)}")
+            _heatwave_query(f"DROP TABLE IF EXISTS {_my_ident(tq)}")
         else:
             _mongo(shard_id)[tq].drop()
         return None
