@@ -2213,27 +2213,6 @@ def _inject_guard_mode():
     return dict(guard_mode="gate")
 
 
-def _is_local_dev_host():
-    host = (request.host or "").split(":")[0].lower()
-    return host in {"localhost", "127.0.0.1", "0.0.0.0", "::1"} or host.endswith(".localhost")
-
-
-def _skip_intrusive_ads():
-    """Push + vignette ads spam the console, request notifications, and
-    register a third-party service worker. Skip them on localhost (they
-    never fill anyway) and on the logged-in dashboard (/user…)."""
-    if _is_local_dev_host():
-        return True
-    path = request.path or ""
-    if path == "/user" or path.startswith("/user/"):
-        return True
-    if path == "/" or path.startswith("/user/login") or path.startswith("/user/register"):
-        return True
-    if path.startswith("/api/auth/") or path.startswith("/otp") or path.startswith("/user/otp"):
-        return True
-    return False
-
-
 @app.context_processor
 def _inject_ad_enabled():
 
@@ -2246,8 +2225,6 @@ def _inject_ad_enabled():
     def ad_zone(key):
 
 
-        if _is_local_dev_host():
-            return False
         if not _ads_permitted() or not enabled:
             return False
         if zones is None:
@@ -2555,6 +2532,24 @@ def _serve_hard_close():
                     continue
                 _debug_print("[frontend] edge_gate hard close cleared: listener rebound",
                       file=sys.stderr, flush=True)
+                closed = False
+                break
+
+
+def serve():
+    from waitress import serve as wserve
+    init()
+    _debug_print(f"[frontend] web server running on http://0.0.0.0:{FRONTEND_PORT}")
+    _debug_print(f"[frontend] backend API: {BACKEND_URL}")
+    if edge_gate.hard_close_enabled():
+        _serve_hard_close()
+        return
+    wserve(app, **_waitress_tuning())
+
+
+if __name__ == "__main__":
+    serve()
+lush=True)
                 closed = False
                 break
 
