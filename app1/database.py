@@ -2001,23 +2001,14 @@ def generate_otp(email, purpose="register"):
     try:
         cur = uconn.cursor()
         cur.execute(
-            "UPDATE otp_codes SET used=1 "
-            "WHERE email_lookup_hash=:h AND purpose=:purpose AND used=0",
+            "DELETE FROM otp_codes "
+            "WHERE email_lookup_hash=:h AND purpose=:purpose",
             {"h": lookup_hash(email), "purpose": purpose})
         cur.execute(
             "INSERT INTO otp_codes(email, email_lookup_hash, code, purpose, expires_at, created_at, attempts) "
             "VALUES(:email,:eh,:code,:purpose,:expires,:now,0)",
             {"email": encrypt(email), "eh": lookup_hash(email), "code": code_hash,
              "purpose": purpose, "expires": expires, "now": _now()},
-        )
-        cur.execute(
-            "DELETE FROM otp_codes WHERE id NOT IN ("
-            "SELECT id FROM ("
-            "SELECT id FROM otp_codes "
-            "WHERE email_lookup_hash=:h AND purpose=:purpose AND used=0 "
-            "ORDER BY created_at DESC FETCH FIRST 1 ROWS ONLY"
-            ")) AND email_lookup_hash=:h AND purpose=:purpose AND used=0",
-            {"h": lookup_hash(email), "purpose": purpose},
         )
         uconn.commit()
     finally:
@@ -2051,7 +2042,7 @@ def verify_otp(email, code, purpose="register", mark_used=True):
             else:
                 oid, expires, stored, tries = row[0], row[1], row[2], row[3]
             if int(tries or 0) >= OTP_MAX_ATTEMPTS:
-                cur.execute("UPDATE otp_codes SET used=1 WHERE id=:id AND used=0", {"id": oid})
+                cur.execute("DELETE FROM otp_codes WHERE id=:id", {"id": oid})
                 uconn.commit()
                 continue
 
@@ -2073,19 +2064,26 @@ def verify_otp(email, code, purpose="register", mark_used=True):
 
             if not otp_matches:
                 cur.execute(
-                    "UPDATE otp_codes SET attempts = NVL(attempts, 0) + 1, "
-                    "used = CASE WHEN NVL(attempts, 0) + 1 >= :cap THEN 1 ELSE used END "
+                    "UPDATE otp_codes SET attempts = NVL(attempts, 0) + 1 "
                     "WHERE id=:id AND used=0",
-                    {"cap": OTP_MAX_ATTEMPTS, "id": oid})
+                    {"id": oid})
+                uconn.commit()
+                cur.execute(
+                    "DELETE FROM otp_codes WHERE id=:id AND NVL(attempts, 0) >= :cap",
+                    {"id": oid, "cap": OTP_MAX_ATTEMPTS})
                 uconn.commit()
                 continue
             try:
                 if datetime.fromisoformat(expires) < _utcnow():
+                    cur.execute("DELETE FROM otp_codes WHERE id=:id", {"id": oid})
+                    uconn.commit()
                     return False
             except Exception:
+                cur.execute("DELETE FROM otp_codes WHERE id=:id", {"id": oid})
+                uconn.commit()
                 return False
             if mark_used:
-                cur.execute("UPDATE otp_codes SET used=1 WHERE id=:id AND used=0", {"id": oid})
+                cur.execute("DELETE FROM otp_codes WHERE id=:id AND used=0", {"id": oid})
                 uconn.commit()
                 if cur.rowcount != 1:
                     return False
@@ -4757,12 +4755,11 @@ _PANEL_MIRROR_PASSWORD_HASH = "external:oracle"
 
 
 def cleanup_used_otps():
-    """Remove OTP codes already marked used (consumed or expired)."""
+    """Remove leftover used OTP rows; live codes are deleted on first use."""
     uconn = _user_conn()
     try:
         cur = uconn.cursor()
-        cur.execute("DELETE FROM otp_codes WHERE used=1 AND expires_at < :now",
-                    {"now": _now()})
+        cur.execute("DELETE FROM otp_codes WHERE used=1")
         uconn.commit()
     finally:
         uconn.close()
