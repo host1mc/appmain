@@ -220,7 +220,7 @@ def _start_reconcile_task():
                     reviews_db.log_app_error("ReconcileSweepFailed", f"[panel] reconcile sweep failed: {type(exc).__name__}: {exc}", module="asgi_panel", flagged=1)
                 except Exception:
                     pass
-                _debug__debug_print(f"[panel] reconcile sweep failed: {type(exc).__name__}: {exc}",
+                _debug_print(f"[panel] reconcile sweep failed: {type(exc).__name__}: {exc}",
                              file=sys.stderr)
 
     return asyncio.ensure_future(_loop())
