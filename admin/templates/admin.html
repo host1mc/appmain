@@ -419,6 +419,7 @@ async function selectUser(id){
     <div class="kv"><span class="k">Username</span><span class="v">@${esc(u.username)}</span></div>
     <div class="kv"><span class="k">User ID</span><span class="v">${esc(u.uid)}</span></div>
     <div class="kv"><span class="k">Email</span><span class="v">${esc(u.email||'—')} ${u.email_verified?'<span class="badge on">Verified</span>':'<span class="badge off">Unverified</span>'}</span></div>
+    <div class="kv"><span class="k">Verified via</span><span class="v">${u.email_verified?(u.github_verified?'GitHub':'Email code'):'—'}</span></div>
     <div class="kv"><span class="k">Device Fingerprint</span><span class="v">${fp.registered?'<span class="badge on">Registered</span> <span style="font-size:12px;color:var(--muted);display:block;margin-top:4px">Since '+esc(fmtDate(fp.created_at))+'</span>':'<span class="badge off">Not Registered</span>'}</span></div>
     <div class="kv"><span class="k" title="fingerprints.ip_address — rewritten on every login, so this is the newest IP the server saw, not the one used at signup">Last Known IP</span><span class="v">${userIpCell(fp.device_info, fp.ip_address)}</span></div>
     <div class="kv"><span class="k" title="IPs the browser itself revealed over WebRTC — compared against the IP the server saw">Browser IPs (WebRTC)</span><span class="v">${webrtcBadge(fp.device_info, fp.ip_address)}</span></div>

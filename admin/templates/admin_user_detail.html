@@ -115,6 +115,7 @@ async function selectUserDetail(){
           <div class="kv"><span class="k">Username</span><span class="v">@${esc(u.username)}</span></div>
           <div class="kv"><span class="k">User ID</span><span class="v" style="font-family:monospace;font-size:12px">${esc(u.uid)}</span></div>
           <div class="kv"><span class="k">Email</span><span class="v">${esc(u.email||'—')} ${u.email_verified?'<span class="badge on">Verified</span>':'<span class="badge off">Unverified</span>'}</span></div>
+          <div class="kv"><span class="k">Verified via</span><span class="v">${u.email_verified?(u.github_verified?'GitHub':'Email code'):'—'}</span></div>
           <div class="kv"><span class="k">Email verified</span><span class="v">
             <label class="toggle-wrap" title="${u.email_verified?'Mark this address unverified':'Mark this address verified'}">
               <input type="checkbox" id="ev-toggle" ${u.email_verified?'checked':''}

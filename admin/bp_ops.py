@@ -407,3 +407,35 @@ def api_admin_set_auto_ban():
     enabled = bool(data.get("auto_ban_enabled", False))
     db.set_auto_ban_enabled(enabled)
     return jsonify({"ok": True, "auto_ban_enabled": enabled})
+
+
+# ── Sign-up toggles ──
+
+@ops_bp.route("/api/admin/signup-password", methods=["GET"])
+@auth.require_admin
+def api_admin_get_signup_password():
+    return jsonify({"ok": True, "signup_password_enabled": db.get_signup_password_enabled()})
+
+
+@ops_bp.route("/api/admin/signup-password", methods=["PUT"])
+@auth.require_admin
+def api_admin_set_signup_password():
+    data = request.get_json(force=True) or {}
+    enabled = bool(data.get("signup_password_enabled", False))
+    db.set_signup_password_enabled(enabled)
+    return jsonify({"ok": True, "signup_password_enabled": enabled})
+
+
+@ops_bp.route("/api/admin/signup-github", methods=["GET"])
+@auth.require_admin
+def api_admin_get_signup_github():
+    return jsonify({"ok": True, "signup_github_enabled": db.get_signup_github_enabled()})
+
+
+@ops_bp.route("/api/admin/signup-github", methods=["PUT"])
+@auth.require_admin
+def api_admin_set_signup_github():
+    data = request.get_json(force=True) or {}
+    enabled = bool(data.get("signup_github_enabled", False))
+    db.set_signup_github_enabled(enabled)
+    return jsonify({"ok": True, "signup_github_enabled": enabled})

@@ -44,7 +44,6 @@ _otp_ph = PasswordHasher()
 # One source of truth for the product brand in outgoing mail; both the values
 # live in renew_config so the whole rename is a one-file edit.
 BRAND_NAME = renew_config.BRAND_NAME
-BRAND_INITIALS = renew_config.BRAND_INITIALS
 
 _IDENTIFIER_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]{0,127}$")
 
@@ -90,16 +89,6 @@ def _enc_or_none(value):
     return encrypt(value) if value else None
 
 
-
-# ── brand constants (used by email templates) ───────────────────
-_BG = "#0b0c10"
-_CARD = "#1b1c24"
-_TXT = "#e7e8ee"
-_MUTED = "#9a9cab"
-_PURPLE = "#9b59b6"
-_PURPLE2 = "#7b46d6"
-_GREEN = "#43b581"
-
 # ── Oracle support ──────────────────────────────────────────────
 _ORACLE_ENABLED = False
 _ORACLE_CFG = {}
@@ -127,97 +116,6 @@ _ORACLE_POOL_LOCK = threading.Lock()
 _ORACLE_POOL_MAX_BY_TIER = {"backend": 4, "frontend": 4, "engine": 2, "database": 2,
                             "panel": 2}
 _ORACLE_POOL_MAX_DEFAULT = 4
-
-# ── Overflow shards (Oracle Database API for MongoDB) ───────────
-_SHARD_MONGO_URIS = {}
-_SHARD_MONGO_CLIENTS = {}
-_SHARD_LOCK = threading.Lock()
-_SHARDS_LOADED = False
-_SHARD_SCAN_MAX = 64
-_CURRENT_SHARD = contextvars.ContextVar("current_shard", default=0)
-
-
-def _load_shard_uris():
-    global _SHARDS_LOADED
-    if _SHARDS_LOADED:
-        return _SHARD_MONGO_URIS
-    with _SHARD_LOCK:
-        if _SHARDS_LOADED:
-            return _SHARD_MONGO_URIS
-        _load_env_file()
-        for idx in range(0, _SHARD_SCAN_MAX + 1):
-            uri = _setting(f"DB_{idx}", "").strip()
-            if not uri:
-                continue
-            if uri.startswith("mongodb://") or uri.startswith("mongodb+srv://"):
-                _SHARD_MONGO_URIS[idx] = uri
-            else:
-                _debug_print(f"[database] ignoring DB_{idx}: not a mongodb:// URI")
-        _SHARDS_LOADED = True
-    return _SHARD_MONGO_URIS
-
-
-def _shard_ids():
-    return sorted(set(_load_shard_uris()) | {0})
-
-
-def _default_is_mongo():
-    return 0 in _load_shard_uris()
-
-
-def _has_overflow_shards():
-    return len(_shard_ids()) > 1
-
-
-def _mongo_client(shard_id):
-    client = _SHARD_MONGO_CLIENTS.get(shard_id)
-    if client is not None:
-        return client
-    uris = _load_shard_uris()
-    ordered = [i for i in sorted(uris) if i >= int(shard_id)]
-    if not ordered:
-        return None
-    with _SHARD_LOCK:
-        client = _SHARD_MONGO_CLIENTS.get(shard_id)
-        if client is not None:
-            return client
-        for idx in ordered:
-            uri = uris.get(idx)
-            if not uri:
-                continue
-            try:
-                import pymongo
-                client = pymongo.MongoClient(uri, serverSelectionTimeoutMS=4000)
-                client.admin.command("ping")
-            except Exception as ex:
-                _debug_print(f"[database] Mongo DB_{idx} unavailable: {ex}")
-                try:
-                    client.close()
-                except Exception:
-                    pass
-                client = None
-                continue
-            _SHARD_MONGO_CLIENTS[shard_id] = client
-            if idx != shard_id:
-                _debug_print(f"[database] Mongo failover DB_{shard_id} -> DB_{idx}")
-            return client
-        return None
-
-
-def current_shard():
-    return _CURRENT_SHARD.get()
-
-
-def set_current_shard(shard_id):
-    return _CURRENT_SHARD.set(shard_id)
-
-
-def reset_current_shard(token):
-    try:
-        _CURRENT_SHARD.reset(token)
-    except (ValueError, LookupError):
-        pass
-
 
 _ENV_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)),
                          "fastapi-oracle-app", ".env")
@@ -338,6 +236,13 @@ def _load_config():
         if len(targets) > 1:
             _debug_print(f"[database] Oracle failover: {len(targets)} DSN(s) "
                          f"({', '.join(t['label'] for t in targets)})")
+        elif any(_setting(f"DB_{i}", "").strip() for i in range(0, 8)):
+            _debug_print(
+                "[database] DB_0/DB_1 are Mongo URIs — they do not fail over "
+                "ORACLE_DSN. Add the second ATP's SQL connect string as "
+                "ORACLE_DSN_1 to hop on DPY-4005 or full storage.",
+                file=sys.stderr,
+            )
 
 def _tier_name() -> str:
     """Which tier this process is, from the launcher that started it.
@@ -452,7 +357,8 @@ def _pool_saturated(pool) -> bool:
 _ORACLE_DOWN_MARKERS = (
     "DPY-4005", "DPY-6005", "DPY-4011", "DPY-3010", "DPY-4027",
     "ORA-12541", "ORA-12514", "ORA-12170", "ORA-12537", "ORA-03113",
-    "ORA-03114", "ORA-01033", "ORA-01034", "ORA-01109", "NJS-500",
+    "ORA-03114", "ORA-01033", "ORA-01034", "ORA-01109", "ORA-00018",
+    "ORA-12519", "NJS-500",
     "timed out", "connection refused", "could not connect",
 )
 
@@ -561,6 +467,8 @@ def _oracle_conn():
             conn = pool.acquire()
         except Exception as ex:
             last_ex = ex
+            # Do not wait on the same pool again — DPY-4005 already burned
+            # wait_timeout. Hop to ORACLE_DSN_n while one remains.
             if not (
                 _is_pool_exhausted(ex)
                 or _is_oracle_unreachable(ex)
@@ -568,6 +476,11 @@ def _oracle_conn():
             ):
                 raise
             if not _failover_oracle(ex):
+                _debug_print(
+                    "[database] Oracle failover skipped (set ORACLE_DSN_1): "
+                    f"{ex}",
+                    file=sys.stderr,
+                )
                 raise
             continue
         if len(_ORACLE_TARGETS) > 1 and _dsn_storage_full(conn, key):
@@ -682,41 +595,8 @@ def _ensure_oracle_cols_pass():
         conn.close()
 
 
-def _ensure_shard_directory(cur):
-    """Create the global shard directory on the default ATP.
-
-    Gated on there being at least one overflow shard configured: a stock,
-    single-ATP deployment issues no new DDL from this. The directory is the sole
-    cross-shard authority — login resolves a user's shard through it, and its
-    UNIQUE keys enforce the username/email uniqueness that per-shard indexes
-    cannot span. Created idempotently and race-tolerantly like every other table
-    here: five tiers boot at once and any of them may win the CREATE, so
-    ORA-00955 ("name already used") is treated as success.
-    """
-    cur.execute("SELECT COUNT(*) FROM user_tables WHERE table_name='SHARD_DIRECTORY'")
-    if cur.fetchone()[0] > 0:
-        return
-    try:
-        cur.execute("""
-            CREATE TABLE shard_directory (
-                lookup_hash VARCHAR2(64) PRIMARY KEY,
-                kind VARCHAR2(10) NOT NULL,
-                "uid" VARCHAR2(10),
-                shard_id NUMBER NOT NULL,
-                created_at VARCHAR2(50)
-            )
-        """)
-        cur.execute("CREATE INDEX shard_dir_uid_ix ON shard_directory (\"uid\")")
-    except Exception as ex:
-        # Another tier won the CREATE race; the table it made is the one we want.
-        if "ORA-00955" not in str(ex):
-            raise
-
-
 def _ensure_oracle_cols_on(conn):
     cur = conn.cursor()
-    if _has_overflow_shards():
-        _ensure_shard_directory(cur)
     cur.execute("SELECT COUNT(*) FROM user_tables WHERE table_name='USERS'")
     users_exists = cur.fetchone()[0] > 0
     if not users_exists:
@@ -736,6 +616,7 @@ def _ensure_oracle_cols_on(conn):
                 slots VARCHAR2(10) DEFAULT '1',
                 container_slots VARCHAR2(10) DEFAULT '1',
                 email_verified VARCHAR2(5) DEFAULT '0',
+                github_verified VARCHAR2(5) DEFAULT '0',
                 account_type VARCHAR2(20) DEFAULT 'trial',
                 trial_expires_at VARCHAR2(50),
                 is_active NUMBER DEFAULT 1,
@@ -747,17 +628,17 @@ def _ensure_oracle_cols_on(conn):
                 discord_bot_token VARCHAR2(500),
                 webhook_token VARCHAR2(500),
                 fingerprint_ip VARCHAR2(500),
-                container_ids VARCHAR2(500),
                 verified_at VARCHAR2(50),
                 last_active_at VARCHAR2(50),
-                reg_warned_at VARCHAR2(50),
                 inactive_warned_at VARCHAR2(50),
-                bot_stopped_at VARCHAR2(50)
+                bot_stopped_at VARCHAR2(50),
+                banned_at VARCHAR2(50),
+                banned_purged_at VARCHAR2(50)
             )
         """)
         # Mirrors the CREATE above. A column left out of this set is re-ADDed
         # below and only survives because ORA-01430 is tolerated.
-        existing = {"uid","username","username_lookup_hash","username_ci_lookup_hash","email","email_lookup_hash","password","display_name","slots","container_slots","email_verified","account_type","trial_expires_at","is_active","created_at","last_login","ads_disabled","is_banned","banned_reason","discord_bot_token","webhook_token","fingerprint_ip","container_ids","verified_at","last_active_at","reg_warned_at","inactive_warned_at","bot_stopped_at"}
+        existing = {"uid","username","username_lookup_hash","username_ci_lookup_hash","email","email_lookup_hash","password","display_name","slots","container_slots","email_verified","github_verified","account_type","trial_expires_at","is_active","created_at","last_login","ads_disabled","is_banned","banned_reason","discord_bot_token","webhook_token","fingerprint_ip","verified_at","last_active_at","inactive_warned_at","bot_stopped_at","banned_at","banned_purged_at"}
     else:
         cur.execute("SELECT column_name FROM user_tab_columns WHERE table_name='USERS'")
         existing = {r[0].lower() for r in cur.fetchall()}
@@ -773,6 +654,7 @@ def _ensure_oracle_cols_on(conn):
         "slots": "VARCHAR2(10) DEFAULT '1'",
         "container_slots": "VARCHAR2(10) DEFAULT '1'",
         "email_verified": "VARCHAR2(5) DEFAULT '0'",
+        "github_verified": "VARCHAR2(5) DEFAULT '0'",
         "account_type": "VARCHAR2(20) DEFAULT 'trial'",
         "trial_expires_at": "VARCHAR2(50)",
         "is_active": "NUMBER DEFAULT 1",
@@ -782,12 +664,12 @@ def _ensure_oracle_cols_on(conn):
         "discord_bot_token": "VARCHAR2(500)",
         "webhook_token": "VARCHAR2(500)",
         "fingerprint_ip": "VARCHAR2(500)",
-        "container_ids": "VARCHAR2(500)",
         "verified_at": "VARCHAR2(50)",
         "last_active_at": "VARCHAR2(50)",
-        "reg_warned_at": "VARCHAR2(50)",
         "inactive_warned_at": "VARCHAR2(50)",
         "bot_stopped_at": "VARCHAR2(50)",
+        "banned_at": "VARCHAR2(50)",
+        "banned_purged_at": "VARCHAR2(50)",
     }
     for col, dtype in needed.items():
         if col not in existing:
@@ -836,10 +718,6 @@ def _ensure_oracle_cols_on(conn):
     )
     bot_cols = {r[0].lower() for r in cur.fetchall()}
     for col, dtype in [("uid", "VARCHAR2(10)"),
-                         ("presence_status", "VARCHAR2(20) DEFAULT 'online'"),
-                         ("activity_type", "NUMBER DEFAULT 0"),
-                         ("activity_name", "VARCHAR2(255) DEFAULT ''"),
-                         ("activity_enabled", "NUMBER DEFAULT 1"),
                          ("ip_reply_json", "CLOB"),
                          ("webhook_url", "VARCHAR2(500)")]:
         if col not in bot_cols:
@@ -1379,10 +1257,6 @@ if _ORACLE_ENABLED:
             _debug_print(f"[database] Oracle check deferred to init_db(): {e}", file=sys.stderr)
 
 # ── helpers ─────────────────────────────────────────────────────
-
-def _fetchone(cur):
-    r = cur.fetchone()
-    return dict(r) if r and hasattr(r, "keys") else r
 
 def _oracle_dict_row(cur, row):
     """Convert an oracledb row to a dict."""
@@ -2401,27 +2275,42 @@ def _delete_user_panel_servers_and_containers(user_id):
     oconn = _oracle_conn()
     try:
         cur = oconn.cursor()
-        cur.execute("SELECT id FROM panel_servers WHERE \"uid\" = :u_id", {"u_id": user_id})
+        cur.execute("SELECT id FROM panel_servers WHERE user_id = :u_id", {"u_id": user_id})
         server_ids = [row[0] for row in cur.fetchall()]
 
+        unconfirmed = []
         for server_id in server_ids:
+            confirmed = False
             try:
                 url = f"{node_url}/api/v1/servers/{server_id}?purge=true"
                 req = urllib.request.Request(url, method="DELETE")
                 req.add_header("Authorization", f"Bearer {node_token}")
                 with urllib.request.urlopen(req, timeout=30) as resp:
-                    pass
+                    confirmed = True
             except urllib.error.HTTPError as e:
-                if e.code != 404:
-                    pass
+                if e.code == 404:
+                    confirmed = True
             except Exception:
                 pass
+            if not confirmed:
+                unconfirmed.append(server_id)
 
         if server_ids:
             placeholders = ",".join(":" + str(i) for i in range(1, len(server_ids) + 1))
             params = {str(i): sid for i, sid in enumerate(server_ids, 1)}
             cur.execute(f"DELETE FROM panel_servers WHERE id IN ({placeholders})", params)
             oconn.commit()
+            # Rows are gone but some node deletes weren't confirmed. Record them
+            # so the panel reconcile sweep drains the containers when the node
+            # returns. node_id is unknown here (this layer has no node column);
+            # the drain clears by server id, so the empty label is harmless.
+            if unconfirmed:
+                try:
+                    import reviews_db
+                    for sid in unconfirmed:
+                        reviews_db.enqueue_container_deletion(sid, node_id="", purge=True)
+                except Exception:
+                    pass
     finally:
         oconn.close()
 
@@ -2492,13 +2381,71 @@ def delete_user(uid):
         uconn.close()
 
 
+def erase_user(uid):
+    """Operator hard-delete (admin "Delete User"): purge the user's data via
+    delete_user(), then remove the account row itself plus its device
+    fingerprint and history, so the account is gone for good and drops out of
+    list_users(). delete_user() stays row-preserving for the automated
+    ban-appeal / inactivity purges, which need the identity + fingerprint to
+    keep recognising a returning device — this path is the explicit "erase it".
+    No table has a FK to users, so the row order here is not load-bearing; the
+    leftover panel_users mirror row is reaped by cleanup_orphaned_panel_data()."""
+    delete_user(uid)
+    uconn = _user_conn()
+    try:
+        cur = uconn.cursor()
+        cur.execute("DELETE FROM fingerprints WHERE \"uid\"=:id", {"id": uid})
+        cur.execute("DELETE FROM fingerprint_history WHERE \"uid\"=:id", {"id": uid})
+        cur.execute("DELETE FROM users WHERE \"uid\"=:id", {"id": uid})
+        uconn.commit()
+    finally:
+        uconn.close()
+
+
+BAN_APPEAL_DAYS = 1  # banned users may appeal for this long before data is purged
+
+
+def purge_expired_ban_appeals():
+    """Once the appeal window closes, purge a banned user's data the same way the
+    renew-lapse path does — delete_user() drops sessions/bots/containers/panel
+    rows but keeps the identity and fingerprint, so the ban still recognises a
+    return. Runs once per user (banned_purged_at guards re-runs)."""
+    uconn = _user_conn()
+    try:
+        cur = uconn.cursor()
+        cur.execute("SELECT \"uid\", banned_at FROM users "
+                    "WHERE is_banned=1 AND banned_at IS NOT NULL AND banned_purged_at IS NULL")
+        rows = cur.fetchall()
+    finally:
+        uconn.close()
+    cutoff = _shared_utcnow() - timedelta(days=BAN_APPEAL_DAYS)
+    for r in rows:
+        uid = r["uid"] if hasattr(r, "keys") else r[0]
+        banned_at = r["banned_at"] if hasattr(r, "keys") else r[1]
+        dt = _parse_iso(banned_at)
+        if dt is None or dt > cutoff:
+            continue  # unparseable timestamp is left alone — never purge on garbage
+        try:
+            delete_user(uid)
+            uconn = _user_conn()
+            try:
+                cur = uconn.cursor()
+                cur.execute("UPDATE users SET banned_purged_at=:ts WHERE \"uid\"=:id",
+                            {"ts": _now(), "id": str(uid)})
+                uconn.commit()
+            finally:
+                uconn.close()
+        except Exception as ex:
+            _debug_print(f"[database] ban-appeal purge failed for {uid}: {ex}")
+
+
 def list_users():
     uconn = _user_conn()
     try:
         cur = uconn.cursor()
         cur.execute("""
             SELECT u."uid", u.username, u.display_name, u.slots, u.email, u.account_type,
-                   u.trial_expires_at, u.email_verified, u.created_at, u.last_login,
+                   u.trial_expires_at, u.email_verified, u.github_verified, u.created_at, u.last_login,
                    u.is_banned
             FROM users u
             ORDER BY u.created_at DESC
@@ -2586,22 +2533,17 @@ def is_renew_open(u):
 
 def _user_row_plaintext(u):
     """Decrypt the at-rest username / display_name / email / banned_reason / tokens /
-    fingerprint_ip / container_ids of a users row in place. Rows written before
+    fingerprint_ip of a users row in place. Rows written before
     encryption landed pass through unchanged. Callers only ever see the plaintext —
     the ciphertext never leaves this module.
     """
     if not u:
         return u
     for col in ("username", "display_name", "email", "banned_reason",
-                "discord_bot_token", "webhook_token", "fingerprint_ip", "container_ids"):
+                "discord_bot_token", "webhook_token", "fingerprint_ip"):
         val = u.get(col)
         if val and looks_encrypted(val):
             u[col] = decrypt(val) or None
-    if u.get("container_ids") and isinstance(u["container_ids"], str):
-        try:
-            u["container_ids"] = json.loads(u["container_ids"])
-        except Exception:
-            pass
     if u.get("embed_slots") is not None:
         try:
             u["embed_slots"] = int(u["embed_slots"])
@@ -2903,8 +2845,10 @@ def ban_user(user_id, reason="Banned"):
     uconn = _user_conn()
     try:
         cur = uconn.cursor()
-        cur.execute("UPDATE users SET is_banned=:v, banned_reason=:r WHERE \"uid\"=:id",
-                    {"v": val, "r": encrypt(reason) if reason else reason, "id": str(user_id)})
+        cur.execute("UPDATE users SET is_banned=:v, banned_reason=:r, "
+                    "banned_at=:ts, banned_purged_at=NULL WHERE \"uid\"=:id",
+                    {"v": val, "r": encrypt(reason) if reason else reason,
+                     "ts": _now(), "id": str(user_id)})
         uconn.commit()
     finally:
         uconn.close()
@@ -2914,7 +2858,8 @@ def unban_user(user_id):
     uconn = _user_conn()
     try:
         cur = uconn.cursor()
-        cur.execute("UPDATE users SET is_banned=0, banned_reason=NULL WHERE \"uid\"=:id", {"id": str(user_id)})
+        cur.execute("UPDATE users SET is_banned=0, banned_reason=NULL, "
+                    "banned_at=NULL, banned_purged_at=NULL WHERE \"uid\"=:id", {"id": str(user_id)})
         uconn.commit()
     finally:
         uconn.close()
@@ -2937,6 +2882,24 @@ def is_user_banned(user_id):
         if reason and looks_encrypted(reason):
             reason = decrypt(reason) or None
         return banned, reason
+    finally:
+        uconn.close()
+
+
+def is_email_banned(email):
+    """Whether this email belongs to a banned account. The ban model is per-uid
+    (users.is_banned); a banned row carrying this email hash *is* the email ban,
+    so a banned user cannot return under a fresh account (e.g. via GitHub) with
+    the same verified email. Keyed by the same lookup_hash as users."""
+    email = (email or "").strip().lower()
+    if not email:
+        return False
+    uconn = _user_conn()
+    try:
+        cur = uconn.cursor()
+        cur.execute("SELECT 1 FROM users WHERE email_lookup_hash=:lh AND is_banned=1",
+                    {"lh": lookup_hash(email)})
+        return cur.fetchone() is not None
     finally:
         uconn.close()
 
@@ -3627,25 +3590,6 @@ def update_user_atp_fingerprint_ip(user_id, fingerprint=None, ip_address=None):
         uconn.close()
 
 
-def update_user_atp_container_ids(user_id, container_ids=None):
-    if not user_id:
-        return
-    if isinstance(container_ids, (list, dict, set)):
-        val = json.dumps(list(container_ids))
-    else:
-        val = str(container_ids or "")
-    uconn = _user_conn()
-    try:
-        cur = uconn.cursor()
-        cur.execute("UPDATE users SET container_ids=:cids WHERE \"uid\"=:u_id",
-                    {"cids": encrypt(val) if val else None, "u_id": str(user_id)})
-        uconn.commit()
-    except Exception as ex:
-        _debug_print(f"[database] update_user_atp_container_ids failed for {user_id}: {ex}", file=sys.stderr)
-    finally:
-        uconn.close()
-
-
 def update_user_atp_slots(user_id, embed_slots=None, container_slots=None):
     if not user_id:
         return
@@ -4010,11 +3954,6 @@ def get_inactivity_policy():
         return dict(_INACTIVITY_POLICY_DEFAULT)
 
 
-def set_inactivity_policy(policy):
-    """Persist the policy row as JSON — operator / admin-console use."""
-    set_setting("inactivity_policy", json.dumps(policy))
-
-
 def mark_user_active(user_id):
     """Stamp the account's last activity time."""
     now = _shared_now()
@@ -4128,65 +4067,6 @@ def _delete_trial_workloads(user_id):
         uconn.close()
 
 
-def reset_user_to_fresh(user_id):
-    """Non-renewal reset: strip a lapsed trial account back to the state a
-    brand-new verified account starts in, without destroying the login.
-
-    Replaces delete_user() on the "did not renew" path. The account keeps its
-    username, password, email and verified status (and the device-binding rows
-    anti-abuse depends on, so a reset cannot be used to shed a device ban), and
-    loses every workload: hosting containers and their panel servers, all
-    bot/embed configuration, panel activity, and any ad-zone overrides. It is
-    then re-seeded to exactly what a fresh signup has — one empty embed slot,
-    the fleet-default container allowance, and a new trial window — so the next
-    login lands on a clean account instead of a 'not found'.
-    """
-    # Containers + panel servers on the node agent, then their DB rows: the same
-    # helper delete_user() uses, so a wedged node agent degrades identically and
-    # panel_users itself is left in place (we keep the mirror, only reset it).
-    delete_user_panel_servers_and_containers(user_id)
-
-    # Read on its own pooled session before we hold one below — same rule
-    # renew_user() follows, since a pool sized for two cannot always hand a
-    # thread that already holds a session a second one.
-    trial_expires = (_shared_utcnow() + timedelta(days=TRIAL_DAYS)).isoformat()
-    uconn = _user_conn()
-    try:
-        cur = uconn.cursor()
-        # Embeds / bots — wiped entirely; one empty slot is re-seeded below.
-        cur.execute("DELETE FROM bots WHERE \"uid\"=:id", {"id": user_id})
-        cur.execute("DELETE FROM user_ad_zone_overrides WHERE \"uid\"=:id", {"id": user_id})
-        # Panel mirror children (activity + any residual server rows). panel_users
-        # is deliberately NOT deleted: keeping it holds the account's name and
-        # lets container_slots reset to the fleet default (NULL = inherit), which
-        # is exactly a freshly-mirrored account's grant. Each is tried on its own
-        # so a partial panel schema (tables not yet created) is not an error.
-        for _table in ("panel_activity", "panel_servers"):
-            try:
-                cur.execute(f"DELETE FROM {_table} WHERE \"uid\"=:id", {"id": user_id})
-            except Exception as e:
-                if not any(tag in str(e) for tag in _PANEL_SCHEMA_MISSING):
-                    raise
-        try:
-            cur.execute("UPDATE panel_users SET container_slots=NULL WHERE id=:id",
-                        {"id": user_id})
-        except Exception as e:
-            if not any(tag in str(e) for tag in _PANEL_SCHEMA_MISSING):
-                raise
-        # Back to a single embed slot and a fresh trial clock, with every
-        # inactivity stamp cleared so the new cycle starts from zero.
-        cur.execute(
-            "UPDATE users SET slots='1', trial_expires_at=:texp, bot_stopped_at=NULL, "
-            "inactive_warned_at=NULL, reg_warned_at=NULL, last_active_at=NULL "
-            "WHERE \"uid\"=:id",
-            {"texp": trial_expires, "id": user_id},
-        )
-        _oracle_ensure_bot_slots(cur, user_id, 1)
-        uconn.commit()
-    finally:
-        uconn.close()
-
-
 def _parse_iso(value):
     if not value:
         return None
@@ -4203,28 +4083,6 @@ def _user_started_bot(cur, uid):
     cur.execute("SELECT COUNT(*) FROM bots WHERE \"uid\"=:id "
                 "AND (running=1 OR last_run IS NOT NULL)", {"id": uid})
     return cur.fetchone()[0] > 0
-
-
-def _account_assets_phrase(cur, uid):
-    """Human phrase naming what the account actually has, for the warning mail:
-    a hosting container is only mentioned when one exists, an embed only when a
-    bot has actually been used. Missing panel schema counts as no container."""
-    try:
-        cur.execute("SELECT COUNT(*) FROM panel_servers WHERE \"uid\"=:id", {"id": uid})
-        has_container = (cur.fetchone()[0] or 0) > 0
-    except Exception as ex:
-        if any(tag in str(ex) for tag in _PANEL_SCHEMA_MISSING):
-            has_container = False
-        else:
-            raise
-    has_embed = _user_started_bot(cur, uid)
-    if has_container and has_embed:
-        return "your Discord bot embed and your hosting container"
-    if has_container:
-        return "your hosting container"
-    if has_embed:
-        return "your Discord bot embed"
-    return "your account data"
 
 
 def inactivity_sweep():
@@ -4450,53 +4308,6 @@ def _decrypt_hosting_row(d):
     return d
 
 
-def list_hosting_servers(user_id):
-    uconn = _user_conn()
-    try:
-        cur = uconn.cursor()
-        cur.execute("SELECT * FROM hosting_servers WHERE \"uid\"=:uid_param "
-                    "ORDER BY created_at, id",
-                    {"uid_param": user_id})
-        cols = [d[0].lower() for d in cur.description]
-        rows = [dict(zip(cols, r)) for r in cur.fetchall()]
-    finally:
-        uconn.close()
-    for d in rows:
-        _decrypt_hosting_row(d)
-    return rows
-
-
-def get_hosting_server(server_id):
-    uconn = _user_conn()
-    try:
-        cur = uconn.cursor()
-        cur.execute("SELECT * FROM hosting_servers WHERE id=:id", {"id": str(server_id)})
-        r = cur.fetchone()
-        if not r:
-            return None
-        if hasattr(r, "keys"):
-            d = dict(r)
-        else:
-            cols = [d[0].lower() for d in cur.description]
-            d = dict(zip(cols, r))
-    finally:
-        uconn.close()
-    _decrypt_hosting_row(d)
-    return d
-
-
-def count_hosting_servers(user_id):
-    uconn = _user_conn()
-    try:
-        cur = uconn.cursor()
-        cur.execute("SELECT COUNT(*) FROM hosting_servers WHERE \"uid\"=:uid_param",
-                    {"uid_param": user_id})
-        r = cur.fetchone()
-        return r["cnt"] if hasattr(r, "keys") else r[0]
-    finally:
-        uconn.close()
-
-
 def create_hosting_server(user_id, name, runtime, start_command, code):
     """Create a hosting server row; returns the new server id, or None."""
     server_id = str(uuid.uuid4())
@@ -4585,26 +4396,6 @@ def set_hosting_status(server_id, status, pid=None, last_error=None):
         uconn.close()
 
 
-def list_hosting_by_status(*statuses):
-    """All servers currently in the given lifecycle states. The engine uses this
-    to find processes that outlived an engine restart."""
-    uconn = _user_conn()
-    try:
-        cur = uconn.cursor()
-        cur.execute(
-            "SELECT * FROM hosting_servers WHERE status IN ("
-            + ",".join(f":s{i}" for i in range(len(statuses))) + ")",
-            {f"s{i}": s for i, s in enumerate(statuses)},
-        )
-        cols = [d[0].lower() for d in cur.description]
-        rows = [dict(zip(cols, r)) for r in cur.fetchall()]
-    finally:
-        uconn.close()
-    for d in rows:
-        _decrypt_hosting_row(d)
-    return rows
-
-
 def delete_hosting_server(server_id):
     uconn = _user_conn()
     try:
@@ -4648,54 +4439,6 @@ def create_hosting_backup(server_id, payload):
     except Exception as e:
         _debug_print(f"[database] create_hosting_backup failed: {e}", file=sys.stderr)
         return None, 0
-    finally:
-        uconn.close()
-
-
-def list_hosting_backups(server_id):
-    """Snapshots for one server, newest first."""
-    uconn = _user_conn()
-    try:
-        cur = uconn.cursor()
-        cur.execute("SELECT * FROM hosting_backups WHERE server_id=:sid "
-                    "ORDER BY created_at DESC, id",
-                    {"sid": str(server_id)})
-        cols = [d[0].lower() for d in cur.description]
-        rows = [dict(zip(cols, r)) for r in cur.fetchall()]
-    finally:
-        uconn.close()
-    for d in rows:
-        _decrypt_hosting_backup_row(d)
-    return rows
-
-
-def get_hosting_backup(backup_id):
-    uconn = _user_conn()
-    try:
-        cur = uconn.cursor()
-        cur.execute("SELECT * FROM hosting_backups WHERE id=:id",
-                    {"id": str(backup_id)})
-        r = cur.fetchone()
-        if not r:
-            return None
-        if hasattr(r, "keys"):
-            d = dict(r)
-        else:
-            cols = [d[0].lower() for d in cur.description]
-            d = dict(zip(cols, r))
-    finally:
-        uconn.close()
-    _decrypt_hosting_backup_row(d)
-    return d
-
-
-def delete_hosting_backup(backup_id):
-    uconn = _user_conn()
-    try:
-        cur = uconn.cursor()
-        cur.execute("DELETE FROM hosting_backups WHERE id=:id",
-                    {"id": str(backup_id)})
-        uconn.commit()
     finally:
         uconn.close()
 
@@ -5246,14 +4989,13 @@ _DEVICE_EVENTS_RETENTION_DAYS = 90
 _FINGERPRINT_HISTORY_RETENTION_DAYS = 180
 _PANEL_ACTIVITY_RETENTION_DAYS = 90
 _HOSTING_BACKUPS_PER_SERVER = 5
-_REVIEWED_OTP_RETENTION_DAYS = 7
 # Mirrors panel_data.EXTERNAL_PLACEHOLDER, which cannot be imported here
 # because panel_data imports this module.
 _PANEL_MIRROR_PASSWORD_HASH = "external:oracle"
 
 
 def cleanup_used_otps():
-    """Remove OTP codes already marked used (consumed or expired)."""
+    """Remove leftover used OTP rows; live codes are deleted on first use."""
     uconn = _user_conn()
     try:
         cur = uconn.cursor()
@@ -5370,6 +5112,32 @@ def get_auto_ban_enabled():
 def set_auto_ban_enabled(enabled: bool):
     """Toggle automatic banning on/off."""
     set_setting("auto_ban_enabled", "1" if enabled else "0")
+
+
+def get_signup_password_enabled():
+    """Whether email/password self-service registration is open. Default on."""
+    v = get_setting("signup_password_enabled")
+    if v is not None:
+        return v == "1"
+    return True
+
+
+def set_signup_password_enabled(enabled: bool):
+    """Open or close email/password registration for the whole fleet."""
+    set_setting("signup_password_enabled", "1" if enabled else "0")
+
+
+def get_signup_github_enabled():
+    """Whether GitHub sign-up is open. Default on now that the OAuth flow is wired."""
+    v = get_setting("signup_github_enabled")
+    if v is not None:
+        return v == "1"
+    return True
+
+
+def set_signup_github_enabled(enabled: bool):
+    """Open or close GitHub sign-up for the whole fleet."""
+    set_setting("signup_github_enabled", "1" if enabled else "0")
 
 
 # ---------------------------------------------------------------------------
@@ -5490,17 +5258,6 @@ def _clamp_panel_limit(name, value):
     return max(spec["low"], min(parsed, spec["high"]))
 
 
-def get_panel_flag(name):
-    """One panel boolean, falling back to its declared default."""
-    spec = PANEL_FLAGS.get(name)
-    if not spec:
-        return False
-    v = get_setting(_panel_key("flag", name))
-    if v is not None:
-        return v == "1"
-    return bool(spec["default"])
-
-
 def set_panel_flag(name, enabled):
     if name not in PANEL_FLAGS:
         raise ValueError(f"unknown panel flag: {name}")
@@ -5524,12 +5281,6 @@ def set_panel_limit(name, value):
     clamped = _clamp_panel_limit(name, value)
     set_setting(_panel_key("limit", name), str(clamped))
     return clamped
-
-
-def get_panel_maintenance_message():
-    raw = get_setting("panel_maintenance_message")
-    text = (raw or "").strip()
-    return text or PANEL_MAINTENANCE_MESSAGE_DEFAULT
 
 
 def set_panel_maintenance_message(text):
@@ -5760,4 +5511,3 @@ def verify_user_email(uid, verified=True):
 if __name__ == "__main__":
     init_db()
     _debug_print("Oracle schema initialised")
-

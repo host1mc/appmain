@@ -627,6 +627,22 @@ def _inject_turnstile():
         turnstile_site_key=turnstile.site_key() if turnstile.enabled() else "")
 
 
+@app.context_processor
+def _inject_auth_methods():
+    # A callable, not a value: only the login/register pages that call it pay the
+    # one backend round-trip, cached per request on g. Fails closed (GitHub
+    # hidden) when the backend is unreachable or the toggle is off.
+    def auth_github_enabled():
+        cached = getattr(g, "_auth_github_enabled", None)
+        if cached is None:
+            resp = _api("GET", "/api/auth/methods")
+            cached = bool(isinstance(resp, dict) and resp.get("ok")
+                          and resp.get("github"))
+            g._auth_github_enabled = cached
+        return cached
+    return dict(auth_github_enabled=auth_github_enabled)
+
+
 CSRF_SESSION_KEY = "_csrf_token"
 CSRF_HEADER = "X-CSRF-Token"
 CSRF_FORM_FIELD = "csrf_token"
@@ -816,7 +832,7 @@ def _security_headers(response):
         "frame-ancestors 'none'; "
 
 
-        "form-action 'self'; "
+        "form-action 'self' https://github.com; "
 
 
         "connect-src 'self' https:;"
@@ -1695,6 +1711,12 @@ _LOGIN_ERRORS = {
     ec.RATE_LIMITED: "Too many attempts. Please wait a minute and try again.",
     ec.BACKEND_UNAVAILABLE: "Service temporarily unavailable. Please try again.",
     ec.TURNSTILE_FAILED: "Please complete the verification check and try again.",
+    ec.GITHUB_DISABLED: "GitHub sign-in is currently unavailable.",
+    ec.GITHUB_AUTH_FAILED: "GitHub sign-in failed. Please try again.",
+    ec.GITHUB_EMAIL_UNVERIFIED:
+        "Your GitHub account has no verified email. Verify one on GitHub and try again.",
+    ec.GITHUB_ACCOUNT_TOO_NEW:
+        "Your GitHub account must be at least 3 months old to sign in.",
 }
 _LOGIN_ERROR_FALLBACK = "Invalid username or password"
 
@@ -1711,6 +1733,7 @@ _REGISTER_ERRORS = {
     ec.RATE_LIMITED: "Too many attempts. Please wait a minute and try again.",
     ec.BACKEND_UNAVAILABLE: "Service temporarily unavailable. Please try again.",
     ec.TURNSTILE_FAILED: "Please complete the verification check and try again.",
+    ec.REGISTRATION_CLOSED: "New sign-ups are currently closed.",
 }
 _REGISTER_ERROR_FALLBACK = "Registration failed"
 
@@ -1817,6 +1840,7 @@ def user_register():
                 "fingerprint": fp,
                 "fingerprint_detail": (request.form.get("fingerprint_detail", "") or "").strip(),
                 "cf-turnstile-response": request.form.get("cf-turnstile-response", "") or "",
+                "agree_terms": "1" if request.form.get("agree_terms") else "",
             }, read_timeout=BACKEND_EMAIL_READ_TIMEOUT)
             if not resp.get("ok"):
                 if resp.get("banned"):
@@ -1921,6 +1945,76 @@ def user_login():
             return render_template("banned.html", reason=resp.get("reason", "Your account has been banned.")), 403
         flash(_safe_error(resp, _LOGIN_ERRORS, _LOGIN_ERROR_FALLBACK), "error")
     return render_template("user_login.html")
+
+
+@app.route("/user/auth/github", methods=["POST"])
+@limiter.limit("10 per minute", methods=["POST"])
+def user_auth_github():
+    # The GitHub button submits the login/register form (formaction), so the
+    # fingerprint fields and CSRF token already ride along. Stash the fp and a
+    # fresh OAuth state, then bounce to GitHub; the secret and token exchange
+    # live entirely in the backend.
+    fp = (request.form.get("fingerprint", "") or "").strip()
+    fp_detail = _capped_fp_detail(request.form.get("fingerprint_detail", ""))
+    # Bounce failures back to whichever page the button was clicked from
+    # (login vs register) instead of always dropping the user on /user/login.
+    origin = "user_register" if request.form.get("origin") == "register" else "user_login"
+    # Reaching this route means the user clicked "Continue with GitHub", which
+    # carries an explicit "you agree to our Terms and Privacy Policy" notice next
+    # to it (clickwrap). GitHub is a self-contained path — it does not fill the
+    # email form, so the separate agree_terms checkbox does not apply here.
+    agreed = "1"
+    state = secrets.token_urlsafe(24)
+    resp = _api("POST", "/api/auth/github/start", json_data={
+        "state": state,
+        "cf-turnstile-response": request.form.get("cf-turnstile-response", "") or "",
+    })
+    if not resp.get("ok") or not resp.get("authorize_url"):
+        flash(_safe_error(resp, _LOGIN_ERRORS, "GitHub sign-in is currently unavailable."), "error")
+        return redirect(url_for(origin))
+    session["_gh_oauth"] = {"state": state, "fp": fp, "fp_detail": fp_detail, "agreed": agreed, "origin": origin}
+    return redirect(resp["authorize_url"])
+
+
+@app.route("/user/auth/github/callback", methods=["GET"])
+@limiter.limit("15 per minute")
+def user_auth_github_callback():
+    stashed = session.pop("_gh_oauth", None)
+    origin = (stashed or {}).get("origin")
+    if origin not in ("user_login", "user_register"):
+        origin = "user_login"
+    if request.args.get("error"):
+        flash("GitHub sign-in was cancelled.", "error")
+        return redirect(url_for(origin))
+    code = request.args.get("code", "")
+    state = request.args.get("state", "")
+    if not stashed or not code or not state \
+            or not secrets.compare_digest(state, stashed.get("state", "")):
+        flash("GitHub sign-in could not be verified. Please try again.", "error")
+        return redirect(url_for(origin))
+    fp = stashed.get("fp", "") or ""
+    resp = _api("POST", "/api/auth/github", json_data={
+        "code": code,
+        "fingerprint": fp,
+        "fingerprint_detail": stashed.get("fp_detail", "") or "",
+        "agreed": stashed.get("agreed", "") or "",
+    })
+    if resp.get("ok"):
+        user = resp.get("user") or {}
+        session.clear()
+        session["user_id"] = user.get("uid")
+        session["username"] = user.get("username")
+        session["_ip"] = _get_client_ip()
+        session["_fp"] = fp
+        _rotate_session()
+        return _masked_redirect("user_dashboard")
+    if resp.get("banned"):
+        return render_template("banned.html", reason=resp.get("reason", "Your account has been banned.")), 403
+    if resp.get("code") == "terms_required":
+        flash("Please agree to the Terms of Service and Privacy Policy, then continue with GitHub.", "error")
+        return redirect(url_for("user_register"))
+    flash(_safe_error(resp, _LOGIN_ERRORS, "GitHub sign-in failed. Please try again."), "error")
+    return redirect(url_for(origin))
 
 
 @app.route("/user/logout")
@@ -2280,7 +2374,7 @@ def _inject_ad_enabled():
             f'<script nonce="{nonce}" '
             f'src="{url_for("static", filename="ads.js")}"></script>\n'
             f'<script nonce="{nonce}" '
-            f'src="{url_for("guard_asset", token=_current_guard_token(), v="16")}" defer></script>\n'
+            f'src="{url_for("guard_asset", token=_current_guard_token(), v="17")}" defer></script>\n'
             f"{push_script}"
         )
 

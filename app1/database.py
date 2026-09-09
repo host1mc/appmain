@@ -616,6 +616,7 @@ def _ensure_oracle_cols_on(conn):
                 slots VARCHAR2(10) DEFAULT '1',
                 container_slots VARCHAR2(10) DEFAULT '1',
                 email_verified VARCHAR2(5) DEFAULT '0',
+                github_verified VARCHAR2(5) DEFAULT '0',
                 account_type VARCHAR2(20) DEFAULT 'trial',
                 trial_expires_at VARCHAR2(50),
                 is_active NUMBER DEFAULT 1,
@@ -630,12 +631,14 @@ def _ensure_oracle_cols_on(conn):
                 verified_at VARCHAR2(50),
                 last_active_at VARCHAR2(50),
                 inactive_warned_at VARCHAR2(50),
-                bot_stopped_at VARCHAR2(50)
+                bot_stopped_at VARCHAR2(50),
+                banned_at VARCHAR2(50),
+                banned_purged_at VARCHAR2(50)
             )
         """)
         # Mirrors the CREATE above. A column left out of this set is re-ADDed
         # below and only survives because ORA-01430 is tolerated.
-        existing = {"uid","username","username_lookup_hash","username_ci_lookup_hash","email","email_lookup_hash","password","display_name","slots","container_slots","email_verified","account_type","trial_expires_at","is_active","created_at","last_login","ads_disabled","is_banned","banned_reason","discord_bot_token","webhook_token","fingerprint_ip","verified_at","last_active_at","inactive_warned_at","bot_stopped_at"}
+        existing = {"uid","username","username_lookup_hash","username_ci_lookup_hash","email","email_lookup_hash","password","display_name","slots","container_slots","email_verified","github_verified","account_type","trial_expires_at","is_active","created_at","last_login","ads_disabled","is_banned","banned_reason","discord_bot_token","webhook_token","fingerprint_ip","verified_at","last_active_at","inactive_warned_at","bot_stopped_at","banned_at","banned_purged_at"}
     else:
         cur.execute("SELECT column_name FROM user_tab_columns WHERE table_name='USERS'")
         existing = {r[0].lower() for r in cur.fetchall()}
@@ -651,6 +654,7 @@ def _ensure_oracle_cols_on(conn):
         "slots": "VARCHAR2(10) DEFAULT '1'",
         "container_slots": "VARCHAR2(10) DEFAULT '1'",
         "email_verified": "VARCHAR2(5) DEFAULT '0'",
+        "github_verified": "VARCHAR2(5) DEFAULT '0'",
         "account_type": "VARCHAR2(20) DEFAULT 'trial'",
         "trial_expires_at": "VARCHAR2(50)",
         "is_active": "NUMBER DEFAULT 1",
@@ -664,6 +668,8 @@ def _ensure_oracle_cols_on(conn):
         "last_active_at": "VARCHAR2(50)",
         "inactive_warned_at": "VARCHAR2(50)",
         "bot_stopped_at": "VARCHAR2(50)",
+        "banned_at": "VARCHAR2(50)",
+        "banned_purged_at": "VARCHAR2(50)",
     }
     for col, dtype in needed.items():
         if col not in existing:
@@ -2375,6 +2381,43 @@ def delete_user(uid):
         uconn.close()
 
 
+BAN_APPEAL_DAYS = 1  # banned users may appeal for this long before data is purged
+
+
+def purge_expired_ban_appeals():
+    """Once the appeal window closes, purge a banned user's data the same way the
+    renew-lapse path does — delete_user() drops sessions/bots/containers/panel
+    rows but keeps the identity and fingerprint, so the ban still recognises a
+    return. Runs once per user (banned_purged_at guards re-runs)."""
+    uconn = _user_conn()
+    try:
+        cur = uconn.cursor()
+        cur.execute("SELECT \"uid\", banned_at FROM users "
+                    "WHERE is_banned=1 AND banned_at IS NOT NULL AND banned_purged_at IS NULL")
+        rows = cur.fetchall()
+    finally:
+        uconn.close()
+    cutoff = _shared_utcnow() - timedelta(days=BAN_APPEAL_DAYS)
+    for r in rows:
+        uid = r["uid"] if hasattr(r, "keys") else r[0]
+        banned_at = r["banned_at"] if hasattr(r, "keys") else r[1]
+        dt = _parse_iso(banned_at)
+        if dt is None or dt > cutoff:
+            continue  # unparseable timestamp is left alone — never purge on garbage
+        try:
+            delete_user(uid)
+            uconn = _user_conn()
+            try:
+                cur = uconn.cursor()
+                cur.execute("UPDATE users SET banned_purged_at=:ts WHERE \"uid\"=:id",
+                            {"ts": _now(), "id": str(uid)})
+                uconn.commit()
+            finally:
+                uconn.close()
+        except Exception as ex:
+            _debug_print(f"[database] ban-appeal purge failed for {uid}: {ex}")
+
+
 def list_users():
     uconn = _user_conn()
     try:
@@ -2781,8 +2824,10 @@ def ban_user(user_id, reason="Banned"):
     uconn = _user_conn()
     try:
         cur = uconn.cursor()
-        cur.execute("UPDATE users SET is_banned=:v, banned_reason=:r WHERE \"uid\"=:id",
-                    {"v": val, "r": encrypt(reason) if reason else reason, "id": str(user_id)})
+        cur.execute("UPDATE users SET is_banned=:v, banned_reason=:r, "
+                    "banned_at=:ts, banned_purged_at=NULL WHERE \"uid\"=:id",
+                    {"v": val, "r": encrypt(reason) if reason else reason,
+                     "ts": _now(), "id": str(user_id)})
         uconn.commit()
     finally:
         uconn.close()
@@ -2792,7 +2837,8 @@ def unban_user(user_id):
     uconn = _user_conn()
     try:
         cur = uconn.cursor()
-        cur.execute("UPDATE users SET is_banned=0, banned_reason=NULL WHERE \"uid\"=:id", {"id": str(user_id)})
+        cur.execute("UPDATE users SET is_banned=0, banned_reason=NULL, "
+                    "banned_at=NULL, banned_purged_at=NULL WHERE \"uid\"=:id", {"id": str(user_id)})
         uconn.commit()
     finally:
         uconn.close()
@@ -2815,6 +2861,24 @@ def is_user_banned(user_id):
         if reason and looks_encrypted(reason):
             reason = decrypt(reason) or None
         return banned, reason
+    finally:
+        uconn.close()
+
+
+def is_email_banned(email):
+    """Whether this email belongs to a banned account. The ban model is per-uid
+    (users.is_banned); a banned row carrying this email hash *is* the email ban,
+    so a banned user cannot return under a fresh account (e.g. via GitHub) with
+    the same verified email. Keyed by the same lookup_hash as users."""
+    email = (email or "").strip().lower()
+    if not email:
+        return False
+    uconn = _user_conn()
+    try:
+        cur = uconn.cursor()
+        cur.execute("SELECT 1 FROM users WHERE email_lookup_hash=:lh AND is_banned=1",
+                    {"lh": lookup_hash(email)})
+        return cur.fetchone() is not None
     finally:
         uconn.close()
 
@@ -5029,6 +5093,32 @@ def set_auto_ban_enabled(enabled: bool):
     set_setting("auto_ban_enabled", "1" if enabled else "0")
 
 
+def get_signup_password_enabled():
+    """Whether email/password self-service registration is open. Default on."""
+    v = get_setting("signup_password_enabled")
+    if v is not None:
+        return v == "1"
+    return True
+
+
+def set_signup_password_enabled(enabled: bool):
+    """Open or close email/password registration for the whole fleet."""
+    set_setting("signup_password_enabled", "1" if enabled else "0")
+
+
+def get_signup_github_enabled():
+    """Whether GitHub sign-up is open. Default on now that the OAuth flow is wired."""
+    v = get_setting("signup_github_enabled")
+    if v is not None:
+        return v == "1"
+    return True
+
+
+def set_signup_github_enabled(enabled: bool):
+    """Open or close GitHub sign-up for the whole fleet."""
+    set_setting("signup_github_enabled", "1" if enabled else "0")
+
+
 # ---------------------------------------------------------------------------
 # Hosting panel controls
 # ---------------------------------------------------------------------------
@@ -5392,6 +5482,20 @@ def verify_user_email(uid, verified=True):
         else:
             cur.execute("UPDATE users SET email_verified=:v WHERE \"uid\"=:u_id",
                         {"v": 0, "u_id": uid})
+        uconn.commit()
+    finally:
+        uconn.close()
+
+
+def set_github_verified(uid, value=True):
+    """Record how the email was proven. email_verified says the address is
+    verified; github_verified says it was GitHub OAuth, not the OTP code. Stored
+    '1'/'0' the same way email_verified is."""
+    uconn = _user_conn()
+    try:
+        cur = uconn.cursor()
+        cur.execute("UPDATE users SET github_verified=:v WHERE \"uid\"=:u_id",
+                    {"v": '1' if value else '0', "u_id": uid})
         uconn.commit()
     finally:
         uconn.close()

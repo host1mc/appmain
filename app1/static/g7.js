@@ -1643,6 +1643,7 @@
       forms[j].addEventListener('submit', function (ev) {
         var form = ev.currentTarget;
         if (form.dataset.fpWaiting === '1') { ev.preventDefault(); return; }
+        var submitter = ev.submitter;
         var fields = form.querySelectorAll('[data-fp-input]');
         for (var m = 0; m < fields.length; m++) {
           if (!fields[m].value) { fields[m].value = fp; }
@@ -1654,16 +1655,20 @@
 
         ev.preventDefault();
         form.dataset.fpWaiting = '1';
+        // Deferred form.submit() drops the clicked button, so a submit button's
+        // formaction (e.g. "Continue with GitHub") is lost and the form posts to
+        // its default action. Carry the submitter's formaction over first.
+        if (submitter && submitter.getAttribute && submitter.getAttribute('formaction')) {
+          form.setAttribute('action', submitter.getAttribute('formaction'));
+        }
+        var send = function () {
+          form.dataset.fpWaiting = '0';
+          try { form.submit(); } catch (e) {}
+        };
         Promise.race([
           enriched,
           new Promise(function (resolve) { setTimeout(function () { resolve(''); }, 2500); })
-        ]).then(function () {
-          form.dataset.fpWaiting = '0';
-          try { form.submit(); } catch (e) {}
-        }, function () {
-          form.dataset.fpWaiting = '0';
-          try { form.submit(); } catch (e) {}
-        });
+        ]).then(send, send);
       });
     }
   }

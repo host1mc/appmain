@@ -33,6 +33,7 @@ for _candidate in (
 SHARD_ORACLE = 0      # Oracle SQL - BOTHOST (default)
 SHARD_ORACLE_2 = 1    # Oracle SQL - BOTHOST1
 SHARD_HEATWAVE = 99   # HeatWave MySQL
+SHARD_MONGO_BASE = 100  # Mongo shard ids are SHARD_MONGO_BASE + DB_<idx> (100..163)
 
 
 def _load_env():
@@ -293,7 +294,7 @@ def _mongo(shard_id=None):
     if shard_id not in _mongo_dbs:
         from pymongo import MongoClient
         shards = _load_mongo_shard_uris()
-        uri = shards.get(shard_id, "")
+        uri = shards.get(shard_id - SHARD_MONGO_BASE, "")
         if not uri:
             raise RuntimeError(f"No MongoDB URI for shard {shard_id}")
         _mongo_clients[shard_id] = MongoClient(uri, tls=True)
@@ -648,19 +649,57 @@ def username_map():
     return names
 
 
+USERS_SCAN_CAP = 40  # ponytail: max user-linked tables GROUP-BY'd for the overview; raise if a plane needs an exhaustive identity list
+
+
+def _linked_tables(shard_id, all_cols):
+    """(table, user_id_column) for every table that joins back to a user.
+
+    On Oracle this resolves in a single user_tab_columns query rather than one
+    per table, which is what made the Identities overview hang on a wide
+    catalog.  HeatWave/Mongo keep the per-table sample (small, rarely used)."""
+    if _is_oracle(shard_id):
+        try:
+            rows = _oracle_query(
+                "SELECT table_name, column_name FROM user_tab_columns "
+                "WHERE column_name IN ('UID', 'USER_ID', 'USERID') "
+                "OR (table_name = 'USERS' AND column_name = 'ID')",
+                shard_id=shard_id,
+            )
+        except Exception:
+            rows = []
+        known = {c.upper(): c for c in all_cols}
+        rank = {"UID": 0, "USER_ID": 1, "USERID": 2, "ID": 3}
+        best = {}
+        for r in rows:
+            disp = known.get(str(r["TABLE_NAME"]).upper())
+            col = r["COLUMN_NAME"]
+            if not disp:
+                continue
+            if disp not in best or rank.get(col, 9) < rank.get(best[disp], 9):
+                best[disp] = col
+        return list(best.items())
+    out = []
+    for coll_name in all_cols:
+        id_field = _user_id_field(coll_name, collection_fields(coll_name))
+        if id_field:
+            out.append((coll_name, id_field))
+    return out
+
+
 def users_report():
     """Per-uid row counts across tables that link back to a user."""
     all_cols = all_collections()
     shard_id = _get_shard_id()
     per_user = {}
 
-    # Find tables with a user-linking column
-    for coll_name in all_cols:
-        fields = collection_fields(coll_name)
-        id_field = _user_id_field(coll_name, fields)
-        if not id_field:
-            continue
+    linked = _linked_tables(shard_id, all_cols)
+    # USERS first so identities still resolve when the scan is capped
+    linked.sort(key=lambda cf: cf[0].upper() != "USERS")
+    if len(linked) > USERS_SCAN_CAP:
+        linked = linked[:USERS_SCAN_CAP]
 
+    for coll_name, id_field in linked:
         if _is_oracle(shard_id):
             try:
                 rows = _oracle_query(
@@ -804,7 +843,13 @@ def switch_shard(shard_id):
         flash(f"Switched to database shard {shard_id}", "success")
     else:
         flash(f"Shard {shard_id} not available", "error")
-    return redirect(url_for("dashboard"))
+    dest = _local_next(url_for("dashboard"))
+    # a table/user open on the old plane may be absent on the new one → its list
+    if dest.startswith("/table/"):
+        dest = url_for("tables_page")
+    elif dest.startswith("/user/"):
+        dest = url_for("users_page")
+    return redirect(dest)
 
 
 def _known_table(tname):
@@ -1443,6 +1488,42 @@ def api_query():
         return jsonify({"columns": columns, "rows": rows, "ms": round(dt, 1)})
     except Exception as e:
         return jsonify({"error": str(e)}), 400
+
+
+@app.get("/api/table/<tname>")
+def api_table(tname):
+    """Capped, masked preview of a table for the inline heat-map/list peek."""
+    if not _known_table(tname):
+        return jsonify({"error": "unknown table"}), 404
+    limit = 100
+    t0 = time.time()
+    s = _get_shard_id()
+    columns = list(collection_fields(tname).keys())
+    try:
+        tq = _ident(tname)
+        if _is_oracle(s):
+            result = _oracle_query(
+                f"SELECT * FROM {_ora_ident(tq)} WHERE ROWNUM <= :n",
+                {"n": limit}, shard_id=s,
+            )
+        elif _is_heatwave(s):
+            result = _heatwave_query(f"SELECT * FROM {_my_ident(tq)} LIMIT %s", [limit])
+        else:
+            result = list(_mongo(s)[tq].find().limit(limit))
+        if not columns and result:
+            columns = list(result[0].keys())
+        rows = [[safe_json(display_value(r.get(c), c)) for c in columns] for r in result]
+    except Exception as e:
+        return jsonify({"error": str(e)}), 400
+    return jsonify({
+        "name": tname,
+        "columns": columns,
+        "rows": rows,
+        "total": collection_count(tname),
+        "shown": len(rows),
+        "ms": round((time.time() - t0) * 1000, 1),
+        "href": "/table/" + quote(tname),
+    })
 
 
 # ─── template helpers ────────────────────────────────────────────────────────

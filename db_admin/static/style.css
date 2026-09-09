@@ -334,6 +334,22 @@ a:hover { color: #d9b8ee; }
 .panel .p-body { padding: 18px 20px; }
 .panel .p-body.flush { padding: 0; }
 
+/* inline peek: a table revealed below a heat cell / list row */
+.peek-panel {
+  margin-top: -8px;
+  border-color: color-mix(in srgb, var(--green) 45%, var(--border));
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--green) 20%, transparent), var(--shadow);
+  animation: peekIn .16s ease-out;
+}
+.peek-panel .p-head { background: linear-gradient(90deg, rgba(115, 191, 105, .12), transparent 60%); }
+.peek-panel .p-head span { color: var(--green); }
+.peek-panel .p-head .x {
+  cursor: pointer; color: var(--dim); font-size: 20px; line-height: 1;
+  background: none; border: none;
+}
+.peek-panel .p-head .x:hover { color: var(--text); }
+@keyframes peekIn { from { opacity: 0; transform: translateY(-6px); } to { opacity: 1; transform: none; } }
+
 /* stat cards */
 .stat-grid {
   display: grid;

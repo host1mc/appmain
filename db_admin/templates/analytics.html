@@ -41,7 +41,7 @@
       <div class="heatgrid">
         {% for t in tables %}
         {% set lvl = ((t.rows / max_rows) * 5)|int %}
-        <a class="heatcell h{{ lvl }}" href="/table/{{ t.name }}" title="{{ t.name }} · {{ t.rows|num }} rows">
+        <a class="heatcell h{{ lvl }}" href="/table/{{ t.name }}" data-peek="/api/table/{{ t.name|urlencode }}" data-peek-name="{{ t.name }}" title="{{ t.name }} · {{ t.rows|num }} rows">
           <span class="hn">{{ t.name[:10] }}</span>
           <span class="hv">{{ t.rows|num }}</span>
         </a>
@@ -126,7 +126,7 @@
               <span class="badge green">live</span>
               {% endif %}
             </td>
-            <td class="num"><a class="btn sm" href="/table/{{ t.name }}">Inspect</a></td>
+            <td class="num"><a class="btn sm" href="/table/{{ t.name }}" data-peek="/api/table/{{ t.name|urlencode }}" data-peek-name="{{ t.name }}">Inspect</a></td>
           </tr>
           {% endfor %}
         </tbody>

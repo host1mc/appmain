@@ -97,6 +97,60 @@ document.addEventListener("DOMContentLoaded", () => {
     });
   });
 
+  /* inline table peek: [data-peek] reveals rows in a panel below the section,
+     no navigation. Re-clicking the same target collapses it. */
+  function peekTable(j) {
+    let h = '<div class="table-wrap"><table class="tbl sortable mono"><thead><tr>';
+    h += j.columns.map((c) => `<th data-key>${esc(c)}</th>`).join("");
+    h += "</tr></thead><tbody>";
+    h += j.rows.map((r) =>
+      "<tr>" + r.map((v) => {
+        const raw = v === null ? "" : String(v);
+        return `<td class="${v === null ? "null" : ""}" data-v="${esc(raw)}">${cellHtml(v)}</td>`;
+      }).join("") + "</tr>"
+    ).join("");
+    return h + "</tbody></table></div>";
+  }
+
+  document.querySelectorAll("[data-peek]").forEach((el) => {
+    el.addEventListener("click", async (e) => {
+      e.preventDefault();
+      const url = el.dataset.peek;
+      const name = el.dataset.peekName || "rows";
+      const host = el.closest(".grid-2") || el.closest(".panel") || el.parentElement;
+      let peek = host.nextElementSibling;
+      if (!peek || !peek.classList || !peek.classList.contains("peek-panel")) peek = null;
+      if (peek && peek.dataset.for === url) { peek.remove(); return; }
+      if (!peek) {
+        peek = document.createElement("div");
+        peek.className = "panel peek-panel";
+        host.parentNode.insertBefore(peek, host.nextSibling);
+      }
+      peek.dataset.for = url;
+      peek.innerHTML =
+        `<div class="p-head"><span>▼ ${esc(name)}</span>` +
+        `<button class="x" type="button" title="Close">&times;</button></div>` +
+        `<div class="p-body"><div class="spinner"></div></div>`;
+      peek.querySelector(".x").addEventListener("click", () => peek.remove());
+      try {
+        const res = await fetch(url);
+        const j = await res.json();
+        const body = peek.querySelector(".p-body");
+        if (j.error) { body.innerHTML = `<div class="errbox">${esc(j.error)}</div>`; return; }
+        peek.querySelector(".p-head span").textContent =
+          `▼ ${name} · ${j.total} row(s)` + (j.shown < j.total ? ` (showing first ${j.shown})` : "");
+        const full = j.href ? `<div style="padding:10px 12px 2px"><a class="btn sm" href="${j.href}">Open full view &rarr;</a></div>` : "";
+        body.className = "p-body flush";
+        body.innerHTML = j.columns.length ? peekTable(j) + full : `<div class="p-body"><div class="okchip">Empty table</div></div>`;
+        bindSortable(peek);
+        peek.querySelectorAll(".cell-expand").forEach((c) => c.addEventListener("click", () => c.classList.toggle("open")));
+        peek.scrollIntoView({ behavior: "smooth", block: "nearest" });
+      } catch (err) {
+        peek.querySelector(".p-body").innerHTML = `<div class="errbox">${esc(String(err))}</div>`;
+      }
+    });
+  });
+
   /* copy buttons */
   document.querySelectorAll("[data-copy]").forEach((b) => {
     b.addEventListener("click", () => {

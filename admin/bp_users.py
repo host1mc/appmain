@@ -12,7 +12,7 @@ from bp_ops import _trial_expired, _nudge_engine
 
 users_bp = Blueprint("admin_users", __name__)
 
-_FLAG_COLUMNS = ("email_verified", "is_banned", "is_active", "ads_disabled")
+_FLAG_COLUMNS = ("email_verified", "github_verified", "is_banned", "is_active", "ads_disabled")
 
 
 def _normalize_user(u):
@@ -89,7 +89,7 @@ def api_user_detail(user_id):
 @users_bp.route("/api/admin/users/<user_id>", methods=["DELETE"])
 @auth.require_admin
 def api_admin_delete_user(user_id):
-    db.delete_user(user_id)
+    db.erase_user(user_id)
     return jsonify({"ok": True})
 
 

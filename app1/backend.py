@@ -17,6 +17,7 @@ import re
 import sys
 import time
 import hashlib
+import secrets
 import tempfile
 import ipaddress
 import logging
@@ -50,6 +51,9 @@ import error_codes as ec
 import turnstile
 
 from urllib.parse import urlsplit as _urlsplit  # used by _load_cors_origins
+import urllib.request
+import urllib.parse
+from datetime import datetime, timezone, timedelta
 
 
 def _load_cors_origins():
@@ -323,7 +327,7 @@ def _body_value(field):
         # returning a constant here instead meant every body that omitted this
         # field shared one counter: a handful of fieldless posts exhausted the
         # "1 per 60 seconds" bucket for every other caller at the same time.
-        return _get_client_ip() or ""
+        return _get_client_ip() or "unknown"
     # Capped: this becomes part of a key in the rate-limit store, which is shared
     # by both instances when RATELIMIT_STORAGE_URI is set. Uncapped, a caller
     # chose the key length, so a body just under MAX_CONTENT_LENGTH wrote a
@@ -331,7 +335,13 @@ def _body_value(field):
     # cannot help, because the key is computed before the route body runs.
     # Truncating only ever merges two long values into one bucket, which limits
     # harder rather than less.
-    return str(value).strip().lower()[:RATELIMIT_KEY_MAX_LEN]
+    key = str(value).strip().lower()[:RATELIMIT_KEY_MAX_LEN]
+    # An empty or whitespace-only field (a blank login form, or a body sending
+    # ""/"   ") is "no account to key on" just like a missing one. Handing that
+    # empty string to flask-limiter makes it log "Empty value found in parameters"
+    # and SKIP the limit entirely — the per-account bucket silently stops
+    # enforcing. Fall back to the IP so the limit still runs; never return empty.
+    return key or (_get_client_ip() or "unknown")
 
 
 @app.errorhandler(400)
@@ -1138,6 +1148,11 @@ def api_auth_register():
     blocked = _require_turnstile(data)
     if blocked is not None:
         return blocked
+    if not _text_field(data, "agree_terms"):
+        return ec.err(ec.TERMS_REQUIRED,
+                      "You must agree to the Terms of Service and Privacy Policy to create an account.", 400)
+    if not db.get_signup_password_enabled():
+        return ec.err(ec.REGISTRATION_CLOSED, "New sign-ups are currently closed.", 403)
     username = _text_field(data, "username")
     password = _raw_field(data, "password")
     email = _text_field(data, "email").lower()
@@ -1444,6 +1459,263 @@ def api_auth_login():
         if dev_err == "BANNED":
             dev_err = "Login recorded for admin review"
 
+    user.pop("password", None)
+    return jsonify({"ok": True, "user": user})
+
+
+# ── GitHub OAuth (sign in / sign up) ──
+# The frontend never sees the client secret: it asks /start for the authorize
+# URL, sends the user to GitHub, then hands the returned code to /api/auth/github
+# for the token exchange and identity checks. The whole path is gated by the
+# signup_github_enabled admin toggle and runs the same device/IP fingerprint
+# policy as password login and registration.
+
+GITHUB_MIN_ACCOUNT_AGE_DAYS = 90  # reject throwaway accounts made to dodge a ban
+_GITHUB_SCOPE = "read:user user:email"
+_GITHUB_MAX_RESPONSE_BYTES = 64 * 1024
+
+
+# Read once at import through cf_edge._setting, not os.environ: this tier never
+# load_dotenv()s and main.py forwards only its own environment, so these three —
+# which live solely in fastapi-oracle-app/.env — reach the backend through the
+# .env fallback, exactly as CORS_ORIGINS and TURNSTILE_SECRET_KEY do. Bare
+# os.environ read them empty, so the start route reported "not configured" and the
+# button failed. A change needs a restart, like every other _setting-read config.
+_GITHUB_CLIENT_ID = cf_edge._setting("GITHUB_CLIENT_ID")
+_GITHUB_CLIENT_SECRET = cf_edge._setting("GITHUB_CLIENT_SECRET")
+_GITHUB_CALLBACK_URL = cf_edge._setting("GITHUB_CALLBACK_URL")
+
+
+def _github_cfg():
+    return (_GITHUB_CLIENT_ID, _GITHUB_CLIENT_SECRET, _GITHUB_CALLBACK_URL)
+
+
+def _github_http(url, token=None, form=None):
+    """GitHub HTTP with the stdlib — backend has no requests, same as turnstile.
+    POST when `form` is given, else GET. Returns parsed JSON or None; never
+    raises to the caller and bounds the response size."""
+    data = urllib.parse.urlencode(form).encode("ascii") if form is not None else None
+    headers = {"Accept": "application/json", "User-Agent": "endhost-auth"}
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    req = urllib.request.Request(url, data=data, headers=headers,
+                                 method="POST" if data is not None else "GET")
+    try:
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            raw = resp.read(_GITHUB_MAX_RESPONSE_BYTES + 1)
+    except Exception as ex:
+        _debug_print(f"[github] {url} failed: {ex}", file=sys.stderr)
+        return None
+    if len(raw) > _GITHUB_MAX_RESPONSE_BYTES:
+        return None
+    try:
+        return json.loads(raw.decode("utf-8", "replace"))
+    except ValueError:
+        return None
+
+
+def _github_pick_email(emails):
+    """The primary verified email, else any verified one, else None."""
+    if not isinstance(emails, list):
+        return None
+    verified = [e for e in emails if isinstance(e, dict) and e.get("verified")
+                and e.get("email")]
+    if not verified:
+        return None
+    primary = next((e for e in verified if e.get("primary")), None)
+    return ((primary or verified[0]).get("email") or "").strip().lower() or None
+
+
+def _github_account_too_new(created_at):
+    """True when the GitHub account is younger than the minimum age — or when the
+    created_at is missing or unparseable (fail closed: a real account has one)."""
+    if not created_at:
+        return True
+    try:
+        created = datetime.strptime(created_at, "%Y-%m-%dT%H:%M:%SZ").replace(
+            tzinfo=timezone.utc)
+    except (TypeError, ValueError):
+        return True
+    return (datetime.now(timezone.utc) - created) < timedelta(
+        days=GITHUB_MIN_ACCOUNT_AGE_DAYS)
+
+
+def _github_unique_username(base):
+    """A username derived from the GitHub login that meets create_user's
+    length/uniqueness rules; a short random suffix breaks a collision.
+    create_user re-checks uniqueness, so the check-then-create race only costs a
+    retry, never a duplicate."""
+    base = re.sub(r"[^A-Za-z0-9_-]", "", (base or "")).strip("-_") or "gh"
+    base = base[:32]
+    if len(base) < 3:
+        base = (base + "user")[:32]
+    if not db.get_user_by_username(base):
+        return base
+    for _ in range(6):
+        candidate = f"{base[:25]}-{secrets.token_hex(3)}"
+        if not db.get_user_by_username(candidate):
+            return candidate
+    return f"gh-{secrets.token_hex(6)}"
+
+
+@app.route("/api/auth/methods", methods=["GET"])
+@api_internal_required
+@limiter.limit("60 per minute")
+def api_auth_methods():
+    # Lets the login/register pages show only the sign-in options the admin has
+    # enabled, without the frontend needing DB access.
+    return jsonify({"ok": True,
+                    "password": db.get_signup_password_enabled(),
+                    "github": db.get_signup_github_enabled()})
+
+
+@app.route("/api/auth/github/start", methods=["POST"])
+@api_internal_required
+@limiter.limit("10 per minute")
+def api_auth_github_start():
+    if not db.get_signup_github_enabled():
+        return ec.err(ec.GITHUB_DISABLED, "GitHub sign-in is currently unavailable.", 403)
+    client_id, _secret, callback = _github_cfg()
+    if not client_id or not callback:
+        return ec.err(ec.GITHUB_AUTH_FAILED, "GitHub sign-in is not configured.", 503)
+    data = _json_object()
+    blocked = _require_turnstile(data)
+    if blocked is not None:
+        return blocked
+    state = _text_field(data, "state")
+    if not state:
+        return ec.err(ec.MISSING_FIELDS, "Missing state", 400)
+    params = urllib.parse.urlencode({
+        "client_id": client_id,
+        "redirect_uri": callback,
+        "scope": _GITHUB_SCOPE,
+        "state": state,
+        "allow_signup": "true",
+    })
+    return jsonify({"ok": True,
+                    "authorize_url": f"https://github.com/login/oauth/authorize?{params}"})
+
+
+@app.route("/api/auth/github", methods=["POST"])
+@api_internal_required
+@limiter.limit("10 per minute; 40 per hour")
+def api_auth_github():
+    if not db.get_signup_github_enabled():
+        return ec.err(ec.GITHUB_DISABLED, "GitHub sign-in is currently unavailable.", 403)
+    client_id, client_secret, callback = _github_cfg()
+    if not client_id or not client_secret:
+        return ec.err(ec.GITHUB_AUTH_FAILED, "GitHub sign-in is not configured.", 503)
+
+    data = _json_object()
+    code = _text_field(data, "code")
+    if not code:
+        return ec.err(ec.MISSING_FIELDS, "Missing code", 400)
+    fp, fp_anomaly = _clean_fingerprint(_text_field(data, "fingerprint"))
+    fp_detail, fp_parsed, detail_anomaly = _clean_fp_detail(_text_field(data, "fingerprint_detail"))
+    agreed = _text_field(data, "agreed")
+    client_ip = _get_client_ip()
+
+    # 1. code -> access token
+    tok = _github_http("https://github.com/login/oauth/access_token", form={
+        "client_id": client_id,
+        "client_secret": client_secret,
+        "code": code,
+        "redirect_uri": callback,
+    })
+    access_token = (tok or {}).get("access_token")
+    if not access_token:
+        return ec.err(ec.GITHUB_AUTH_FAILED, "Could not verify your GitHub account.", 400)
+
+    # 2. identity + verified email
+    profile = _github_http("https://api.github.com/user", token=access_token) or {}
+    if not profile.get("id"):
+        return ec.err(ec.GITHUB_AUTH_FAILED, "Could not read your GitHub profile.", 400)
+    email = _github_pick_email(
+        _github_http("https://api.github.com/user/emails", token=access_token))
+    if not email:
+        return ec.err(ec.GITHUB_EMAIL_UNVERIFIED,
+                      "Your GitHub account has no verified email. Verify one on GitHub and try again.", 400)
+
+    # 3. account-age gate — a fresh GitHub account is the cheap way around a ban
+    if _github_account_too_new(profile.get("created_at")):
+        return ec.err(ec.GITHUB_ACCOUNT_TOO_NEW,
+                      "Your GitHub account must be at least 3 months old to sign in.", 403)
+
+    # 4. persistent email block list (a ban that has followed the address)
+    if db.is_email_banned(email):
+        return ec.err(ec.BANNED, "BANNED", 403, banned=True,
+                      reason="This account has been banned.")
+
+    _log_tamper_signals(_tamper_signals(fp_parsed, fp_anomaly, detail_anomaly),
+                        fp_parsed, fp, username=email, ip_address=client_ip)
+
+    existing = db.get_user_by_email(email)
+    if existing:
+        # Same verified email -> same account (linking mode A).
+        banned, ban_reason = db.is_user_banned(existing["uid"])
+        if banned:
+            return ec.err(ec.BANNED, "BANNED", 403, banned=True, reason=ban_reason)
+        if not _db_truthy(existing.get("is_active", 1)):
+            return ec.err(ec.ACCOUNT_DISABLED, "Account disabled", 401)
+        # GitHub just proved the email, so an account that never finished OTP is
+        # verified here rather than purged the way password login purges it. But
+        # the password on an unverified row was set by whoever registered it —
+        # possibly an attacker who squatted the address before the real owner
+        # arrived (account pre-hijacking). Reset that unproven password and drop
+        # any sessions before adopting, so only the GitHub-verified owner holds it.
+        if not _db_truthy(existing.get("email_verified", 0)):
+            db.admin_set_user_password(existing["uid"], secrets.token_urlsafe(32))
+            db.delete_user_sessions(existing["uid"])
+            db.verify_user_email(existing["uid"])
+            db.set_github_verified(existing["uid"])
+        dev_ok, dev_err = db.check_device_login(existing["uid"], fp, fp_detail, client_ip)
+        if not dev_ok and dev_err == "BANNED" and db.get_auto_ban_enabled():
+            return ec.err(ec.BANNED, "BANNED", 403, banned=True,
+                          reason="This device is associated with a banned account.")
+        user = db.get_user(existing["uid"]) or existing
+        user.pop("password", None)
+        return jsonify({"ok": True, "user": user})
+
+    # 5. New account. A new GitHub account is still a new account, so Terms must
+    #    be accepted first — the register page collects the checkbox and forwards
+    #    it as `agreed`.
+    if not agreed:
+        return ec.err(ec.TERMS_REQUIRED,
+                      "You must agree to the Terms of Service and Privacy Policy to create an account.", 400)
+
+    # Same device/IP gate registration runs. A banned device here is a banned
+    # user signing up under a fresh GitHub email; create the account and ban it
+    # so the ban follows the address (is_email_banned reads users.is_banned),
+    # then refuse. The 1-day appeal purge trims the data later, keeping the
+    # identity and fingerprint so the ban still recognises them.
+    banned_device = False
+    if fp:
+        dev_ok, dev_err, _info = db.check_device_registration(fp, client_ip)
+        if not dev_ok:
+            if dev_err != "BANNED":
+                return ec.err(ec.DEVICE_BLOCKED, "Sign-up is not available from this device.", 400)
+            banned_device = True
+
+    username = _github_unique_username(profile.get("login") or email.split("@")[0])
+    ok, res = db.create_user(
+        username=username,
+        password=secrets.token_urlsafe(32),
+        display_name=(profile.get("name") or None),
+        slots=1,
+        email=email,
+        account_type="trial",
+        email_verified=True,
+    )
+    if not ok:
+        return ec.err(ec.REGISTRATION_FAILED, "Could not create your account. Please try again.", 400)
+    db.set_github_verified(res)
+    if fp:
+        db.bind_fingerprint(res, fp, fp_detail, ip_address=client_ip)
+    if banned_device:
+        db.ban_user(res, "Banned device (GitHub sign-up)")
+        return ec.err(ec.BANNED, "BANNED", 403, banned=True,
+                      reason="This device is associated with a banned account.")
+    user = db.get_user(res) or {}
     user.pop("password", None)
     return jsonify({"ok": True, "user": user})
 

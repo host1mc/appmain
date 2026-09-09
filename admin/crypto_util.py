@@ -259,6 +259,7 @@ def _retired_keys() -> list:
 
 
 def _debug_print(*args, **kwargs):
+    # Env only: importing reviews_db here used to open HeatWave at module load.
     if os.environ.get("CONSOLE_DEBUG", "").strip().lower() in ("1", "true", "yes", "on"):
         print(*args, **kwargs)
 
@@ -303,6 +304,11 @@ _RETIRED = _retired_keys()
 # MultiFernet encrypts with the first key and decrypts with any of them — which
 # is exactly the rotation contract: write new, keep reading old.
 _fernet = MultiFernet([Fernet(_PRIMARY)] + [Fernet(k) for k in _RETIRED])
+
+# The whole keyring an InvalidToken was tried against, primary first. Logging all
+# of them — not just the primary — is how an operator sees a failing ciphertext was
+# written under a key absent here, instead of blaming the one key we happen to name.
+_LOADED_FINGERPRINTS = [key_fingerprint(_PRIMARY)] + [key_fingerprint(k) for k in _RETIRED]
 
 
 def _verify_expected_fingerprint():
@@ -467,17 +473,23 @@ def decrypt(token: str, context: str = "") -> str:
         preview = token[:12] if isinstance(token, str) else f"<{type(token).__name__}>"
         try:
             import reviews_db
+            # Stable message so HeatWave dedupes; leftover ciphertext under a
+            # retired key is not an operator FLAG flood.
             reviews_db.log_app_error(
                 "CryptoDecryptFailed",
-                f"decrypt failed (InvalidToken or similar) under key {key_fingerprint()}",
+                "decrypt failed (InvalidToken or similar): none of the loaded key(s) "
+                f"[{', '.join(_LOADED_FINGERPRINTS)}] could decrypt it — the value was "
+                "written under a key not in this keyring (add it to ENCRYPTION_KEYS_OLD, "
+                "then run rekey_encrypted.py)",
                 module="crypto_util",
                 flagged=0,
             )
         except Exception:
             pass
         _debug_print(f"[crypto] decrypt failed for {preview}... - this process holds "
-                     f"key {key_fingerprint()}; the value was written under another one "
-                     "(see ENCRYPTION_KEYS_OLD / rekey_encrypted.py)", file=sys.stderr)
+                     f"key(s) [{', '.join(_LOADED_FINGERPRINTS)}]; the value was written "
+                     "under another one (see ENCRYPTION_KEYS_OLD / rekey_encrypted.py)",
+                     file=sys.stderr)
         return ""
 
 
