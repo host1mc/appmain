@@ -1711,6 +1711,7 @@
   }
 
   var SAME_ORIGIN_BAIT = '/static/ads.js';
+  var SAME_ORIGIN_CONTROL = '/static/style.css';
 
   function sameOriginBait() {
     if (window.__adsLoaded === true) return Promise.resolve(false);
@@ -1779,21 +1780,66 @@
     });
   }
 
+  var NET_BAITS = [
+    'https://pagead2.googlesyndication.com/pagead/js/adsbygoogle.js',
+    'https://www.highperformanceformat.com/b9ecaabfb2eb68535607db834ea25cd6/invoke.js',
+    'https://pl29657148.effectivecpmnetwork.com/80bbad99518bd76be2c470b305e22363/invoke.js'
+  ];
+  var NETWORK_VERDICT = null;
+  var NET_LAST = { refused: 0, hung: 0, reached: 0, total: 0 };
+  var NET_REFUSED_MIN = 2;
+
+  function netBaits() {
+    if (NETWORK_VERDICT !== null) return Promise.resolve(NETWORK_VERDICT);
+    var jobs = [];
+    for (var i = 0; i < NET_BAITS.length; i++) jobs.push(probeNet(NET_BAITS[i]));
+    return Promise.all(jobs).then(function (results) {
+      var refused = 0;
+      var hung = 0;
+      var reached = 0;
+      for (var k = 0; k < results.length; k++) {
+        if (results[k] === false) refused++;
+        else if (results[k] === null) hung++;
+        else reached++;
+      }
+      NET_LAST = { refused: refused, hung: hung, reached: reached, total: results.length };
+      debug('net baits refused', refused + '/' + results.length);
+      debug('net baits hung', hung + '/' + results.length);
+      NETWORK_VERDICT = refused >= NET_REFUSED_MIN ||
+        (hung > 0 && hung === results.length);
+      return NETWORK_VERDICT;
+    });
+  }
+
   function safeAsync(fn) {
     try { return Promise.resolve(fn()).catch(function () { return false; }); }
     catch (e) { return Promise.resolve(false); }
   }
 
   function detectAdblock() {
-    return Promise.all([
-      safeAsync(sameOriginBait),
-      safeAsync(domBait)
-    ]).then(function (cheap) {
-      var verdict = cheap[0] === true || cheap[1] === true;
-      try { window.__adblockSignals = { sameOrigin: cheap[0], dom: cheap[1], verdict: verdict }; } catch (e) {}
-      debug('signals', window.__adblockSignals);
-      return verdict;
-    }, function () { return false; });
+    var checks = safeAsync(function () { return probe(SAME_ORIGIN_CONTROL, 'HEAD'); })
+      .then(function (reachable) {
+        if (reachable !== true) {
+          debug('origin unreachable, failing open', reachable);
+          try { window.__adblockSignals = { reachable: false, verdict: false }; } catch (e) {}
+          return false;
+        }
+        return Promise.all([
+          safeAsync(sameOriginBait),
+          safeAsync(domBait),
+          safeAsync(netBaits)
+        ]).then(function (r) {
+          var signals = { reachable: true, sameOrigin: r[0], dom: r[1], network: r[2] };
+          signals.verdict = (r[0] === true || r[1] === true || r[2] === true);
+          try { window.__adblockSignals = signals; } catch (e) {}
+          debug('signals', signals);
+          return signals.verdict;
+        });
+      }, function () { return false; });
+    var watchdog = new Promise(function (resolve) {
+      setTimeout(function () { resolve(NETWORK_VERDICT === true); }, DETECT_TIMEOUT_MS);
+    });
+    return Promise.race([checks, watchdog]);
   }
 
   window.detectAdblock = detectAdblock;
@@ -2111,6 +2157,7 @@
 
     function recheck() {
       if (stopped) return;
+      NETWORK_VERDICT = null;
       safeAsync(detectAdblock).then(function (blocked) {
         if (stopped) return;
         if (blocked !== true) { stopped = true; returnHome(); return; }
@@ -2129,6 +2176,7 @@
       if (leaving) return;
       var note = $('[data-status] span:last-child') || $('[data-status]');
       if (note) { try { note.textContent = 'Checking…'; } catch (e) {} }
+      NETWORK_VERDICT = null;
       safeAsync(detectAdblock).then(function (blocked) {
         if (stopped) return;
         if (blocked !== true) { stopped = true; returnHome(); return; }

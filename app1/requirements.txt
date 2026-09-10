@@ -42,3 +42,7 @@ mysql-connector-python>=9.1.0
 # it keeps minting and checking PBKDF2 rather than failing to boot; installing it
 # is what lets an existing PBKDF2 hash upgrade on the owner's next login.
 argon2-cffi>=23.1.0
+# Optional error/performance monitoring — obs.py initialises Sentry only when
+# SENTRY_DSN is set and imports sentry-sdk inside a try, so a tier without the
+# package still boots (the same optional-dependency pattern as argon2 above).
+sentry-sdk[flask]>=2.0

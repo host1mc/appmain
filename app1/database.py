@@ -1735,6 +1735,14 @@ def create_user(username, password, display_name=None, slots=1, email=None, acco
         if not email:
             email = f"user_{uuid.uuid4().hex[:12]}@placeholder.local"
         email = email.strip().lower()
+        # Email is an identity key here — both GitHub OAuth and password login
+        # resolve an account by it — so a second account under the same address
+        # must not be creatable. Without this, get_user_by_email had to choose
+        # between duplicates and the OAuth-adopt path could act on the wrong row.
+        cur.execute("SELECT \"uid\" FROM users WHERE email_lookup_hash=:h",
+                    {"h": lookup_hash(email)})
+        if cur.fetchone():
+            return False, "Email already registered"
         flask_hash = hash_password(password)
         verified_val = '1' if email_verified else '0'
         cur.execute(
@@ -2558,9 +2566,16 @@ def _get_user_by(column, value):
     try:
         cur = uconn.cursor()
         cur.execute(f"SELECT * FROM users WHERE {column}=:v", {"v": value})
-        r = cur.fetchone()
-        if not r:
+        # Exactly one match, or nothing. These columns are meant to be unique,
+        # but a database migrated before email_lookup_hash/username_lookup_hash
+        # were UNIQUE can hold duplicates. Resolving one at random would let a
+        # second account registered under someone else's email be selected by
+        # the email login and the GitHub-adopt path, so a tie fails closed the
+        # same way _get_user_by_ci_username does below.
+        rows = cur.fetchmany(2)
+        if len(rows) != 1:
             return None
+        r = rows[0]
         if hasattr(r, "keys"):
             u = dict(r)
         else:
@@ -2702,8 +2717,8 @@ def admin_set_user_password(user_id, new_password):
     reachable from the loopback admin console, where the caller is already the
     operator, and is how a locked-out user gets back in without email working.
     """
-    if not new_password or len(str(new_password)) < 6:
-        return False, "Password must be at least 6 characters"
+    if not new_password or len(str(new_password)) < 8:
+        return False, "Password must be at least 8 characters"
     if not get_user(user_id):
         return False, "User not found"
     uconn = _user_conn()

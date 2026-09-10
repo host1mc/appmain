@@ -50,7 +50,7 @@
         <h1>App Hosting</h1>
         <p class="sub">Free managed hosting for whatever you write — <strong>Node.js</strong>, <strong>Python</strong>, <strong>Ruby</strong>, <strong>Go</strong>, <strong>PHP</strong> or <strong>Bun</strong>. Upload your code, set the start command, and we run it around the clock.</p>
         <div class="cta">
-          <a href="{% if logged_in %}/{% else %}/register{% endif %}" class="btn btn-primary btn-lg">Deploy your app</a>
+          <a href="{% if logged_in %}/panel{% else %}{{ panel_url('user_register') }}{% endif %}" class="btn btn-primary btn-lg">Deploy your app</a>
           <a href="{{ discord_invite }}" rel="noopener noreferrer" target="_blank" class="btn btn-ghost btn-lg">Join the community</a>
         </div>
       </div>
@@ -82,7 +82,7 @@
         <div class="feature">
           <div class="ic ic-svg"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" width="26" height="26"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg></div>
           <h3>Free, like the rest</h3>
-          <p>The hosting is genuinely free. Running costs are covered by advertising on the public pages — no trial clock, no premium paywall.</p>
+          <p>The hosting is genuinely free. Running costs are covered by advertising on the public pages — no premium paywall. Free accounts stay live with a one-click weekly renewal from your console.</p>
         </div>
         <div class="feature">
           <div class="ic ic-svg"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" width="26" height="26"><path d="m12 15-3-3a22 22 0 0 1 2-3.95A12.88 12.88 0 0 1 22 2c0 2.72-.78 7.5-6 11a22.35 22.35 0 0 1-4 2z"/><path d="M9 12H4s.55-3.03 2-4c1.62-1.08 5 0 5 0"/><path d="M4.5 16.5c-1.5 1.26-2 5-2 5s3.74-.5 5-2c.71-.84.7-2.13-.09-2.91a2.18 2.18 0 0 0-2.91-.09z"/></svg></div>
@@ -113,7 +113,7 @@
     <div class="footer-grid">
       <div class="footer-col footer-about">
         <div class="brand"><img class="brand-logo" src="{{ url_for('static', filename='logo-128.png') }}" alt="ENDHOST" width="40" height="40"><span class="brand-lockup"><strong>ENDHOST</strong></span></div>
-        <p class="footer-blurb">Free managed hosting for Discord bots — Node.js, Python and more runtimes, kept online for you around the clock.</p>
+        <p class="footer-blurb">Free app hosting — run Node.js, Python, Ruby, Go, PHP or Bun around the clock, plus live Minecraft status embeds for Discord.</p>
       </div>
       <div class="footer-col">
         <h4>Product</h4>

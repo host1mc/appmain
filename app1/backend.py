@@ -34,6 +34,7 @@ from werkzeug.exceptions import HTTPException
 from werkzeug.middleware.proxy_fix import ProxyFix
 
 import cf_edge
+import obs
 
 import database as db
 # Two data stores, deliberately: db is the ATP (Oracle) and owns everything with
@@ -2648,6 +2649,7 @@ def init():
     schema exists. Idempotent, so it is safe under gunicorn where the module
     import runs once per worker. Called by serve() (waitress) and
     wsgi_backend.py (gunicorn) alike."""
+    obs.init_sentry("backend")
     internal_auth.get_internal_token()
     db.init_db()
 

@@ -5,8 +5,11 @@ services:
     env_file: .env
     ports:
       # Publish on NODE_PUBLISH_ADDRESS (README documents this); defaults to
-      # 0.0.0.0 when unset so the panel can reach it at the host's address.
-      - "${NODE_PUBLISH_ADDRESS:-0.0.0.0}:${NODE_PORT:-8081}:${NODE_PORT:-8081}"
+      # loopback when unset. This port is full Docker-daemon control behind one
+      # bearer token and performs no per-server ownership check, so it must
+      # never fail open to 0.0.0.0 — widen it explicitly to the panel's private
+      # address when the panel runs on another host.
+      - "${NODE_PUBLISH_ADDRESS:-127.0.0.1}:${NODE_PORT:-8081}:${NODE_PORT:-8081}"
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
       # Bind the data root at the SAME path inside the container as on the host.

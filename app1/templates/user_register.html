@@ -72,7 +72,7 @@
           <p class="note">Code didn't arrive? Check spam, or <a href="{{ url_for('user_register') }}">start again</a>.</p>
         {% else %}
           <h1 class="auth-title">Create your account</h1>
-          <p class="hint">Free — no trial clock.</p>
+          <p class="hint">Free — no paywall. Renew weekly, one click.</p>
 
           {% with msgs = get_flashed_messages(with_categories=true) %}
             {% if msgs %}

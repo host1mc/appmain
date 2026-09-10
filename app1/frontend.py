@@ -42,6 +42,7 @@ from markupsafe import Markup, escape
 import ads_config
 import blog as blog_content
 import cf_edge
+import obs
 import embed_templates as embed_tpl
 import internal_auth
 import creds
@@ -470,16 +471,10 @@ def load_or_create_flask_secret(path):
         return validate(key_file.read())
 
 
-app.secret_key = creds.get("FLASK_SECRET_KEY")
-if not app.secret_key:
-    app.secret_key = os.environ.get("FLASK_SECRET_KEY")
-if not app.secret_key:
-
-
-    _fleet_secret = creds.get("ENCRYPTION_KEY") or os.environ.get("ENCRYPTION_KEY", "")
-    if _fleet_secret:
-        app.secret_key = hashlib.sha256(
-            b"endhost.flask.session.v1|" + _fleet_secret.encode("utf-8")).hexdigest()
+# The public frontend must never hold the master ENCRYPTION_KEY, so it does not
+# derive its session secret from it. Set FLASK_SECRET_KEY fleet-wide (systemd
+# cred or forwarded env) so both instances sign session cookies identically.
+app.secret_key = creds.get("FLASK_SECRET_KEY") or os.environ.get("FLASK_SECRET_KEY")
 if not app.secret_key:
     app.secret_key = load_or_create_flask_secret(_KEY_FILE)
 
@@ -783,6 +778,9 @@ def _security_headers(response):
             response.headers["Access-Control-Max-Age"] = "3600"
     response.headers["X-Content-Type-Options"] = "nosniff"
     response.headers["X-Frame-Options"] = "DENY"
+    response.headers["Permissions-Policy"] = (
+        "geolocation=(), microphone=(), camera=(), payment=(), usb=(), interest-cohort=()"
+    )
 
 
     response.headers["Referrer-Policy"] = "no-referrer"
@@ -2374,7 +2372,7 @@ def _inject_ad_enabled():
             f'<script nonce="{nonce}" '
             f'src="{url_for("static", filename="ads.js")}"></script>\n'
             f'<script nonce="{nonce}" '
-            f'src="{url_for("guard_asset", token=_current_guard_token(), v="17")}" defer></script>\n'
+            f'src="{url_for("guard_asset", token=_current_guard_token(), v="18")}" defer></script>\n'
             f"{push_script}"
         )
 
@@ -2571,6 +2569,7 @@ def _inject_links():
 def init():
 
 
+    obs.init_sentry("frontend")
     internal_auth.get_internal_token()
 
 
