@@ -79,12 +79,12 @@ async function selectUserDetail(){
           <div style="display:flex;justify-content:space-between;align-items:center;width:100%;gap:8px;flex-wrap:wrap">
             <div><strong>${esc(bot.name)}</strong> <span class="badge ${r?'on':'off'}">${r?'RUNNING':'STOPPED'}</span></div>
             <div style="display:flex;gap:6px;flex-wrap:wrap">
-              ${r?`<button class="btn btn-red btn-sm" onclick="botAction('${jsArg(bot.id)}','stop')">Stop</button>`
-                 :`<button class="btn btn-green btn-sm" onclick="botAction('${jsArg(bot.id)}','start')" ${bot.server_ip&&bot.channel_id?'':'disabled title="not configured"'}>Start</button>`}
+              ${r?`<button class="btn btn-red btn-sm" onclick="botAction('${jsArg(USER_ID)}',${bot.slot_index},'stop')">Stop</button>`
+                 :`<button class="btn btn-green btn-sm" onclick="botAction('${jsArg(USER_ID)}',${bot.slot_index},'start')" ${bot.server_ip&&bot.channel_id?'':'disabled title="not configured"'}>Start</button>`}
               <button class="btn btn-ghost btn-sm" id="cfg-btn-${i}" aria-expanded="false" aria-controls="cfg-slot-${i}"
-                      aria-label="Edit configuration for the bot in slot ${i+1}" onclick="toggleBotConfig('${jsArg(bot.id)}',${i})">Edit config</button>
+                      aria-label="Edit configuration for the bot in slot ${i+1}" onclick="toggleBotConfig('${jsArg(USER_ID)}',${bot.slot_index},${i})">Edit config</button>
               <button class="btn btn-ghost btn-sm" aria-label="Delete the bot in slot ${i+1} — destructive and permanent"
-                      onclick="deleteBot('${jsArg(bot.id)}')">Delete</button>
+                      onclick="deleteBot('${jsArg(USER_ID)}',${bot.slot_index})">Delete</button>
             </div>
           </div>
           <div style="font-size:13px;color:var(--muted);margin-top:6px;width:100%">${bot.server_ip?esc(bot.server_ip)+':'+esc(bot.server_port||25565):'not configured'} &middot; Token: ${esc(bot.token_masked||'not set')} &middot; Guild: ${esc(bot.guild_id||'—')} &middot; Channel: ${esc(bot.channel_id||'—')}</div>
@@ -451,8 +451,10 @@ function copyLookup(h){try{navigator.clipboard.writeText(h);toast('Device key co
 function toast(msg,e){const t=$('#toast');if(!t)return;t.textContent=msg;t.className='toast show'+(e?' err':'');setTimeout(()=>{if(t)t.className='toast'},2600)}
 
 function loginAsUser(){api(API+USER_ID+'/login-as',{method:'POST',body:'{}'}).then(r=>{if(r&&r.ok){window.open('/admin/embed?token='+encodeURIComponent(r.token)+'&uid='+encodeURIComponent(USER_ID),'_blank');toast('User session opened in embedded view')}else toast((r&&r.error)||'Error',true)})}
-function botAction(botId,action){api(`/api/admin/bots/${botId}/${action}`,{method:'POST'}).then(r=>{if(r&&r.ok){toast('Bot '+(action==='start'?'started':'stopped'));selectUserDetail()}else toast((r&&r.error)||'Error',true)})}
-function deleteBot(botId){if(!confirm('Delete this bot?'))return;api('/api/admin/bots/'+botId,{method:'DELETE'}).then(r=>{if(r&&r.ok){toast('Bot deleted');selectUserDetail()}else toast((r&&r.error)||'Error',true)})}
+// Bots are keyed by (uid, slot) — there is no global bot id any more.
+function botApiPath(uid,slot){return '/api/admin/bots/'+encodeURIComponent(uid)+'/'+encodeURIComponent(slot)}
+function botAction(uid,slot,action){api(`${botApiPath(uid,slot)}/${action}`,{method:'POST'}).then(r=>{if(r&&r.ok){toast('Bot '+(action==='start'?'started':'stopped'));selectUserDetail()}else toast((r&&r.error)||'Error',true)})}
+function deleteBot(uid,slot){if(!confirm('Delete this bot?'))return;api(botApiPath(uid,slot),{method:'DELETE'}).then(r=>{if(r&&r.ok){toast('Bot deleted');selectUserDetail()}else toast((r&&r.error)||'Error',true)})}
 function setAccountType(type){api(API+USER_ID+'/account-type',{method:'PUT',body:JSON.stringify({account_type:type})}).then(r=>{if(r&&r.ok){toast('Type changed to '+type);selectUserDetail()}else toast((r&&r.error)||'Error',true)})}
 function banUser(){if(!confirm('Ban this user?'))return;api(API+USER_ID+'/ban',{method:'POST'}).then(r=>{if(r&&r.ok){toast('User banned');selectUserDetail()}else toast((r&&r.error)||'Error',true)})}
 function unbanUser(){if(!confirm('Unban this user?'))return;api(API+USER_ID+'/unban',{method:'POST'}).then(r=>{if(r&&r.ok){toast('User unbanned');selectUserDetail()}else toast((r&&r.error)||'Error',true)})}
@@ -530,7 +532,7 @@ const CFG_FIELDS = {
 };
 const CFG_NUM = {server_port: 'Port', update_interval: 'Update interval'};
 
-async function toggleBotConfig(botId, idx){
+async function toggleBotConfig(uid, slot, idx){
   const host = document.getElementById('cfg-slot-'+idx);
   const btn = document.getElementById('cfg-btn-'+idx);
   if(!host) return;
@@ -543,12 +545,12 @@ async function toggleBotConfig(botId, idx){
   host.hidden = false;
   host.textContent = 'Loading configuration…';
   if(btn) btn.setAttribute('aria-expanded','true');
-  const r = await api('/api/admin/bots/'+encodeURIComponent(botId)+'/config');
+  const r = await api(botApiPath(uid, slot)+'/config');
   if(!r || !r.ok){ host.textContent = (r && r.error) || 'Failed to load configuration'; return; }
   const b = r.bot || {};
   const s = v => (v == null ? '' : String(v));
   // remember what the server sent so the PUT can carry only real edits
-  BOT_CFG[idx] = {id: botId, orig: {
+  BOT_CFG[idx] = {uid: uid, slot: slot, orig: {
     name: s(b.name), server_ip: s(b.server_ip), server_port: s(b.server_port),
     edition: s(b.edition) || 'java', update_interval: s(b.update_interval),
     guild_id: s(b.guild_id), channel_id: s(b.channel_id)
@@ -580,7 +582,7 @@ async function toggleBotConfig(botId, idx){
     </div>
     <div class="row-actions">
       <button class="btn btn-primary btn-sm" onclick="saveBotConfig(${idx})">Save Config</button>
-      <button class="btn btn-ghost btn-sm" onclick="toggleBotConfig('${jsArg(botId)}',${idx})">Cancel</button>
+      <button class="btn btn-ghost btn-sm" onclick="toggleBotConfig('${jsArg(uid)}',${slot},${idx})">Cancel</button>
     </div>
     <p class="note" style="text-align:left">Owner @${esc(b.owner_username || b.username || '—')} &middot; slot #${(Number(b.slot_index)||0)+1} &middot; only the fields you change are sent.</p>`;
   const first = host.querySelector('input');
@@ -606,7 +608,7 @@ async function saveBotConfig(idx){
   const token = tokenEl ? tokenEl.value : '';
   if(token) body.token = token;          // omitted entirely when left blank
   if(Object.keys(body).length === 0){ toast('Nothing changed'); return; }
-  const r = await api('/api/admin/bots/'+encodeURIComponent(st.id)+'/config',
+  const r = await api(botApiPath(st.uid, st.slot)+'/config',
                       {method:'PUT', body:JSON.stringify(body)});
   if(tokenEl) tokenEl.value = '';
   if(r && r.ok){

@@ -55,10 +55,10 @@ The panel has no sign-in of its own. A visitor logs in on the main Flask site at
 `/user/login`, which mints a server-side session and drops its raw id (a
 `uuid4().hex`) in the `session` cookie; because `/panel` is served from the same
 host, that cookie reaches the panel too. Every panel request resolves it through
-the backend tier's internal `GET /api/session/<sid>` and mirrors the identity into
-the panel's own `panel_users` table, keyed by **the main site's own user id** —
-stored verbatim, so `panel_servers.user_id` and `panel_activity.user_id` point at
-a value that site already owns (`ensure_user_by_id`). The username is only
+the backend tier's internal `GET /api/session/<sid>` and resolves the identity
+against the main site's own `users` table — the panel keeps no account table of
+its own, and every container row in the consolidated `servers` table links back
+through `uid`, a value that site already owns (`ensure_user_by_id`). The username is only
 carried along for display: the main site keeps it encrypted at rest, so it is not
 a stable key to mirror on. Every call into the backend is a read — the panel can
 neither create, extend nor destroy a session — and sign-out is handed back to the
@@ -96,7 +96,7 @@ one owner — there is no cross-tenant method left in this tier.
 
 | `PANEL_STORE` | Backend | Use |
 | --- | --- | --- |
-| `oracle` | `panel_users`, `panel_servers`, `panel_activity` in the shared Oracle schema, on the app's existing async engine and pool | Deployed. Both LB instances see the same rows. |
+| `oracle` | The shared Oracle schema's `users` table and the consolidated `servers` table, on the app's existing async engine and pool | Deployed. Both LB instances see the same rows. |
 | `sqlite` | Per-instance `panel.db` file | Laptop smoke test only. |
 
 Unset, it follows the host app: `oracle` when `ORACLE_ENABLED=true`, else
@@ -105,37 +105,22 @@ Unset, it follows the host app: `oracle` when `ORACLE_ENABLED=true`, else
 site's — and now decides nothing but whether the panel's own password paths
 answer at all.
 
-The three tables are declared on the panel's own `Base`
-(`panel_app/oracle_models.py`), and `panel_app/database.py::ensure_schema` — which
-the panel tier's lifespan calls at startup — creates any that are missing and
-ALTERs a model column an existing table predates into place. **Nothing here runs
-hand-written DDL beyond that additive set**: a model column with no entry in
-`_ADDITIVE_COLUMNS` is reported as a startup warning, not invented, and anything
-that would retype or constrain an existing column is still a script in
-`fastapi-oracle-app/migrations/`. On a schema that already matches the models,
-startup issues no DDL at all.
+**The panel owns no tables of its own.** The old `panel_users`,
+`panel_servers` and `panel_activity` tables are gone: accounts are rows in the
+main `users` table (panel sign-in reuses the main site's password hash), every
+container is a row in the consolidated `servers` table keyed by `uid`, and the
+activity log was removed outright. All of that consolidation — copying rows
+across and dropping the old tables — runs inside the host app's
+`database.init_db()`, so this tier issues no DDL at all: `ensure_schema()` in
+`panel_app/database.py` is a no-op heal hook kept for OracleStore's ORA-00904
+retry path, and `oracle_models.py` declares only the `Server` mapping over the
+`servers` table. There are no panel migrations any more; the old
+`fastapi-oracle-app/migrations/` scripts were retired with the tables they
+patched.
 
-**On a deployment that already has these tables, re-key them before this code
-ships.** `panel_users.id` was an integer identity and the two `user_id` columns
-that reference it were the matching `NUMBER`; all three are now `VARCHAR2(36)`
-holding the main site's UUID. (`panel_activity.id` is unchanged — still an integer
-identity surrogate.) Because `create_all` is check-first it will not alter a table
-that exists, so the columns have to be migrated by hand and no script for it ships
-here. The order is not a preference: the new code binds a UUID string against
-those columns, and against a `NUMBER` column Oracle answers ORA-01722 (invalid
-number) on the first query, while the old code cannot read the migrated schema
-either. No version works against both, so the migration runs first, with the
-panel tier stopped — nothing gates the mount, so no switch can hold it off.
-
-Two Oracle-specific differences from the SQLite spelling, both in
-`oracle_models.py`: `username`'s case-insensitive uniqueness is a function-based
-unique index on `lower(username)` (Oracle has no per-column `COLLATE NOCASE`, so
-every lookup compares `lower(username)` to match it), and because Oracle stores
-`''` as `NULL`, an empty `activity.detail` is normalised to `None` on write.
-
-`panel_activity.server_id` is deliberately **not** a foreign key: the audit trail
-has to outlive the server it describes, so deleting a server must not cascade its
-history away.
+The SQLite store keeps its own tiny `users` / `servers` tables in `panel.db`
+purely so the smoke test can run without an Oracle connection; deployed
+instances always run the `oracle` store.
 
 ## Multi-instance
 

@@ -998,11 +998,16 @@ def _owns(user_id):
 
 
 def _own_bot(bot_id):
-    """Fetch a bot only if the session's user owns it, else None."""
-    bot = db.get_bot(bot_id)
-    if not bot or bot.get("uid") != g.current_user_id:
+    """Fetch a bot only if the session's user owns it, else None.
+
+    Bots are keyed by (uid, slot) in HeatWave, and bot_id here is the caller's
+    slot index — so looking the row up under the session's own uid *is* the
+    ownership check.
+    """
+    try:
+        return reviews_db.get_bot(g.current_user_id, bot_id)
+    except Exception:
         return None
-    return bot
 
 
 @app.route("/api/internal/probe", methods=["GET"])
@@ -1837,7 +1842,7 @@ def api_user_get_fingerprint(user_id):
 def api_user_bots(user_id):
     if not _owns(user_id):
         return ec.err(ec.NOT_AUTHORIZED, "Not authorized", 403)
-    bots = db.get_user_bots(user_id)
+    bots = reviews_db.get_user_bots(user_id)
     for b in bots:
         b.pop("token", None)
         b.pop("token_enc", None)
@@ -2089,7 +2094,7 @@ def api_user_list_bots():
             db.ensure_bot_slots(g.current_user_id, int(user.get("slots") or 0))
         except Exception:
             pass  # A reconciliation failure must never block the page
-    bots = db.get_user_bots(g.current_user_id)
+    bots = reviews_db.get_user_bots(g.current_user_id)
     for b in bots:
         b.pop("token", None)
         b.pop("token_enc", None)
@@ -2113,7 +2118,7 @@ def api_get_bot_config(bot_id):
         bot.pop("webhook_url", None)
         # Which credential the engine posts through. HeatWave being down reads as
         # (0, 0), which the page renders as "no explicit choice".
-        bot["delivery"] = reviews_db.get_bot_delivery(bot_id)
+        bot["delivery"] = reviews_db.get_bot_delivery(g.current_user_id, bot_id)
         return jsonify({"ok": True, "bot": bot})
     except db.OraclePoolExhausted:
         raise
@@ -2140,9 +2145,9 @@ def api_save_bot_config(bot_id):
         ip_reply = data.get("ip_reply")
         if ip_reply is not None:
             ip_reply = _clean_ip_reply(ip_reply)
-        db.save_bot_config(
+        reviews_db.save_bot_config(
+            g.current_user_id,
             bot_id,
-            user_id=g.current_user_id,
             name=data.get("name"),
             server_ip=data.get("server_ip"),
             server_port=data.get("server_port"),
@@ -2195,7 +2200,8 @@ def api_set_bot_delivery(bot_id):
             return ec.err(ec.BAD_REQUEST,
                           "Save a bot token before switching to bot-token mode.", 400)
         saved = reviews_db.set_bot_delivery(
-            bot_id, use_token=(mode == "token"), use_webhook=(mode == "webhook"))
+            g.current_user_id, bot_id,
+            use_token=(mode == "token"), use_webhook=(mode == "webhook"))
         if not saved:
             # HeatWave unconfigured or unreachable. Nothing is lost — the engine
             # falls back to webhook-wins — but the owner must not be told their
@@ -2240,7 +2246,7 @@ def api_user_start_bot(bot_id):
         return ec.err(ec.BOT_NOT_FOUND, "Bot not found", 404)
     if db.is_trial_expired(g.current_user_id):
         return ec.err(ec.TRIAL_EXPIRED, "Trial expired — cannot start bot. Contact support.", 403)
-    payload, code = engine_client.start_bot(bot_id)
+    payload, code = engine_client.start_bot(g.current_user_id, bot_id)
     return jsonify(payload), code
 
 
@@ -2249,7 +2255,7 @@ def api_user_start_bot(bot_id):
 def api_user_stop_bot(bot_id):
     if not _own_bot(bot_id):
         return ec.err(ec.BOT_NOT_FOUND, "Bot not found", 404)
-    payload, code = engine_client.stop_bot(bot_id)
+    payload, code = engine_client.stop_bot(g.current_user_id, bot_id)
     return jsonify(payload), code
 
 
@@ -2259,7 +2265,7 @@ def api_user_stop_bot(bot_id):
 def api_user_generate(bot_id):
     if not _own_bot(bot_id):
         return ec.err(ec.BOT_NOT_FOUND, "Bot not found", 404)
-    payload, code = engine_client.generate(bot_id)
+    payload, code = engine_client.generate(g.current_user_id, bot_id)
     return jsonify(payload), code
 
 
@@ -2291,7 +2297,7 @@ def api_user_bot_status(bot_id):
 def api_user_discord_assets(bot_id):
     if not _own_bot(bot_id):
         return ec.err(ec.BOT_NOT_FOUND, "Bot not found", 404)
-    payload, code = engine_client.assets(bot_id)
+    payload, code = engine_client.assets(g.current_user_id, bot_id)
     return jsonify(payload), code
 
 
@@ -2505,20 +2511,6 @@ def api_panel_store_server_delete():
     return jsonify({"ok": True, "changed": bool(changed)})
 
 
-@app.route("/api/panel-store/server/startup", methods=["POST"])
-@api_internal_required
-@limiter.limit("20000 per minute")
-@_panel_store_errors
-def api_panel_store_server_startup():
-    data = _json_object()
-    changed = panel_data.update_server_startup(
-        _panel_text_field(data, "server_id"),
-        _panel_text_field(data, "user_id"),
-        _panel_text_field(data, "startup"),
-    )
-    return jsonify({"ok": True, "changed": bool(changed)})
-
-
 @app.route("/api/panel-store/server/name", methods=["POST"])
 @api_internal_required
 @limiter.limit("20000 per minute")
@@ -2529,22 +2521,6 @@ def api_panel_store_server_name():
         _panel_text_field(data, "server_id"),
         _panel_text_field(data, "user_id"),
         _panel_text_field(data, "name"),
-    )
-    return jsonify({"ok": True, "changed": bool(changed)})
-
-
-@app.route("/api/panel-store/server/version", methods=["POST"])
-@api_internal_required
-@limiter.limit("20000 per minute")
-@_panel_store_errors
-def api_panel_store_server_version():
-    data = _json_object()
-    changed = panel_data.update_server_version(
-        _panel_text_field(data, "server_id"),
-        _panel_text_field(data, "user_id"),
-        _panel_text_field(data, "runtime"),
-        _panel_text_field(data, "version"),
-        _panel_text_field(data, "image") or None,
     )
     return jsonify({"ok": True, "changed": bool(changed)})
 
@@ -2561,35 +2537,6 @@ def api_panel_store_server_state():
         _db_truthy(data.get("running")),
     )
     return jsonify({"ok": True, "changed": bool(changed)})
-
-
-@app.route("/api/panel-store/activity/log", methods=["POST"])
-@api_internal_required
-@limiter.limit("20000 per minute")
-@_panel_store_errors
-def api_panel_store_activity_log():
-    data = _json_object()
-    panel_data.log_activity(
-        _panel_text_field(data, "user_id"),
-        _panel_text_field(data, "action"),
-        _panel_text_field(data, "server_id") or None,
-        _panel_text_field(data, "detail") or None,
-    )
-    return jsonify({"ok": True})
-
-
-@app.route("/api/panel-store/activity/list", methods=["POST"])
-@api_internal_required
-@limiter.limit("20000 per minute")
-@_panel_store_errors
-def api_panel_store_activity_list():
-    data = _json_object()
-    try:
-        limit = int(data.get("limit") or 200)
-    except (TypeError, ValueError):
-        limit = 200
-    activity = panel_data.list_activity(_panel_text_field(data, "user_id"), limit)
-    return jsonify({"ok": True, "activity": activity})
 
 
 def _panel_store_settings():

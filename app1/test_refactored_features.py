@@ -11,6 +11,7 @@ import sqlite3
 import sys
 import types
 import tempfile
+from datetime import datetime, timedelta, timezone
 from unittest.mock import MagicMock
 
 # Set mock env so database.py can import
@@ -101,18 +102,19 @@ class MySQLCursorWrapper:
 
 
 def test_atp_user_schema_and_encryption():
-    print("Testing ATP User Schema & Encryption...")
+    print("Testing User Schema & Encryption...")
 
-    # Create SQLite in-memory database matching users table schema
+    # SQLite fixture shaped exactly like the post-surgery Oracle users table:
+    # "uid" is the only identifier, and the Discord/webhook tokens are gone
+    # from this table entirely (they live encrypted in the HeatWave bots rows).
     sqlite_conn = sqlite3.connect(":memory:")
     sqlite_conn.row_factory = sqlite3.Row
     cur = sqlite_conn.cursor()
 
     cur.execute("""
         CREATE TABLE users (
-            id VARCHAR(36) PRIMARY KEY,
-            user_id VARCHAR(36),
-            username VARCHAR(255) NOT NULL,
+            "uid" VARCHAR(10) PRIMARY KEY,
+            username VARCHAR(255) UNIQUE NOT NULL,
             username_lookup_hash VARCHAR(64) UNIQUE,
             username_ci_lookup_hash VARCHAR(64),
             email VARCHAR(255),
@@ -120,54 +122,25 @@ def test_atp_user_schema_and_encryption():
             password VARCHAR(255),
             display_name VARCHAR(255),
             slots VARCHAR(10) DEFAULT '1',
-            tier VARCHAR(32) DEFAULT 'trial',
-            account_type VARCHAR(32) DEFAULT 'trial',
+            container_slots VARCHAR(10) DEFAULT '1',
+            email_verified VARCHAR(5) DEFAULT '0',
+            github_verified VARCHAR(5) DEFAULT '0',
+            account_type VARCHAR(20) DEFAULT 'trial',
+            trial_expires_at VARCHAR(50),
             is_active INTEGER DEFAULT 1,
-            is_banned INTEGER DEFAULT 0,
+            created_at VARCHAR(50) NOT NULL,
+            last_login VARCHAR(50),
             ads_disabled INTEGER DEFAULT 0,
-            email_verified INTEGER DEFAULT 0,
-            trial_ends_at VARCHAR(32),
-            trial_expires_at VARCHAR(32),
-            created_at VARCHAR(32),
-            ban_reason VARCHAR(1000),
-            unbanned_at VARCHAR(32),
-            unban_reason VARCHAR(1000),
-            embed_slots INTEGER DEFAULT 1,
-            container_slots INTEGER DEFAULT 1,
-            discord_bot_token TEXT,
-            webhook_token TEXT,
-            fingerprint_ip TEXT
+            is_banned INTEGER DEFAULT 0,
+            banned_reason VARCHAR(2000),
+            fingerprint_ip VARCHAR(500),
+            verified_at VARCHAR(50),
+            last_active_at VARCHAR(50),
+            bot_stopped_at VARCHAR(50),
+            banned_at VARCHAR(50),
+            banned_purged_at VARCHAR(50)
         )
     """)
-    cur.execute("""
-        CREATE TABLE bots (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            user_id VARCHAR(36),
-            slot_index INTEGER DEFAULT 0,
-            name VARCHAR(255),
-            server_ip VARCHAR(255),
-            server_port INTEGER,
-            edition VARCHAR(32),
-            token VARCHAR(255),
-            token_enc TEXT,
-            guild_id VARCHAR(64),
-            channel_id VARCHAR(64),
-            webhook_url VARCHAR(512),
-            update_interval INTEGER DEFAULT 60,
-            running INTEGER DEFAULT 0,
-            last_run VARCHAR(32),
-            last_error TEXT,
-            last_status TEXT,
-            embed_json TEXT,
-            ip_reply_json TEXT,
-            created_at VARCHAR(32)
-        )
-    """)
-    cur.execute("CREATE TABLE sessions (id VARCHAR(64) PRIMARY KEY, user_id VARCHAR(36), data TEXT, created_at VARCHAR(32))")
-    cur.execute("CREATE TABLE fingerprints (id INTEGER PRIMARY KEY AUTOINCREMENT, user_id VARCHAR(36), fingerprint VARCHAR(255))")
-    cur.execute("CREATE TABLE device_events (id INTEGER PRIMARY KEY AUTOINCREMENT, user_id VARCHAR(36))")
-    cur.execute("CREATE TABLE user_ad_zone_overrides (id INTEGER PRIMARY KEY AUTOINCREMENT, user_id VARCHAR(36))")
-    cur.execute("CREATE TABLE user_ad_disabled (id INTEGER PRIMARY KEY AUTOINCREMENT, user_id VARCHAR(36))")
     sqlite_conn.commit()
 
     # Mock db._oracle_conn to return sqlite_conn wrapper
@@ -191,42 +164,40 @@ def test_atp_user_schema_and_encryption():
 
     user = db.get_user(user_id)
     assert user is not None, "get_user returned None"
-    assert user["id"] == user["user_id"], f"id ({user['id']}) != user_id ({user['user_id']})"
+    assert user["uid"] == user_id, f"uid mismatch: {user['uid']} != {user_id}"
+    assert user["username"] == username, f"Decrypted username mismatch: {user.get('username')}"
 
-    # Test token update
-    bot_token = "bot_token_secret_123"
-    webhook = "https://discord.com/api/webhooks/123/xyz"
-    db.update_user_atp_tokens(user_id, discord_bot_token=bot_token, webhook_token=webhook)
+    # The users row no longer carries Discord secrets — those moved to the
+    # HeatWave bots table (covered by the bot-store test below).
+    assert "discord_bot_token" not in user, "users row still exposes discord_bot_token"
+    assert "webhook_token" not in user, "users row still exposes webhook_token"
+    assert "inactive_warned_at" not in user, "users row still exposes inactive_warned_at"
+    cols = {r[1] for r in cur.execute("PRAGMA table_info(users)").fetchall()}
+    for dropped in ("discord_bot_token", "webhook_token", "inactive_warned_at"):
+        assert dropped not in cols, f"users table still has column {dropped}"
 
     # Test fingerprint_ip update
     fp_ip = "hash_fp_123_192.168.1.1"
-    db.update_user_atp_fingerprint_ip(user_id, fp_ip)
+    db.update_user_atp_fingerprint_ip(user_id, fingerprint=fp_ip)
 
     # Test slots update
     db.update_user_atp_slots(user_id, embed_slots=5, container_slots=3)
 
     # Retrieve user and verify decrypted values
     updated_user = db.get_user(user_id)
-    assert updated_user["discord_bot_token"] == bot_token, f"Decrypted bot_token mismatch: {updated_user.get('discord_bot_token')}"
-    assert updated_user["webhook_token"] == webhook, f"Decrypted webhook mismatch: {updated_user.get('webhook_token')}"
     assert updated_user["fingerprint_ip"] == fp_ip, f"Decrypted fingerprint_ip mismatch: {updated_user.get('fingerprint_ip')}"
     assert updated_user["embed_slots"] == 5
     assert updated_user["container_slots"] == 3
 
     # Check raw ciphertext in database
-    cur.execute("SELECT discord_bot_token, webhook_token, fingerprint_ip FROM users WHERE id = ?", (user_id,))
+    cur.execute('SELECT fingerprint_ip FROM users WHERE "uid" = ?', (user_id,))
     row = cur.fetchone()
-    assert row[0] != bot_token, "bot_token is stored in plaintext!"
-    assert row[1] != webhook, "webhook_token is stored in plaintext!"
-    assert row[2] != fp_ip, "fingerprint_ip is stored in plaintext!"
+    assert row[0] != fp_ip, "fingerprint_ip is stored in plaintext!"
 
-    # Clean up user
-    try:
-        db.delete_user(user_id)
-    except Exception:
-        pass
+    # In-memory fixture is discarded with the connection — the account row
+    # needs no explicit purge here.
     sqlite_conn.close()
-    print("  ✓ ATP User Schema & Encryption verified!")
+    print("  ✓ User Schema & Encryption verified!")
 
 
 def test_heatwave_reviews_embed_json_and_errors():
@@ -240,7 +211,7 @@ def test_heatwave_reviews_embed_json_and_errors():
     cur.execute("""
         CREATE TABLE reviews (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
-            user_id VARCHAR(64) NOT NULL,
+            uid VARCHAR(10) NOT NULL,
             author_name VARCHAR(100) NOT NULL,
             rating INTEGER NOT NULL,
             body TEXT NOT NULL,
@@ -260,6 +231,7 @@ def test_heatwave_reviews_embed_json_and_errors():
             module VARCHAR(100) DEFAULT 'app',
             flag_reason VARCHAR(255),
             flagged INTEGER DEFAULT 1,
+            occurrences INTEGER DEFAULT 1,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
     """)
@@ -277,13 +249,13 @@ def test_heatwave_reviews_embed_json_and_errors():
         "description": "This bot status page is amazing!",
         "color": "#7289da"
     }
-    user_id = "test_rev_user_123"
+    user_id = "test_rev_1"
     author_name = "Reviewer One"
     rating = 5
     body = "Great service and super fast setup!"
 
     ok = reviews_db.create_review(
-        user_id=user_id,
+        uid=user_id,
         author_name=author_name,
         rating=rating,
         body=body,
@@ -294,7 +266,7 @@ def test_heatwave_reviews_embed_json_and_errors():
     all_revs = reviews_db.get_reviews(state="all")
     found = None
     for r in all_revs:
-        if r.get("user_id") == user_id:
+        if r.get("uid") == user_id:
             found = r
             break
 
@@ -304,7 +276,7 @@ def test_heatwave_reviews_embed_json_and_errors():
 
     # Test 1 review per user limit (updating existing user review)
     ok_update = reviews_db.create_review(
-        user_id=user_id,
+        uid=user_id,
         author_name=author_name,
         rating=4,
         body="Updated review text",
@@ -478,9 +450,13 @@ def test_is_admin_removal():
     assert "is_admin" not in inspect.signature(bstore.BackendStore.ensure_user_by_id).parameters
     assert "is_admin" not in inspect.signature(bstore.BackendStore.create_user).parameters
 
-    # Verify PanelUser model has no is_admin attribute
-    from panel_app.oracle_models import PanelUser
-    assert not hasattr(PanelUser, "is_admin")
+    # The panel tier owns no tables of its own any more: oracle_models keeps
+    # only the Server mapping over the consolidated servers table, so the old
+    # PanelUser model must be gone rather than merely is_admin-free.
+    import panel_app.oracle_models as om
+    assert not hasattr(om, "PanelUser"), "PanelUser model still exists"
+    assert hasattr(om, "Server"), "Server mapping over the servers table is missing"
+    assert not hasattr(om.Server, "is_admin")
 
     print("  ✓ Complete Removal of is_admin verified!")
 
@@ -501,6 +477,7 @@ def test_repeat_registration_flagging():
             module VARCHAR(100) DEFAULT 'app',
             flag_reason VARCHAR(255),
             flagged INTEGER DEFAULT 1,
+            occurrences INTEGER DEFAULT 1,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
     """)
@@ -587,70 +564,85 @@ def test_argon2_otp_and_email_templates():
 
 
 def test_engine_webhook_interval_scheduling():
-    print("Testing Engine Webhook & Recurring Interval Scheduling...")
-    import engine
-    from datetime import datetime, timedelta, timezone
+    print("Testing Engine Webhook & Recurring Interval Scheduling (HeatWave bots)...")
 
+    # The bots table lives in HeatWave now, keyed by (uid, slot_index) with no
+    # synthetic id. Same SQLite shim the reviews test uses above.
     sqlite_conn = sqlite3.connect(":memory:")
     sqlite_conn.row_factory = sqlite3.Row
     cur = sqlite_conn.cursor()
+
     cur.execute("""
         CREATE TABLE bots (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            user_id VARCHAR(36),
-            name VARCHAR(255),
-            server_ip VARCHAR(255),
+            uid VARCHAR(10) NOT NULL,
+            slot_index INTEGER NOT NULL DEFAULT 0,
+            name VARCHAR(500),
+            server_ip VARCHAR(500),
             server_port INTEGER DEFAULT 25565,
-            edition VARCHAR(32) DEFAULT 'java',
-            token_enc VARCHAR(500),
-            guild_id VARCHAR(255),
-            channel_id VARCHAR(255),
-            webhook_url VARCHAR(500),
+            edition VARCHAR(20) DEFAULT 'java',
+            token_enc VARCHAR(1000),
+            guild_id VARCHAR(500),
+            channel_id VARCHAR(500),
+            message_id VARCHAR(100),
+            embed_json TEXT,
+            ip_reply_json TEXT,
+            webhook_url VARCHAR(1000),
             update_interval INTEGER DEFAULT 60,
-            message_id VARCHAR(255),
-            embed_json VARCHAR(4000),
-            ip_reply_json VARCHAR(4000),
             running INTEGER DEFAULT 0,
-            last_run VARCHAR(64),
-            last_status VARCHAR(4000),
-            last_error VARCHAR(4000),
-            updated_at VARCHAR(64)
+            last_run VARCHAR(50),
+            last_status TEXT,
+            last_error VARCHAR(500),
+            created_at VARCHAR(50) NOT NULL,
+            updated_at VARCHAR(50),
+            PRIMARY KEY (uid, slot_index)
         )
     """)
     sqlite_conn.commit()
 
-    db._oracle_conn = lambda: SQLiteWrapper(sqlite_conn)
+    reviews_db._ENABLED = True
+    reviews_db._SCHEMA_READY = True
+    mock_pool = MagicMock()
+    mock_pool.get_connection.side_effect = lambda: SQLiteWrapper(sqlite_conn)
+    reviews_db._pool = lambda: mock_pool
 
     # Insert a test bot with webhook URL and update_interval = 30s
+    uid, slot = "u-test", 0
     webhook_url = "https://discord.com/api/webhooks/123456/test_token"
     cur.execute("""
-        INSERT INTO bots(user_id, server_ip, webhook_url, update_interval, running)
-        VALUES('u-test', 'play.example.com', ?, 30, 0)
-    """, (db.encrypt(webhook_url),))
+        INSERT INTO bots(uid, slot_index, server_ip, webhook_url, update_interval, running, created_at)
+        VALUES(?, ?, 'play.example.com', ?, 30, 0, '2026-01-01T00:00:00+00:00')
+    """, (uid, slot, crypto_util.encrypt(webhook_url)))
     sqlite_conn.commit()
-    bot_id = cur.lastrowid
 
     # Test initial claim when last_run is NULL
-    ok_first_claim = db.claim_bot_tick(bot_id, 30)
+    ok_first_claim = reviews_db.claim_bot_tick(uid, slot, 30)
     assert ok_first_claim, "Initial claim_bot_tick failed for new bot"
 
     # Immediately subsequent claim_bot_tick should be refused (interval not elapsed)
-    ok_immediate_claim = db.claim_bot_tick(bot_id, 30)
+    ok_immediate_claim = reviews_db.claim_bot_tick(uid, slot, 30)
     assert not ok_immediate_claim, "claim_bot_tick should refuse immediate re-claim before interval"
 
     # Verify that when interval (30s) elapses, claim_bot_tick succeeds
-    now_dt = db._shared_utcnow()
-    past_dt = now_dt - timedelta(seconds=35)
-    cur.execute("UPDATE bots SET last_run=? WHERE id=?", (past_dt.isoformat(), bot_id))
+    past_iso = (datetime.now(timezone.utc) - timedelta(seconds=35)).isoformat()
+    cur.execute("UPDATE bots SET last_run=? WHERE uid=? AND slot_index=?", (past_iso, uid, slot))
     sqlite_conn.commit()
 
-    ok_elapsed_claim = db.claim_bot_tick(bot_id, 30)
+    ok_elapsed_claim = reviews_db.claim_bot_tick(uid, slot, 30)
     assert ok_elapsed_claim, "claim_bot_tick failed after interval elapsed"
 
-    # Verify set_bot_running works and list_running_bots returns active bot
-    db.set_bot_running(bot_id, True)
-    running_bots = db.list_running_bots()
-    assert any(b["id"] == bot_id for b in running_bots), "Bot was not returned in list_running_bots when running=1"
+    # Verify set_bot_running works and list_running_bots returns the bot by
+    # (uid, slot), with the webhook decrypted and never in plaintext on the row.
+    assert reviews_db.set_bot_running(uid, slot, True), "set_bot_running failed"
+    running_bots = reviews_db.list_running_bots()
+    match = [b for b in running_bots if b.get("uid") == uid and b.get("slot_index") == slot]
+    assert len(match) == 1, "Bot was not returned in list_running_bots when running=1"
+    assert match[0].get("webhook_url") == webhook_url, "webhook_url did not round-trip decrypted"
+    raw = cur.execute("SELECT webhook_url FROM bots WHERE uid=? AND slot_index=?", (uid, slot)).fetchone()
+    assert raw[0] != webhook_url, "webhook_url is stored in plaintext!"
+
+    # Stopping flips the flag back and drops the bot out of the engine read.
+    assert reviews_db.set_bot_running(uid, slot, False), "set_bot_running(False) failed"
+    assert reviews_db.list_running_bots() == [], "list_running_bots still returns a stopped bot"
 
     sqlite_conn.close()
     print("  ✓ Engine Webhook & Recurring Interval Scheduling verified!")

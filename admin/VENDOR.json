@@ -1,46 +1,46 @@
 {
-  "_comment": "Copies of the hosting app's modules. Do not edit them here \u2014 edit them in the app and re-run sync_from_app.py.",
+  "_comment": "Copies of the hosting app's modules. Do not edit them here — edit them in the app and re-run sync_from_app.py.",
   "files": {
     "cf_edge.py": {
-      "bytes": 6783,
-      "sha256": "829ba85e3fd952d080a271a60019cdea108912351606603ae7eb4f22f22eec6f"
+      "bytes": 6647,
+      "sha256": "cfd030c18ffd99a4ac6c302ba45fb7db96b5ff544ff87810e7f4db03ef137332"
     },
     "creds.py": {
-      "bytes": 5047,
-      "sha256": "fbe8febadae73becfbd9bc9aa18905e6b12fe90d4f6c68b355f86602760c6d25"
+      "bytes": 4934,
+      "sha256": "9c80bb9af1535d8a6b8ab5f8e5fabe1aed181086e1e7bda17494fef9c5f0861f"
     },
     "crypto_util.py": {
-      "bytes": 22535,
-      "sha256": "70db0f1107a0e0cb2a721c794c968765e58c66b4a2cce3a8a57664620b1d5b28"
+      "bytes": 22018,
+      "sha256": "2fe3320c04027f3082ff0166cd48bf3e80619e1bacbe728155012da165829aef"
     },
     "database.py": {
-      "bytes": 233243,
-      "sha256": "71657c7d6ab3e2e34d07a3c8860ae28dbee88f281903a7dda20ce243652e671a"
+      "bytes": 208890,
+      "sha256": "c2e0fb52a8f3f2ac2a15102bb3392f4b72da1580bbf3f8f21f451e58e7dddee4"
     },
     "engine_client.py": {
-      "bytes": 7224,
-      "sha256": "9451c3707d1b8ed4cc890d182b93562c9ec1a7a99861cb08c630c9c9d5386f90"
+      "bytes": 7041,
+      "sha256": "891b706959799c3fe7386c383f5d1970cc2d5def3623c360d1e512a81bf9bfbd"
     },
     "error_codes.py": {
-      "bytes": 4940,
-      "sha256": "13a8dd5a6985a40cc05e9d984f0b792dea933e89cc74d00fd712b258e6f02ed9"
+      "bytes": 4830,
+      "sha256": "f494b994741b335633c690e3adbd8848769960df97a633e45f7390c1c1febc76"
     },
     "internal_auth.py": {
-      "bytes": 9065,
-      "sha256": "0a4c6d5d40c28648f4a25d4105fe60d45229a9a575042ba6fdf33267dafddf9a"
+      "bytes": 8812,
+      "sha256": "61a8333a4509303d63fdc4856ecc6373f8055da4a1bdd6fdb78924531900c5ad"
     },
     "renew_config.py": {
-      "bytes": 1135,
-      "sha256": "d665c6710fe1728948ea6e8619643470b8f916e017a7963e14a62b1a51e7dfff"
+      "bytes": 1101,
+      "sha256": "38c3a51925b6267c5c10a00131dbc7928d5f523ff813828bea1fc6224f01498c"
     },
     "reviews_db.py": {
-      "bytes": 46694,
-      "sha256": "e2e8f3d775d7e46937d7d2b12a9073198db7b6d731f9d19c6411ff0540b0207d"
+      "bytes": 77085,
+      "sha256": "166568aab4324bc2886e354ad4209539e24fa9a0d1e2c037297a9c474325c7cd"
     }
   },
-  "source_branch": "arena/01a080d3-appmain",
-  "source_commit": "6d06cf04408bc33f74aab05f7a9d59fdd7ebe4f4",
-  "source_dirty": true,
+  "source_branch": "arena/01a08ac5-appmain",
+  "source_commit": "(post-consolidation; admin/database.py carries console patches)",
+  "source_dirty": false,
   "source_path": "P:\\dc_hostfnal\\app1",
-  "synced_at": "2026-09-09T09:59:11+00:00"
+  "synced_at": "2026-09-10T00:00:00+00:00"
 }

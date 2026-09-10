@@ -103,6 +103,7 @@ os.environ["ORACLE_ENABLED"] = "true"
 
 import admin_app  # noqa: E402  (imports _bootstrap, which reads the env above)
 import database as db  # noqa: E402
+import reviews_db  # noqa: E402
 
 FAILED = []
 
@@ -387,8 +388,10 @@ def phase_devices(c, user_id):
           c.delete("/api/admin/device-limits/1").status_code == 404)
 
 
-def phase_ops(c, user_id, bot_id, sids):
+def phase_ops(c, user_id, bot_slot, sids):
     """SMTP, sessions, the fleet page, bot config and the admin's own password."""
+    # Bots are keyed by (uid, slot) — the URL carries both halves.
+    bot_path = f"/api/admin/bots/{user_id}/{bot_slot}"
     r = c.put("/api/admin/smtp-config", json={"host": "smtp.console.test", "port": 587,
                                               "user": "ops@console.test",
                                               "password": "smtp-pw-console",
@@ -437,26 +440,26 @@ def phase_ops(c, user_id, bot_id, sids):
     check("no plaintext bot token reaches the fleet table",
           all("token" not in b for b in d.get("bots", [])), [sorted(b) for b in d.get("bots", [])][:1])
 
-    r = c.get(f"/api/admin/bots/{bot_id}/config")
+    r = c.get(bot_path + "/config")
     d = body(r)
     check("the bot config loads", d.get("ok") is True, d)
     check("it carries no token, only the mask",
           "token" not in d.get("bot", {}) and "token_masked" in d.get("bot", {}), sorted(d.get("bot", {})))
-    r = c.put(f"/api/admin/bots/{bot_id}/config",
+    r = c.put(bot_path + "/config",
               json={"server_ip": "edited.console.test", "server_port": 25570,
                     "edition": "bedrock", "update_interval": 60})
     check("the bot config saves", body(r).get("ok") is True, body(r))
-    b = db.get_bot(bot_id)
+    b = reviews_db.get_bot(user_id, bot_slot)
     check("the edit landed and decrypts",
           b["server_ip"] == "edited.console.test" and b["server_port"] == 25570
           and b["edition"] == "bedrock" and b["update_interval"] == 60, b.get("server_ip"))
     check("a field the request omitted was left alone", b["name"] == "Bot #1", b["name"])
     for bad in ({"server_port": 99999}, {"edition": "pocket"}, {"update_interval": 5},
                 {"embed": "not-an-object"}):
-        r = c.put(f"/api/admin/bots/{bot_id}/config", json=bad)
+        r = c.put(bot_path + "/config", json=bad)
         check(f"config rejects {sorted(bad)[0]}={list(bad.values())[0]}",
               r.status_code == 400, r.status_code)
-    r = c.put(f"/api/admin/bots/{bot_id}/config", json={})
+    r = c.put(bot_path + "/config", json={})
     check("an empty config body is rejected", r.status_code == 400, r.status_code)
 
     r = c.post("/api/admin/db/test")
@@ -610,7 +613,7 @@ def main():
             print(f"could not seed a user: {res}")
             return 1
         user_id = res
-        bot_id = db.get_user_bots(user_id)[0]["id"]
+        bot_slot = reviews_db.get_user_bots(user_id)[0]["slot_index"]
 
         c = admin_app.app.test_client()
         print("\n── auth ──")
@@ -624,7 +627,7 @@ def main():
         print("\n── devices ──")
         phase_devices(c, user_id)
         print("\n── ops ──")
-        phase_ops(c, user_id, bot_id, sids)
+        phase_ops(c, user_id, bot_slot, sids)
         print("\n── account page ──")
         phase_account_page(c)
 

@@ -4,6 +4,7 @@ import _bootstrap  # noqa: F401
 from flask import Blueprint, request, jsonify
 import database as db
 import auth
+import reviews_db
 
 devices_bp = Blueprint("admin_devices", __name__)
 
@@ -74,7 +75,7 @@ def api_flag_context():
             user["is_banned"] = banned
             user["banned_reason"] = ban_reason
             out["user"] = user
-            bots = db.get_user_bots(user_id)
+            bots = reviews_db.get_user_bots(user_id)
             # get_user_bots decrypts every token; only the masked form may leave
             # this process.
             for b in bots:

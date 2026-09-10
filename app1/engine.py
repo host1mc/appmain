@@ -17,13 +17,15 @@ presence.
 
 One engine is still the intended layout, but it is no longer a correctness
 requirement: every scheduled publish first takes a per-interval claim in the
-database (db.claim_bot_tick), so a second engine cannot double-post a bot or
-race over its message_id. It would only waste work — status polls and ticks
-spent losing the claim.
+bots store (reviews_db.claim_bot_tick), so a second engine cannot double-post a
+bot or race over its message_id. It would only waste work — status polls and
+ticks spent losing the claim.
 
-The engine talks to the database directly — it needs decrypted bot tokens and it
-writes runtime state, and it sits in the backend tier. Only the *frontend* is
-barred from touching the database.
+The bots table lives in HeatWave (reviews_db): the engine reads decrypted bot
+tokens from it and writes runtime state back. A HeatWave outage empties the
+tick (no running bots to read), which is the degraded-but-safe shape of every
+other reviews_db caller. Only the *frontend* is barred from touching the
+database.
 
 Every control route is gated on the shared internal token, and both callers are
 our own processes: the backend, which authenticates the user and verifies bot
@@ -53,6 +55,7 @@ import internal_auth
 import internal_peers
 import error_codes as ec
 import node_registry
+import reviews_db
 from mc_status2 import fetch_status, build_embed
 
 ENGINE_PORT = int(os.environ.get("ENGINE_PORT", 8002))
@@ -296,17 +299,15 @@ def _bounded_error(value):
 # _redact_webhook_credentials substitutes webhook tokens and returns str(value)
 # for everything else, so it is not a general-purpose redactor — using it as the
 # user-facing message text published whatever else the exception happened to
-# carry. That matters because every `except Exception` below can catch a database
-# failure and not just a Discord one: db.get_bot, db.force_bot_claim and
-# db.update_bot_runtime all sit inside those try blocks, and database.py's
-# _user_conn() funnels any connect error into _oracle_unavailable(), which raises
-# RuntimeError(f"Oracle unavailable: {reason}") where reason is the raw oracledb
-# message — it quotes the connect descriptor, the service name and the wallet
-# directory. None of that is internal-only either: engine_client._call returns
-# the engine's JSON body untouched and backend.py answers the browser with
-# jsonify(payload), so the engine's `error` string is rendered in the dashboard.
-# Handlers therefore reply with fixed prose and send the real exception here,
-# still webhook-redacted so a webhook token never reaches the log either.
+# carry. That matters because every `except Exception` below can catch a store
+# failure and not just a Discord one: reviews_db.get_bot, force_bot_claim and
+# update_bot_runtime all sit inside those try blocks, and their connect errors
+# quote hostnames, ports and database detail. None of that is internal-only
+# either: engine_client._call returns the engine's JSON body untouched and
+# backend.py answers the browser with jsonify(payload), so the engine's `error`
+# string is rendered in the dashboard. Handlers therefore reply with fixed
+# prose and send the real exception here, still webhook-redacted so a webhook
+# token never reaches the log either.
 def _debug_print(*args, **kwargs):
     try:
         import reviews_db
@@ -497,8 +498,16 @@ def _discord_detail(exc):
         return _redact_webhook_credentials(exc)
 
 
+def _bot_key(bot):
+    """The process-local state key for a bot: its HeatWave identity (uid, slot).
+
+    Bots no longer carry a global id — two users both own a slot 0 — so every
+    in-process cache is keyed on the pair."""
+    return (bot.get("uid"), bot.get("slot_index"))
+
+
 _DELIVERY_TTL = 60
-_delivery_cache = {}  # bot_id -> (unix ts the entry expires at, flags dict)
+_delivery_cache = {}  # (uid, slot) -> (unix ts the entry expires at, flags dict)
 _delivery_lock = threading.Lock()
 
 
@@ -514,10 +523,10 @@ def _use_webhook(bot):
         return False
     if not bot.get("token") or not bot.get("channel_id"):
         return True
-    bot_id = bot.get("id")
+    key = _bot_key(bot)
     now = time.time()
     with _delivery_lock:
-        cached = _delivery_cache.get(bot_id)
+        cached = _delivery_cache.get(key)
         if cached and now < cached[0]:
             flags = cached[1]
         else:
@@ -525,12 +534,12 @@ def _use_webhook(bot):
     if flags is None:
         try:
             import reviews_db
-            flags = reviews_db.get_bot_delivery(bot_id)
+            flags = reviews_db.get_bot_delivery(bot.get("uid"), bot.get("slot_index"))
         except Exception:
             # A HeatWave outage must not change how a bot publishes.
             flags = {"use_token": 0, "use_webhook": 0}
         with _delivery_lock:
-            _delivery_cache[bot_id] = (now + _DELIVERY_TTL, flags)
+            _delivery_cache[key] = (now + _DELIVERY_TTL, flags)
     if flags.get("use_webhook") and not flags.get("use_token"):
         return True
     if flags.get("use_token") and not flags.get("use_webhook"):
@@ -665,10 +674,10 @@ _REPLY_SEEN_MAX = 64
 # bot's poll long enough for an owner to fix the cause.
 _REPLY_HARD_FAIL_BACKOFF_SECONDS = 300
 
-_reply_seen = {}          # bot_id -> {message_id: True, ...}, oldest first
-_reply_last = {}          # bot_id -> unix ts of last reply
-_reply_last_poll = {}     # bot_id -> unix ts of last channel poll
-_reply_parked_until = {}  # bot_id -> (unix ts the poll may retry after, cred marker)
+_reply_seen = {}          # (uid, slot) -> {message_id: True, ...}, oldest first
+_reply_last = {}          # (uid, slot) -> unix ts of last reply
+_reply_last_poll = {}     # (uid, slot) -> unix ts of last channel poll
+_reply_parked_until = {}  # (uid, slot) -> (unix ts the poll may retry after, cred marker)
 _reply_state_lock = threading.Lock()
 
 
@@ -705,7 +714,7 @@ def _reply_cred_marker(bot):
 
 def _reply_park(bot, now):
     with _reply_state_lock:
-        _reply_parked_until[bot["id"]] = (
+        _reply_parked_until[_bot_key(bot)] = (
             now + _REPLY_HARD_FAIL_BACKOFF_SECONDS, _reply_cred_marker(bot))
 
 
@@ -851,22 +860,24 @@ def _poll_ip_replies(bot):
     """One REST poll of the bot's channel: read recent messages, reply to any
     that match the trigger word. Runs in the tick loop, so failures are logged
     to the bot's last_error and never crash the worker."""
-    bot_id = bot["id"]
+    bot_id = bot["id"]  # display label for log lines
+    key = _bot_key(bot)
+    uid, slot = bot.get("uid"), bot.get("slot_index")
     reply_cfg = _reply_config(bot)
     if not reply_cfg.get("enabled") or not bot.get("channel_id") or not bot.get("token"):
         return
     now = time.time()
     with _reply_state_lock:
-        parked = _reply_parked_until.get(bot_id)
+        parked = _reply_parked_until.get(key)
         if parked:
             if parked[1] != _reply_cred_marker(bot):
-                _reply_parked_until.pop(bot_id, None)
+                _reply_parked_until.pop(key, None)
             elif now < parked[0]:
                 return
-        last_poll = _reply_last_poll.get(bot_id, 0)
+        last_poll = _reply_last_poll.get(key, 0)
         if now - last_poll < TICK_SECONDS:
             return
-        _reply_last_poll[bot_id] = now
+        _reply_last_poll[key] = now
     try:
         channel_id = str(bot["channel_id"] or "")
         if not _DISCORD_SNOWFLAKE_RE.fullmatch(channel_id):
@@ -895,15 +906,15 @@ def _poll_ip_replies(bot):
             # on, so only the fixed half is stored.
             _log_internal_failure(f"ip-reply poll failed for bot {bot_id}", e)
             detail = "could not reach Discord"
-        db.update_bot_runtime(bot_id, last_error=_bounded_error(f"ip-reply poll: {detail}"))
+        reviews_db.update_bot_runtime(uid, slot, last_error=_bounded_error(f"ip-reply poll: {detail}"))
         return
     for msg in messages:
         if not isinstance(msg, dict):
             continue
         msg_id = msg.get("id")
-        if not msg_id or _reply_seen_has(bot_id, msg_id):
+        if not msg_id or _reply_seen_has(key, msg_id):
             continue
-        _reply_seen_add(bot_id, msg_id)
+        _reply_seen_add(key, msg_id)
         author = msg.get("author")
         # The {} default only applies when the key is *absent*: a JSON null, list,
         # string or number under "author" made .get("bot") an AttributeError, and
@@ -919,34 +930,35 @@ def _poll_ip_replies(bot):
         if not _reply_trigger_matches(msg.get("content"), reply_cfg.get("trigger")):
             continue
         with _reply_state_lock:
-            last = _reply_last.get(bot_id, 0)
+            last = _reply_last.get(key, 0)
             if now - last < _REPLY_COOLDOWN_SECONDS:
                 return
-            _reply_last[bot_id] = now
+            _reply_last[key] = now
         try:
             _send_ip_reply(bot, msg)
         except requests.HTTPError as e:
             detail, park = _reply_http_detail(e, "send")
             if park:
                 _reply_park(bot, now)
-            db.update_bot_runtime(bot_id, last_error=_bounded_error(f"ip-reply: {detail}"))
+            reviews_db.update_bot_runtime(uid, slot, last_error=_bounded_error(f"ip-reply: {detail}"))
         except Exception as e:
             # Same reason as the poll's non-HTTPError branch above: what reaches
             # here is transport or database text, and last_error is rendered in
             # the dashboard.
             _log_internal_failure(f"ip-reply send failed for bot {bot_id}", e)
-            db.update_bot_runtime(
-                bot_id, last_error=_bounded_error("ip-reply: could not reach Discord"))
+            reviews_db.update_bot_runtime(
+                uid, slot, last_error=_bounded_error("ip-reply: could not reach Discord"))
 
 
 def process_bot(bot):
-    # The re-read can race a deletion (db.get_bot -> None, or a stale dict
-    # missing its id), and a bot vanishing mid-tick must not be a traceback.
-    if not bot or "id" not in bot:
+    # The re-read can race a deletion (reviews_db.get_bot -> None, or a stale
+    # dict missing its identity), and a bot vanishing mid-tick must not be a
+    # traceback.
+    if not bot or bot.get("uid") is None or bot.get("slot_index") is None:
         return
-    bot_id = bot["id"]
+    uid, slot = bot["uid"], bot["slot_index"]
     if _missing_config(bot):
-        db.update_bot_runtime(bot_id, last_error="Missing config (token / channel id / webhook / server ip)")
+        reviews_db.update_bot_runtime(uid, slot, last_error="Missing config (token / channel id / webhook / server ip)")
         return
     edition = bot.get("edition", "java")
     status = _fetch_status_guarded(
@@ -956,16 +968,16 @@ def process_bot(bot):
     )
     try:
         msg_id = _publish_embed(bot, status)
-        db.update_bot_runtime(bot_id, message_id=msg_id,
-                              last_status=_bounded_status(status), last_error=None)
+        reviews_db.update_bot_runtime(uid, slot, message_id=msg_id,
+                                      last_status=_bounded_status(status), last_error=None)
     except requests.HTTPError as e:
-        db.update_bot_runtime(bot_id, last_status=_bounded_status(status),
-                              last_error=_bounded_error(f"Discord error: {_publish_detail(bot, e)}"))
+        reviews_db.update_bot_runtime(uid, slot, last_status=_bounded_status(status),
+                                      last_error=_bounded_error(f"Discord error: {_publish_detail(bot, e)}"))
     except Exception as e:
         if isinstance(e, _WebhookMessageIdError):
-            db.set_bot_running(bot_id, False)
-        db.update_bot_runtime(
-            bot_id,
+            reviews_db.set_bot_running(uid, slot, False)
+        reviews_db.update_bot_runtime(
+            uid, slot,
             last_status=_bounded_status(status),
             last_error=_bounded_error(e),
         )
@@ -982,12 +994,12 @@ def _tick():
     # bound. Also evict the local update throttle so a re-created bot refreshes
     # promptly instead of waiting out a stale interval.
     with _reply_state_lock:
-        live_ids = {b["id"] for b in running}
+        live_keys = {_bot_key(b) for b in running}
         # Keyed on every reply-state dict, not only _reply_seen: a bot whose
         # poll never succeeded has a _reply_last_poll and a _reply_parked_until
         # entry but no seen-set, so it was never swept.
         for stale in (set(_reply_seen) | set(_reply_last) | set(_reply_last_poll)
-                      | set(_reply_parked_until)) - live_ids:
+                      | set(_reply_parked_until)) - live_keys:
             _reply_seen.pop(stale, None)
             _reply_last.pop(stale, None)
             _reply_last_poll.pop(stale, None)
@@ -995,9 +1007,9 @@ def _tick():
 
     active = []
     for bot in running:
-        if db.is_trial_expired(bot["user_id"]):
-            db.set_bot_running(bot["id"], False)
-            _last_update_pop(bot["id"])
+        if db.is_trial_expired(bot.get("uid")):
+            reviews_db.set_bot_running(bot.get("uid"), bot.get("slot_index"), False)
+            _last_update_pop(_bot_key(bot))
             continue
         active.append(bot)
 
@@ -1012,36 +1024,36 @@ def _tick():
         except Exception as exc:
             try:
                 import reviews_db
-                reviews_db.log_app_error("PollIpRepliesFailed", f"ip-reply poll failed for bot {bot.get('id')}: {exc}", module="engine", flagged=1)
+                reviews_db.log_app_error("PollIpRepliesFailed", f"ip-reply poll failed for bot {bot.get('uid')}/{bot.get('slot_index')}: {exc}", module="engine", flagged=1)
             except Exception:
                 pass
-            _debug_print(f"[engine] ip-reply poll failed for bot {bot.get('id')}: {exc}")
-        bot_id = bot["id"]
+            _debug_print(f"[engine] ip-reply poll failed for bot {bot.get('uid')}/{bot.get('slot_index')}: {exc}")
+        key = _bot_key(bot)
+        uid, slot = bot.get("uid"), bot.get("slot_index")
         try:
             interval = max(15, int(bot.get("update_interval") or 60))
         except (TypeError, ValueError):
             interval = 60
         # Free process-local pre-filter: skips the DB round-trip most ticks.
-        if now - _last_update_get(bot_id) < interval:
+        if now - _last_update_get(key) < interval:
             continue
         # Cross-process lease: exactly one engine publishes this bot this
         # interval, so two engines cannot both POST a fresh Discord message
         # while message_id is still NULL and then fight over the stored id.
-        if not db.claim_bot_tick(bot_id, interval):
+        if not reviews_db.claim_bot_tick(uid, slot, interval):
             continue
         try:
             # Re-read so message_id reflects whatever the last winner stored.
-            with _publish_lock(bot_id):
-                process_bot(db.get_bot(bot_id) or bot)
+            with _publish_lock(key):
+                process_bot(reviews_db.get_bot(uid, slot) or bot)
         except Exception as exc:
             try:
-                import reviews_db
-                reviews_db.log_app_error("BotUpdateFailed", f"bot {bot_id} failed to update: {exc}", module="engine", flagged=1)
+                reviews_db.log_app_error("BotUpdateFailed", f"bot {uid}/{slot} failed to update: {exc}", module="engine", flagged=1)
             except Exception:
                 pass
-            _debug_print(f"[engine] bot {bot_id} failed to update: {exc}")
+            _debug_print(f"[engine] bot {uid}/{slot} failed to update: {exc}")
         # Stamp even on failure so one broken bot cannot hot-loop.
-        _last_update_set(bot_id, now)
+        _last_update_set(key, now)
 
 
 def _run_worker():
@@ -1082,41 +1094,42 @@ def stop_worker():
 def engine_health():
     return jsonify({
         "ok": True,
-        "running_bots": sorted(b["id"] for b in db.list_running_bots()),
+        "running_bots": sorted(f"{b.get('uid')}/{b.get('slot_index')}"
+                               for b in db.list_running_bots()),
         "uptime": round(time.time() - _started_at, 3),
     })
 
 
-@app.route("/engine/bot/<int:bot_id>/start", methods=["POST"])
+@app.route("/engine/bot/<uid>/<int:slot>/start", methods=["POST"])
 @api_internal_required
-def engine_start_bot(bot_id):
-    bot = db.get_bot(bot_id)
+def engine_start_bot(uid, slot):
+    bot = reviews_db.get_bot(uid, slot)
     if not bot:
         return ec.err(ec.BOT_NOT_FOUND, "Bot not found", 404)
     missing = _missing_config(bot)
     if missing:
         return ec.err(ec.BOT_MISSING_CONFIG, "Missing: " + ", ".join(missing), 400)
-    db.set_bot_running(bot_id, True)
+    reviews_db.set_bot_running(uid, slot, True)
     # Clear the throttle so the next tick refreshes the embed immediately —
     # both the local one and the DB tick lease, which would otherwise veto the
     # first publish for up to one interval.
-    _last_update_pop(bot_id)
-    db.clear_bot_claim(bot_id)
+    _last_update_pop((uid, slot))
+    reviews_db.clear_bot_claim(uid, slot)
     return jsonify({"ok": True})
 
 
-@app.route("/engine/bot/<int:bot_id>/stop", methods=["POST"])
+@app.route("/engine/bot/<uid>/<int:slot>/stop", methods=["POST"])
 @api_internal_required
-def engine_stop_bot(bot_id):
-    db.set_bot_running(bot_id, False)
-    _last_update_pop(bot_id)
+def engine_stop_bot(uid, slot):
+    reviews_db.set_bot_running(uid, slot, False)
+    _last_update_pop((uid, slot))
     return jsonify({"ok": True})
 
 
-@app.route("/engine/bot/<int:bot_id>/generate", methods=["POST"])
+@app.route("/engine/bot/<uid>/<int:slot>/generate", methods=["POST"])
 @api_internal_required
-def engine_generate(bot_id):
-    bot = db.get_bot(bot_id)
+def engine_generate(uid, slot):
+    bot = reviews_db.get_bot(uid, slot)
     if not bot:
         return ec.err(ec.BOT_NOT_FOUND, "Bot not found", 404)
     missing = _missing_config(bot)
@@ -1129,12 +1142,12 @@ def engine_generate(bot_id):
         # TICK_SECONDS) to claim the bot and post a second embed alongside this
         # one. Stamping it forward reserves the bot for one interval, so this is
         # the only publish; update_bot_runtime below re-stamps it on success.
-        with _publish_lock(bot_id):
-            db.force_bot_claim(bot_id)
+        with _publish_lock((uid, slot)):
+            reviews_db.force_bot_claim(uid, slot)
             # Re-read inside the lock: a scheduled tick may have just finished
             # and stored a message_id, and publishing with the stale None would
             # POST a second message instead of editing that one.
-            bot = db.get_bot(bot_id) or bot
+            bot = reviews_db.get_bot(uid, slot) or bot
             edition = bot.get("edition", "java")
             status = _fetch_status_guarded(
                 bot["server_ip"],
@@ -1142,26 +1155,24 @@ def engine_generate(bot_id):
                 edition,
             )
             msg_id = _publish_embed(bot, status)
-            db.update_bot_runtime(bot_id, message_id=msg_id,
-                                  last_status=_bounded_status(status), last_error=None)
-            db.set_bot_running(bot_id, True)
-        _last_update_set(bot_id, time.time())
+            reviews_db.update_bot_runtime(uid, slot, message_id=msg_id,
+                                          last_status=_bounded_status(status), last_error=None)
+            reviews_db.set_bot_running(uid, slot, True)
+        _last_update_set((uid, slot), time.time())
         return jsonify({"ok": True, "message_id": msg_id, "status": status})
     except requests.HTTPError as e:
         return ec.err(ec.BOT_DISCORD_ERROR, "Discord error: " + _discord_detail(e), 502)
     except _WebhookMessageIdError as e:
-        db.set_bot_running(bot_id, False)
+        reviews_db.set_bot_running(uid, slot, False)
         return ec.err(ec.BOT_PUBLISH_FAILED, _redact_webhook_credentials(e), 502)
     except db.OraclePoolExhausted:
         raise
     except Exception as e:
         # Reaches the browser: engine_client hands this JSON back unaltered and
-        # backend.py jsonify()s it. A generic failure here is most likely an
-        # Oracle connect error surfacing through db.force_bot_claim / get_bot as
-        # "Oracle unavailable: <raw oracledb text>", which quotes the connect
-        # descriptor and wallet path — so the user gets fixed prose and the real
-        # detail goes to stderr.
-        _log_internal_failure(f"generate failed for bot {bot_id}", e)
+        # backend.py jsonify()s it. A generic failure here must not leak the
+        # raw database detail, so the user gets fixed prose and the real detail
+        # goes to stderr.
+        _log_internal_failure(f"generate failed for bot {uid}/{slot}", e)
         return ec.err(ec.BOT_PUBLISH_FAILED, "Could not publish the status embed.", 500)
 
 
@@ -1228,11 +1239,11 @@ def engine_preview():
         )
 
 
-@app.route("/engine/bot/<int:bot_id>/assets", methods=["POST"])
+@app.route("/engine/bot/<uid>/<int:slot>/assets", methods=["POST"])
 @api_internal_required
-def engine_assets(bot_id):
+def engine_assets(uid, slot):
     try:
-        bot = db.get_bot(bot_id)
+        bot = reviews_db.get_bot(uid, slot)
         if not bot:
             return ec.err(ec.BOT_NOT_FOUND, "Bot not found", 404)
         if not bot.get("token") or not bot.get("guild_id"):
@@ -1240,11 +1251,10 @@ def engine_assets(bot_id):
     except db.OraclePoolExhausted:
         raise
     except Exception as e:
-        # The clearest case of the three: this try wraps db.get_bot(bot_id) and
-        # nothing else, so anything caught here *is* a database failure — i.e.
-        # "Oracle unavailable: <connect descriptor / service name / wallet path>"
-        # was being answered to the browser verbatim.
-        _log_internal_failure(f"assets lookup failed for bot {bot_id}", e)
+        # This try wraps the bots-store read and nothing else, so anything
+        # caught here is a store failure; the browser gets fixed prose and the
+        # raw detail goes to stderr.
+        _log_internal_failure(f"assets lookup failed for bot {uid}/{slot}", e)
         return ec.err(ec.INTERNAL_ERROR, "Could not load this bot. Please try again.", 500)
     headers = {
         "Authorization": f"Bot {bot['token']}",
@@ -1277,7 +1287,7 @@ def engine_assets(bot_id):
         # what reaches here is transport text (resolver state, socket addresses,
         # proxy target) that names hosts this tier talks to and helps nobody, so
         # it is logged rather than returned.
-        _log_internal_failure(f"assets fetch failed for bot {bot_id}", exc)
+        _log_internal_failure(f"assets fetch failed for bot {uid}/{slot}", exc)
         return ec.err(
             ec.BOT_ASSETS_UNAVAILABLE,
             "Could not reach Discord. Please try again.",

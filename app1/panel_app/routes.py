@@ -74,8 +74,7 @@ MAX_PATH_CHARS = 4096
 # node_agent/storage.py:write_text refuses a text write over 2 MiB of UTF-8, so
 # forwarding more than this only wastes the transfer.
 WRITE_MAX_CONTENT_BYTES = 2 * 1024 * 1024
-# node_agent/server_manager.py caps both of these at 500, and panel_activity's
-# detail column is 500 wide.
+# node_agent/server_manager.py caps both of these at 500.
 MAX_COMMAND_CHARS = 500
 MAX_STARTUP_CHARS = 500
 # panel_servers.name is VARCHAR2(255) but the node refuses anything over 80.
@@ -270,15 +269,41 @@ def _effective_status(node_status, desired_state):
     The node's live status is the truth whenever it has one, so a running server
     that has actually stopped still shows the real state. Only when the node
     offers nothing — it is unreachable, or no longer knows the container — does
-    this fall back to the last power intent recorded in
-    ``panel_servers.desired_state``: 1 shows "running", 0 shows "stopped". That is
-    what keeps a stopped server presented as stopped across a node outage instead
-    of the alarming "missing", and is why the intent is persisted at all.
+    this fall back to the last power intent recorded in ``servers.status``:
+    1 shows "running", 0 shows "stopped". That is what keeps a stopped server
+    presented as stopped across a node outage instead of the alarming "missing",
+    and is why the intent is persisted at all.
     """
     status = (node_status or "").strip()
     if status and status != "missing":
         return status
     return "running" if int(desired_state or 0) else "stopped"
+
+
+def _hydrate_server(server, info, settings):
+    """Fill the container-level display fields from the node's view.
+
+    The servers table keeps only identity, owner, intent and placement. The
+    runtime, version, image, startup command and resource limits live inside
+    the container itself and are reported by the node's list endpoint, so pages
+    render what the node reports — and fall back to the fleet allocation
+    defaults when the node has no entry (or none of its own) for a field.
+    """
+    info = info or {}
+
+    def _int(value, fallback):
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return fallback
+
+    server["runtime"] = str(info.get("runtime") or "")
+    server["version"] = str(info.get("version") or "")
+    server["image"] = str(info.get("image") or "")
+    server["startup"] = str(info.get("startup") or "")
+    server["memory_mb"] = _int(info.get("memory_mb"), settings.memory_mb)
+    server["cpu_percent"] = _int(info.get("cpu_percent"), settings.cpu_percent)
+    return server
 
 
 def _check_relative_path(raw, *, allow_root=False, allow_hidden=False):
@@ -608,26 +633,6 @@ def build_routes(runtime, config):
             headers={"Retry-After": retry_after},
         )
 
-    async def log_activity(user_id, action, server_id=None, detail=None):
-        # Activity persistence is off by default: the store's activity table lives
-        # in the shared backend database, and every power toggle / upload / command
-        # would otherwise append a row to it for the life of the deployment. All
-        # call sites route through this helper, so the early return disables the
-        # whole audit trail in one place. The switch is the database-backed one
-        # (PANEL_ACTIVITY_ENABLED is only the fallback when the settings table
-        # cannot be read), so an operator can turn the trail on for both instances
-        # without a restart.
-        settings = await runtime.settings.load()
-        if not settings.activity_log:
-            return
-        try:
-            await db.log_activity(user_id, action, server_id=server_id, detail=detail)
-        except Exception as exc:
-            _log.warning(
-                "activity %s for server %s not recorded (%s)",
-                action, server_id, type(exc).__name__,
-            )
-
     def server_id_of(request):
         """The validated ``server_id`` path parameter.
 
@@ -731,8 +736,8 @@ def build_routes(runtime, config):
         """Run the node create in background and update the DB.
 
         On failure the server row is removed so the dashboard does not list
-        an unreachable, unbacked server. All errors are logged; activity is
-        recorded on success. ``server_node`` is the client the deploy has already
+        an unreachable, unbacked server. All errors are logged. ``server_node``
+        is the client the deploy has already
         verified as answering, so the container lands on the node that was
         checked rather than on whatever a second resolution picks a moment later.
         """
@@ -780,15 +785,14 @@ def build_routes(runtime, config):
                     )
                 return
 
+            # Runtime / version / image live only on the container now (node
+            # labels plus .container_config.json) — the panel's servers table
+            # records nothing but identity, owner, intent and placement.
             image = ""
             if isinstance(response, dict):
                 remote = response.get("server")
                 if isinstance(remote, dict):
                     image = str(remote.get("image") or "").strip()
-            try:
-                await db.update_server_version(server_id, user_id, runtime_name, version, image=image or None)
-            except Exception as exc:
-                _log.warning("server %s image not recorded (bg): %s", server_id, type(exc).__name__)
             try:
                 await run_in_threadpool(
                     lambda: server_node.update_container_config(
@@ -813,10 +817,6 @@ def build_routes(runtime, config):
                 )
             except Exception as config_exc:
                 _log.warning("failed to save .container_config.json for server %s: %s", server_id, config_exc)
-            try:
-                await log_activity(user_id, "server_created", server_id=server_id, detail=name)
-            except Exception:
-                _log.warning("failed to record activity for server %s", server_id)
         except Exception:
             _log.exception("unexpected error in background create for %s", server_id)
         finally:
@@ -1110,6 +1110,10 @@ def build_routes(runtime, config):
         # literals here, so the figures the dashboard totals up are the same ones
         # node_client requests when it creates a container.
         settings = await runtime.settings.load()
+        # Container-level fields (runtime / version / image / limits) come from
+        # the node's view of each container, not from the servers table.
+        for server in servers:
+            _hydrate_server(server, node_map.get(server["id"], {}) or {}, settings)
         stats = {
             "total": len(servers),
             "running": running,
@@ -1172,7 +1176,6 @@ def build_routes(runtime, config):
             templating.flash(request, "Could not renew right now — please try again in a moment.", "error")
             return redirect_to("dashboard")
         if status == "renewed":
-            await log_activity(user["id"], "trial_renewed")
             templating.flash(request, "Trial renewed — your servers keep running for another cycle.", "success")
         elif status == "too_early":
             templating.flash(request, "It's not time to renew yet — you can renew closer to your turn-off date.", "message")
@@ -1227,10 +1230,6 @@ def build_routes(runtime, config):
                         server["id"], type(exc).__name__,
                     )
                     unrecorded.append(server["name"])
-        await log_activity(
-            user["id"], "batch_power",
-            detail=f"{action}: {len(servers) - len(errors)}/{len(servers)} servers",
-        )
         if errors:
             templating.flash(request, f"Could not {action} some servers: {', '.join(errors[:3])}", "error")
         elif servers:
@@ -1438,7 +1437,6 @@ def build_routes(runtime, config):
         except Exception:
             _log.exception("failed to set creating marker for %s", server_id)
         asyncio.create_task(_background_create(server_id, user["id"], name, rt, version, startup, allocation, placement, server_node))
-        await log_activity(user["id"], "server_create_started", server_id=server_id, detail=name)
         if wants_json(request):
             # No flash on this path. q3.js narrates the deploy in its modal and
             # only opens the panel once the node confirms the container, so a
@@ -1485,6 +1483,13 @@ def build_routes(runtime, config):
         except Exception:
             # Silence failures here: status polling will update soon.
             creating = False
+            info = {}
+        # The page renders the startup command, runtime and limits straight
+        # from the container (node labels) — the servers table holds none of
+        # them. An unreachable node renders the fleet defaults and q4.js's
+        # polling corrects the page once the node answers.
+        settings = await runtime.settings.load()
+        _hydrate_server(server, info, settings)
         return await render(
             request,
             "server.html",
@@ -1525,7 +1530,6 @@ def build_routes(runtime, config):
                 "error",
             )
             return redirect_to("server_page", server_id=server_id)
-        await log_activity(user["id"], "server_deleted", server_id=server_id)
 
         node_reached = False
         try:
@@ -1641,10 +1645,9 @@ def build_routes(runtime, config):
         action = _json_text(payload, "action")
         action = (action or "").strip().lower()
         if action not in {"start", "stop", "restart", "kill"}:
-            # Validate against the node's power contract before logging: the
-            # action is concatenated into panel_activity.action (VARCHAR2(64)),
-            # so an unbounded value would overflow the column on Oracle where
-            # SQLite silently stored it. batch_power guards the same way.
+            # Validate against the node's power contract before acting: only
+            # these four actions exist on the node, and anything else would be
+            # a 4xx there anyway. batch_power guards the same way.
             if as_form:
                 templating.flash(request, "Unsupported power action", "error")
                 return redirect_to("dashboard")
@@ -1654,7 +1657,6 @@ def build_routes(runtime, config):
                 templating.flash(request, "Too many power requests — slow down", "error")
                 return redirect_to("dashboard")
             return throttled("power", "too many power requests — slow down")
-        await log_activity(user["id"], "power_" + action, server_id=server_id)
         if as_form:
             # A form submit is a top-level navigation, so it is answered the way
             # the other form routes are. Returning the JSON body fetch() expects
@@ -1762,7 +1764,6 @@ def build_routes(runtime, config):
             return bad_request("command must not contain a null byte")
         if not _throttle(user["id"], "command"):
             return throttled("command", "too many commands — slow down")
-        await log_activity(user["id"], "command", server_id=server_id, detail=command[:100])
         return await node_json(lambda: server_node.send_stdin(server_id, command))
 
     async def api_update_startup(request):
@@ -1784,7 +1785,8 @@ def build_routes(runtime, config):
         except NodeClientError as exc:
             return bad_request(str(exc), exc.status)
         try:
-            await db.update_server_startup(server_id, user["id"], startup)
+            # The startup command lives on the container (the node's dchost.startup
+            # label); the panel's database keeps no copy of it.
             await run_in_threadpool(
                 lambda: server_node.update_container_config(
                     server_id,
@@ -1801,7 +1803,6 @@ def build_routes(runtime, config):
                     "the startup command was changed on the server, but the panel "
                     "could not record it — this page may still show the old value"
                 )
-        await log_activity(user["id"], "startup_changed", server_id=server_id, detail=startup[:100])
         return JSONResponse(response)
 
     async def api_rename(request):
@@ -1817,7 +1818,6 @@ def build_routes(runtime, config):
         if not name or len(name) > MAX_NAME_CHARS or _CONTROL_CHARS.search(name):
             return bad_request(f"server name must be between 1 and {MAX_NAME_CHARS} characters")
         await db.update_server_name(server_id, user["id"], name)
-        await log_activity(user["id"], "server_renamed", server_id=server_id, detail=name)
         return JSONResponse({"ok": True, "name": name})
 
     async def api_update_image(request):
@@ -1853,16 +1853,13 @@ def build_routes(runtime, config):
             response = await run_in_threadpool(lambda: server_node.update_image(server_id, runtime=rt, version=version))
         except NodeClientError as exc:
             return bad_request(str(exc), exc.status)
-        # The node's reply carries the tag it actually pulled. Persisting only
-        # runtime/version left panel_servers.image holding the previous runtime's
-        # tag, and that stale column is what the dashboard and server page show.
+        # The node's reply carries the tag it actually pulled. Runtime, version
+        # and image live on the container only; the panel database keeps none of
+        # them, so the only record to update is the node's container config.
         image = ""
         if isinstance(response, dict):
             image = str(response.get("image") or "").strip()
         try:
-            await db.update_server_version(
-                server_id, user["id"], rt, version, image=image or None
-            )
             await run_in_threadpool(
                 lambda: server_node.update_container_config(
                     server_id,
@@ -1879,7 +1876,6 @@ def build_routes(runtime, config):
                     "the runtime was changed on the server, but the panel could "
                     "not record it — this page may still show the old version"
                 )
-        await log_activity(user["id"], "version_changed", server_id=server_id, detail=f"{rt} {version}")
         return JSONResponse(response)
 
     async def api_server_rebuild(request):
@@ -1961,20 +1957,9 @@ def build_routes(runtime, config):
         except Exception as exc:
             return bad_request(f"Failed to update startup: {exc}", 500)
 
-        # Update database
-        image = ""
-        if isinstance(image_response, dict):
-            image = str(image_response.get("image") or "").strip()
-
-        try:
-            await db.update_server_version(server_id, user["id"], rt, version, image=image or None)
-            await db.update_server_startup(server_id, user["id"], startup)
-        except Exception as exc:
-            _log.warning(f"server {server_id} rebuild not recorded: {exc}")
-            # Continue anyway - the node changes succeeded
-
-        await log_activity(user["id"], "server_rebuilt", server_id=server_id, detail=f"{rt} {version} {startup[:50]}")
-
+        # Runtime, version and startup now live only on the container — the node
+        # calls above already wrote them, so there is no database half to this
+        # rebuild.
         return JSONResponse({
             "ok": True,
             "rebuilt": True,
@@ -2000,7 +1985,6 @@ def build_routes(runtime, config):
             response = await run_in_threadpool(lambda: server_node.reinstall(server_id))
         except NodeClientError as exc:
             return bad_request(str(exc), exc.status)
-        await log_activity(user["id"], "server_reinstalled", server_id=server_id)
         return JSONResponse(response)
 
     async def api_install_status(request):
@@ -2115,7 +2099,6 @@ def build_routes(runtime, config):
                 uploaded.append(path)
         except NodeClientError as exc:
             return bad_request(str(exc), exc.status)
-        await log_activity(user["id"], "files_uploaded", server_id=server_id, detail=", ".join(uploaded[:5]))
         return JSONResponse({"ok": True, "uploaded": uploaded}, status_code=201)
 
     async def api_extract(request):
@@ -2161,20 +2144,7 @@ def build_routes(runtime, config):
             return bad_request(str(exc), exc.status)
         except ValueError as exc:
             return bad_request(str(exc))
-        await log_activity(user["id"], "zip_extracted", server_id=server_id, detail=dest or "/")
         return JSONResponse({"ok": True, "extracted": extracted}, status_code=201)
-
-    async def activity_page(request):
-        user = await auth.require_user(runtime, request)
-        # The page reads the same switch log_activity writes under, so a trail
-        # that is off renders empty rather than showing rows that stopped being
-        # appended to at the moment it was switched off.
-        settings = await runtime.settings.load()
-        entries = await db.list_activity(user_id=user["id"]) if settings.activity_log else []
-        return await render(
-            request, "activity.html", endpoint="activity_page", current_user=user,
-            context={"entries": entries},
-        )
 
     async def account_page(request):
         user = await auth.require_user(runtime, request)
@@ -2215,7 +2185,6 @@ def build_routes(runtime, config):
                 _log.warning("password not updated: %s", exc)
                 templating.flash(request, "Could not update the password — it was not changed", "error")
             else:
-                await log_activity(user["id"], "password_changed")
                 templating.flash(request, "Password updated", "success")
         return redirect_to("account_page")
 
@@ -2484,7 +2453,6 @@ def build_routes(runtime, config):
         Route("/api/servers/{server_id}/directory", api_directory, methods=["POST"]),
         Route("/api/servers/{server_id}/upload", api_upload, methods=["POST"]),
         Route("/api/servers/{server_id}/extract", api_extract, methods=["POST"]),
-        Route("/activity", activity_page, methods=["GET"]),
         Route("/account", account_page, methods=["GET"]),
         Route("/account/password", account_change_password, methods=["POST"]),
         WebSocketRoute("/ws/console/{server_id}", console_ws),

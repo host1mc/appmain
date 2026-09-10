@@ -112,6 +112,7 @@ class DockerRuntime:
         servers = []
         for container in containers:
             labels = container.labels or {}
+            attrs = getattr(container, "attrs", None) or {}
             servers.append(
                 {
                     "id": labels.get("dchost.server_id", ""),
@@ -119,10 +120,15 @@ class DockerRuntime:
                     "status": getattr(container, "status", "unknown"),
                     "runtime": labels.get("dchost.runtime", ""),
                     "version": labels.get("dchost.version", ""),
+                    # The startup command and image live only on the container
+                    # (labels / docker config) — the panel lists them from here
+                    # instead of keeping its own copy.
+                    "startup": labels.get("dchost.startup", ""),
+                    "image": (attrs.get("Config") or {}).get("Image", ""),
                     "memory_mb": labels.get("dchost.memory_mb"),
                     "cpu_percent": labels.get("dchost.cpu_percent"),
                     "desired_state": labels.get("dchost.desired_state", ""),
-                    "created_at": (getattr(container, "attrs", None) or {}).get("Created", ""),
+                    "created_at": attrs.get("Created", ""),
                 }
             )
         return [server for server in servers if server["id"]]

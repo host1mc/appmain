@@ -8,6 +8,7 @@ from flask import Blueprint, request, jsonify
 import database as db
 import engine_client  # noqa: F401
 import auth
+import reviews_db
 from bp_ops import _trial_expired, _nudge_engine
 
 users_bp = Blueprint("admin_users", __name__)
@@ -61,7 +62,7 @@ def api_user_detail(user_id):
     user = db.get_user(user_id)
     if not user:
         return jsonify({"ok": False, "error": "Not found"}), 404
-    bots = db.get_user_bots(user_id)
+    bots = reviews_db.get_user_bots(user_id)
     # get_user_bots decrypts every token; the page only ever displays the masked
     # form, so the plaintext must not leave this process. token_masked stays.
     for b in bots:
@@ -119,7 +120,7 @@ def api_update_container_slots(user_id):
 
     A different thing from /slots above, which is the Minecraft status-bot slot
     count and cascades bot deletions off itself. This one only writes
-    panel_users.container_slots, which /panel reads as its per-account server
+    users.container_slots, which /panel reads as its per-account server
     quota; null clears the grant so the account falls back to the fleet figure
     (the max_servers panel limit) and 0 switches hosting off for them.
     """
@@ -190,9 +191,9 @@ def api_admin_stop_all_bots(user_id):
     user = db.get_user(user_id)
     if not user:
         return jsonify({"ok": False, "error": "Not found"}), 404
-    bots = db.get_user_bots(user_id)
+    bots = reviews_db.get_user_bots(user_id)
     for bot in bots:
-        db.set_bot_running(bot["id"], False)
+        reviews_db.set_bot_running(user_id, bot["slot_index"], False)
     return jsonify({"ok": True, "stopped": len(bots)})
 
 
@@ -202,18 +203,19 @@ def api_admin_start_all_bots(user_id):
     user = db.get_user(user_id)
     if not user:
         return jsonify({"ok": False, "error": "Not found"}), 404
-    bots = db.get_user_bots(user_id)
+    bots = reviews_db.get_user_bots(user_id)
     started = 0
     skipped = 0
     for bot in bots:
+        slot = bot.get("slot_index")
         if not bot.get("server_ip") or not bot.get("channel_id"):
             skipped += 1
             continue
         if _trial_expired(bot.get("uid")):
             skipped += 1
             continue
-        db.set_bot_running(bot["id"], True)
-        _nudge_engine(bot["id"])
+        reviews_db.set_bot_running(user_id, slot, True)
+        _nudge_engine(user_id, slot)
         started += 1
     return jsonify({"ok": True, "started": started, "skipped": skipped})
 

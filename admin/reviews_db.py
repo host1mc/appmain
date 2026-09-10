@@ -12,15 +12,15 @@ Two databases, and which code talks to which
         Losing it is fatal: see database.py:_oracle_unavailable.
 
     HeatWave (MySQL, mysql-connector)  →  THIS FILE ONLY
-        the `reviews` table, and nothing else. Reached through _pool() / _conn().
-        Losing it degrades to "no reviews" and the site stays up.
+        the `reviews`, `bots`, `app_errors`, `app_config` tables and the ops
+        queues. Reached through _pool() / _conn(). Losing it degrades to
+        "no reviews / no bots" and the site stays up.
 
 No query in this file touches the ATP, and no query in database.py touches
-HeatWave. That is the whole boundary, and it is why reviews could move at all:
-they are public marketing copy with no PII, no foreign key into `users` beyond
-an opaque id string, and no write that has to be atomic with anything Oracle
-holds. Moving them leaves the ATP's Always Free session budget to the tiers that
-actually need it.
+HeatWave. That boundary is why these tables could move at all: they carry no
+PII that has to be transactional with anything Oracle holds, and their link
+to an account is the opaque uid string. The `bots` table joins to `users` on
+uid in the logical sense only — two stores cannot share a SQL foreign key.
 
 The cost of the split, named plainly: a review row cannot be joined to a `users`
 row in SQL. Nothing here tries. `author_name` is denormalised — copied in at
@@ -54,7 +54,8 @@ Configuration (env, or fastapi-oracle-app/.env alongside the Oracle keys):
 import os
 import re
 import threading
-from datetime import datetime, timezone
+import time
+from datetime import datetime, timezone, timedelta
 
 _CFG = {}
 _ENABLED = False
@@ -395,6 +396,39 @@ def _ensure_schema(conn):
                 url VARCHAR(255) NOT NULL DEFAULT '',
                 token_enc VARCHAR(2000) NOT NULL DEFAULT '',
                 retired_at VARCHAR(50) NOT NULL
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+        """)
+        # MC-status Discord bots. uid is the account link — a foreign key to
+        # the Oracle users table in the logical sense only: the two stores
+        # cannot share a SQL constraint, so the relationship is the same shape
+        # as reviews.uid. There is deliberately no synthetic id column: a bot
+        # is identified by (uid, slot_index). The Discord token and the
+        # webhook URL are Fernet-encrypted at rest (see _bot_crypto) and never
+        # leave this module in plaintext except through the accessor dicts.
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS bots (
+                uid VARCHAR(10) NOT NULL,
+                slot_index INT NOT NULL DEFAULT 0,
+                name VARCHAR(500),
+                server_ip VARCHAR(500),
+                server_port INT DEFAULT 25565,
+                edition VARCHAR(20) DEFAULT 'java',
+                token_enc VARCHAR(1000),
+                guild_id VARCHAR(500),
+                channel_id VARCHAR(500),
+                message_id VARCHAR(100),
+                embed_json LONGTEXT,
+                ip_reply_json LONGTEXT,
+                webhook_url VARCHAR(1000),
+                update_interval INT DEFAULT 60,
+                running TINYINT DEFAULT 0,
+                last_run VARCHAR(50),
+                last_status LONGTEXT,
+                last_error VARCHAR(500),
+                created_at VARCHAR(50) NOT NULL,
+                updated_at VARCHAR(50),
+                PRIMARY KEY (uid, slot_index),
+                KEY bots_running (running)
             ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
         """)
         conn.commit()
@@ -994,37 +1028,800 @@ def set_app_config(key, value):
         _close_quietly(conn)
 
 
-def _bot_flag_key(bot_id, name):
-    return f"bot:{int(bot_id)}:{name}"
+# ── Bots store (HeatWave) ───────────────────────────────────────
+# The MC-status Discord bots live here, not on the ATP. A bot belongs to a
+# user account and is identified by (uid, slot_index) — there is no synthetic
+# id column. uid points at the Oracle users table in the logical sense; the
+# two stores cannot share an enforced constraint, so the link is the same
+# opaque-id shape as reviews.uid.
+#
+# Degradation follows the rest of this module: HeatWave unconfigured or
+# unreachable reads as "no bots" and writes report failure. Bots are public
+# status-posters with their secrets encrypted at rest here — losing the store
+# pauses them, it does not take the site down.
+#
+# The Discord token and the webhook URL are secrets. Both are Fernet-
+# encrypted with the fleet's shared key (crypto_util) before they reach MySQL,
+# exactly the way the old ATP column carried them, and the plaintext never
+# leaves this module except inside the accessor dicts built for the owner's
+# own request.
+
+_BOT_ENC_FIELDS = ("name", "server_ip", "guild_id", "channel_id",
+                   "embed_json", "ip_reply_json", "webhook_url")
+
+# Byte ceiling on a bot's client-authored JSON blob — the same contract the
+# old database.py enforced (backend.py's EMBED_JSON_MAX_BYTES matches too).
+_BOT_JSON_MAX_BYTES = 65536
+
+_BOT_DEFAULT_EMBED = {
+    "title": "STATUS",
+    "url": "",
+    "color": "#9b59b6",
+    "rotate_accent_on_update": False,
+    "thumbnail": True,
+    "online_text": "ONLINE",
+    "offline_text": "OFFLINE",
+    "footer": "Powered by MC Status Hosting",
+    "footer_icon_url": "",
+    "show_ip": True,
+    "show_players": True,
+    "show_playerlist": True,
+    "show_version": True,
+    "show_motd": True,
+    "ip_label": "IP & PORT",
+    "status_label": "STATUS",
+    "players_label": "PLAYERS ONLINE",
+    "playerlist_label": "PLAYER LIST",
+    "version_label": "VERSION",
+    "motd_label": "MOTD",
+    "max_players_in_list": 20,
+    "author_enabled": False,
+    "author_name": "",
+    "author_icon_url": "",
+    "author_url": "",
+    "image_enabled": False,
+    "image_url": "",
+    "show_timestamp": False,
+    "thumbnail_size": 62,
+    "author_icon_size": 22,
+    "image_max_height": 0,
+    "accent_bar_width": 4,
+    "widgets": [
+        {"id": "ip", "type": "ip", "label": "IP & PORT", "inline": False, "enabled": True},
+        {"id": "players", "type": "players", "label": "PLAYERS ONLINE", "inline": False, "enabled": True},
+        {"id": "playerlist", "type": "playerlist", "label": "PLAYER LIST", "inline": False, "enabled": True},
+        {"id": "version", "type": "version", "label": "VERSION", "inline": False, "enabled": True},
+        {"id": "motd", "type": "motd", "label": "MOTD", "inline": False, "enabled": True},
+    ],
+    "custom_fields": [],
+}
+
+_BOT_DEFAULT_IP_REPLY = {
+    "enabled": False,
+    "trigger": "ip",
+    "mode": "plain",
+    "plain_text": "**{ip_port}**",
+    "embed": {
+        "title": "SERVER ADDRESS",
+        "description": "```{ip_port}```",
+        "color": "#9b59b6",
+        "footer": "Powered by MC Status Hosting",
+    },
+}
 
 
-def get_bot_delivery(bot_id):
+def _bot_crypto():
+    """The shared Fernet helpers, imported lazily.
+
+    reviews_db must stay importable (and every non-bot function usable) in a
+    process that has no crypto stack, so the import happens on first bot use
+    rather than at module scope.
+    """
+    from crypto_util import decrypt, encrypt, looks_encrypted, mask
+    return encrypt, decrypt, looks_encrypted, mask
+
+
+def _bot_default_embed():
+    import copy
+    return copy.deepcopy(_BOT_DEFAULT_EMBED)
+
+
+def _bot_default_ip_reply():
+    import copy
+    return copy.deepcopy(_BOT_DEFAULT_IP_REPLY)
+
+
+def _bot_json_obj(raw, default_factory):
+    """Parse a stored bot blob into a dict, or hand back a fresh default.
+
+    The column holds client-authored JSON, so it can be absent, empty,
+    unparseable, or valid JSON that is not an object — every one of those
+    resolves to the default rather than raising on the read path.
+    """
+    import json
+    try:
+        parsed = json.loads(raw or "{}")
+    except Exception:
+        parsed = None
+    if not isinstance(parsed, dict) or not parsed:
+        return default_factory()
+    return parsed
+
+
+def _bot_json_blob(value, label):
+    """Serialise a bot builder blob for its column, or raise ValueError."""
+    import json
+    if not isinstance(value, dict):
+        raise ValueError(f"{label} must be a JSON object")
+    try:
+        encoded = json.dumps(value)
+    except (TypeError, ValueError):
+        raise ValueError(f"{label} is not serialisable as JSON")
+    if len(encoded.encode("utf-8", "replace")) > _BOT_JSON_MAX_BYTES:
+        raise ValueError(f"{label} is too large (max {_BOT_JSON_MAX_BYTES} bytes)")
+    return encoded
+
+
+def _bot_decrypt_or_raw(value):
+    """Decrypt an at-rest bot column; ciphertext that no key here can read
+    comes back None, and anything not encrypted passes through unchanged."""
+    if not value:
+        return None
+    encrypt, decrypt, looks_encrypted, _mask = _bot_crypto()
+    if not looks_encrypted(value):
+        return value
+    try:
+        return decrypt(value) or None
+    except Exception:
+        return None
+
+
+def _bot_decrypt_row(d):
+    for k in _BOT_ENC_FIELDS:
+        if k in d:
+            d[k] = _bot_decrypt_or_raw(d[k])
+    return d
+
+
+def _bot_public_dict(d):
+    """The accessor shape every caller gets: encrypted columns decrypted,
+    token/webhook masked copies alongside, JSON blobs parsed, and ``id``
+    aliased to the slot index so owner-scoped UIs keep addressing bots by one
+    integer."""
+    _bot_decrypt_row(d)
+    _encrypt, decrypt, _looks, mask = _bot_crypto()
+    token = None
+    if d.get("token_enc"):
+        try:
+            token = decrypt(d["token_enc"]) or None
+        except Exception:
+            token = None
+    d["token"] = token
+    d["token_masked"] = mask(token)
+    d["webhook_url_masked"] = mask(d.get("webhook_url"))
+    d["embed"] = _bot_json_obj(d.get("embed_json"), _bot_default_embed)
+    d["ip_reply"] = _bot_json_obj(d.get("ip_reply_json"), _bot_default_ip_reply)
+    try:
+        d["slot_index"] = int(d.get("slot_index") or 0)
+    except (TypeError, ValueError):
+        d["slot_index"] = 0
+    d["id"] = d["slot_index"]
+    d["running"] = int(d.get("running") or 0)
+    try:
+        d["server_port"] = int(d.get("server_port") or 25565)
+    except (TypeError, ValueError):
+        d["server_port"] = 25565
+    try:
+        d["update_interval"] = int(d.get("update_interval") or 60)
+    except (TypeError, ValueError):
+        d["update_interval"] = 60
+    return d
+
+
+# The engine tick lease compares last_run values that several engine
+# instances write and read. Those instances may sit on machines whose clocks
+# disagree, so the timestamps come from the HeatWave server's clock, measured
+# once per _BOT_CLOCK_TTL exactly the way database.py measures the Oracle one.
+_BOT_CLOCK_TTL = 60.0
+_bot_clock_lock = threading.Lock()
+_bot_clock_offset = 0.0
+_bot_clock_measured = 0.0
+
+
+def _bot_shared_now(conn=None):
+    global _bot_clock_offset, _bot_clock_measured
+    if time.monotonic() - _bot_clock_measured >= _BOT_CLOCK_TTL:
+        own = conn is None
+        try:
+            if own:
+                conn = _conn()
+                if conn is None:
+                    return datetime.now(timezone.utc).isoformat()
+            cur = conn.cursor()
+            cur.execute("SELECT UTC_TIMESTAMP(6)")
+            row = cur.fetchone()
+            cur.close()
+            db_dt = row[0] if row else None
+            if db_dt is not None:
+                if db_dt.tzinfo is None:
+                    db_dt = db_dt.replace(tzinfo=timezone.utc)
+                _bot_clock_offset = (db_dt - datetime.now(timezone.utc)).total_seconds()
+                _bot_clock_measured = time.monotonic()
+        except Exception:
+            pass
+        finally:
+            if own:
+                _close_quietly(conn)
+    return (datetime.now(timezone.utc) + timedelta(seconds=_bot_clock_offset)).isoformat()
+
+
+def ensure_bot_slots(uid, slots):
+    """Insert bot rows for any declared slots that lack one. Never deletes —
+    safe to call from read paths that just want the list to match the count."""
+    uid = str(uid or "").strip()
+    if not uid or len(uid) > USER_ID_MAX_CHARS:
+        return
+    try:
+        slots = int(slots)
+    except (TypeError, ValueError):
+        return
+    conn = _conn()
+    if conn is None:
+        return
+    try:
+        cur = conn.cursor()
+        cur.execute("SELECT slot_index FROM bots WHERE uid=%(uid)s", {"uid": uid})
+        have = {int(r[0]) for r in cur.fetchall()}
+        encrypt, _decrypt, _looks, _mask = _bot_crypto()
+        import json as _json
+        for i in range(slots):
+            if i in have:
+                continue
+            cur.execute(
+                "INSERT INTO bots(uid, slot_index, name, created_at, embed_json) "
+                "VALUES(%(uid)s, %(idx)s, %(name)s, %(now)s, %(embed)s)",
+                {"uid": uid, "idx": i, "name": encrypt(f"Bot #{i+1}"),
+                 "now": _now(), "embed": encrypt(_json.dumps(_bot_default_embed()))},
+            )
+        conn.commit()
+    except Exception as ex:
+        _debug_print(f"[reviews_db] ensure_bot_slots failed for {uid}: {ex}")
+    finally:
+        _close_quietly(conn)
+
+
+def get_user_bots(user_id):
+    """Every bot slot of one account, ordered by slot index, fully decrypted
+    into the accessor shape."""
+    uid = str(user_id or "").strip()
+    if not uid:
+        return []
+    conn = _conn()
+    if conn is None:
+        return []
+    try:
+        cur = conn.cursor(dictionary=True)
+        cur.execute("SELECT * FROM bots WHERE uid=%(uid)s ORDER BY slot_index",
+                    {"uid": uid})
+        rows = cur.fetchall()
+    except Exception as ex:
+        _debug_print(f"[reviews_db] could not list bots for {uid}: {ex}")
+        return []
+    finally:
+        _close_quietly(conn)
+    return [_bot_public_dict(dict(r)) for r in rows]
+
+
+def get_bot(user_id, slot_index):
+    """One bot by owner + slot, or None."""
+    uid = str(user_id or "").strip()
+    if not uid:
+        return None
+    try:
+        slot = int(slot_index)
+    except (TypeError, ValueError):
+        return None
+    conn = _conn()
+    if conn is None:
+        return None
+    try:
+        cur = conn.cursor(dictionary=True)
+        cur.execute("SELECT * FROM bots WHERE uid=%(uid)s AND slot_index=%(slot)s",
+                    {"uid": uid, "slot": slot})
+        row = cur.fetchone()
+    except Exception as ex:
+        _debug_print(f"[reviews_db] could not read bot {uid}/{slot}: {ex}")
+        return None
+    finally:
+        _close_quietly(conn)
+    if not row:
+        return None
+    return _bot_public_dict(dict(row))
+
+
+def save_bot_config(user_id, slot_index, *, name=None, server_ip=None, server_port=None,
+                    edition=None, token=None, guild_id=None, channel_id=None,
+                    webhook_url=None, update_interval=None, embed=None, ip_reply=None):
+    """Update one bot's editable fields. False when there is no such row."""
+    uid = str(user_id or "").strip()
+    if not uid:
+        return False
+    try:
+        slot = int(slot_index)
+    except (TypeError, ValueError):
+        return False
+    conn = _conn()
+    if conn is None:
+        return False
+    try:
+        encrypt, _decrypt, _looks, _mask = _bot_crypto()
+        cur = conn.cursor()
+        cur.execute("SELECT 1 FROM bots WHERE uid=%(uid)s AND slot_index=%(slot)s",
+                    {"uid": uid, "slot": slot})
+        if not cur.fetchone():
+            return False
+        fields = {}
+        if name is not None:
+            fields["name"] = encrypt(str(name).strip())
+        if server_ip is not None:
+            fields["server_ip"] = encrypt(str(server_ip).strip())
+        if edition is not None:
+            fields["edition"] = str(edition).strip().lower() or "java"
+        if server_port is not None:
+            raw_port = str(server_port).strip()
+            if not raw_port:
+                if fields.get("edition") == "bedrock":
+                    fields["server_port"] = 19132
+                elif "edition" in fields:
+                    fields["server_port"] = 25565
+            else:
+                try:
+                    parsed_port = int(raw_port)
+                except (ValueError, TypeError):
+                    raise ValueError("Server port must be a number")
+                if parsed_port < 1 or parsed_port > 65535:
+                    raise ValueError("Server port must be between 1 and 65535")
+                fields["server_port"] = parsed_port
+        if token is not None and token != "":
+            fields["token_enc"] = encrypt(str(token).strip())
+            fields["message_id"] = None
+        if guild_id is not None:
+            clean = str(guild_id).strip()
+            if clean and (not clean.isdigit() or len(clean) > 25):
+                raise ValueError("Guild ID must be a Discord numeric ID")
+            fields["guild_id"] = encrypt(clean)
+        if channel_id is not None:
+            clean = str(channel_id).strip()
+            if clean and (not clean.isdigit() or len(clean) > 25):
+                raise ValueError("Channel ID must be a Discord numeric ID")
+            fields["channel_id"] = encrypt(clean)
+            fields["message_id"] = None
+        if update_interval is not None:
+            try:
+                fields["update_interval"] = max(15, int(update_interval))
+            except (ValueError, TypeError):
+                fields["update_interval"] = 60
+        if embed is not None:
+            fields["embed_json"] = encrypt(_bot_json_blob(embed, "embed"))
+            fields["message_id"] = None
+        if ip_reply is not None:
+            fields["ip_reply_json"] = encrypt(_bot_json_blob(ip_reply, "ip_reply"))
+        if webhook_url is not None and webhook_url != "":
+            fields["webhook_url"] = encrypt(str(webhook_url).strip())
+            fields["message_id"] = None
+        fields["updated_at"] = _now()
+        fields["last_error"] = None
+        sets = ", ".join(f"{k}=%({k})s" for k in fields)
+        params = dict(fields)
+        params["uid"] = uid
+        params["slot"] = slot
+        cur.execute(
+            f"UPDATE bots SET {sets} WHERE uid=%(uid)s AND slot_index=%(slot)s",
+            params,
+        )
+        conn.commit()
+        return True
+    except Exception as ex:
+        _debug_print(f"[reviews_db] save_bot_config failed for {uid}/{slot}: {ex}")
+        return False
+    finally:
+        _close_quietly(conn)
+
+
+def set_bot_running(user_id, slot_index, running):
+    uid = str(user_id or "").strip()
+    try:
+        slot = int(slot_index)
+    except (TypeError, ValueError):
+        return False
+    if not uid:
+        return False
+    conn = _conn()
+    if conn is None:
+        return False
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            "UPDATE bots SET running=%(r)s, last_error=NULL "
+            "WHERE uid=%(uid)s AND slot_index=%(slot)s",
+            {"r": int(bool(running)), "uid": uid, "slot": slot},
+        )
+        conn.commit()
+        return cur.rowcount > 0
+    except Exception as ex:
+        _debug_print(f"[reviews_db] set_bot_running failed for {uid}/{slot}: {ex}")
+        return False
+    finally:
+        _close_quietly(conn)
+
+
+def update_bot_runtime(user_id, slot_index, *, message_id=None, last_status=None,
+                       last_error=None):
+    """Extend the tick lease and record the latest publish outcome."""
+    import json as _json
+    uid = str(user_id or "").strip()
+    try:
+        slot = int(slot_index)
+    except (TypeError, ValueError):
+        return False
+    if not uid:
+        return False
+    conn = _conn()
+    if conn is None:
+        return False
+    try:
+        fields = {"last_run": _bot_shared_now(conn)}
+        if message_id is not None:
+            fields["message_id"] = message_id
+        if last_status is not None:
+            fields["last_status"] = _json.dumps(last_status)
+        if last_error is not None:
+            fields["last_error"] = last_error
+        sets = ", ".join(f"{k}=%({k})s" for k in fields)
+        params = dict(fields)
+        params["uid"] = uid
+        params["slot"] = slot
+        cur = conn.cursor()
+        cur.execute(
+            f"UPDATE bots SET {sets} WHERE uid=%(uid)s AND slot_index=%(slot)s",
+            params,
+        )
+        conn.commit()
+        return cur.rowcount > 0
+    except Exception as ex:
+        _debug_print(f"[reviews_db] update_bot_runtime failed for {uid}/{slot}: {ex}")
+        return False
+    finally:
+        _close_quietly(conn)
+
+
+def claim_bot_tick(user_id, slot_index, interval):
+    """True for exactly one caller per bot per interval. Serialises N engines.
+
+    One atomic conditional UPDATE on bots.last_run: the first engine to move
+    the lease forward wins, everyone else sees rowcount 0. Both timestamps
+    come from the HeatWave server's clock (see _bot_shared_now), so instances
+    whose system clocks disagree still measure the lease against one clock.
+    """
+    try:
+        secs = int(interval)
+    except (TypeError, ValueError):
+        secs = 60
+    uid = str(user_id or "").strip()
+    try:
+        slot = int(slot_index)
+    except (TypeError, ValueError):
+        return False
+    if not uid:
+        return False
+    conn = _conn()
+    if conn is None:
+        return False
+    try:
+        now_iso = _bot_shared_now(conn)
+        base = datetime.fromisoformat(now_iso)
+        cutoff = (base - timedelta(seconds=max(0, secs))).isoformat()
+        cur = conn.cursor()
+        cur.execute(
+            "UPDATE bots SET last_run=%(now)s "
+            "WHERE uid=%(uid)s AND slot_index=%(slot)s "
+            "AND (last_run IS NULL OR last_run <= %(cutoff)s)",
+            {"now": now_iso, "uid": uid, "slot": slot, "cutoff": cutoff},
+        )
+        ok = cur.rowcount == 1
+        conn.commit()
+        return ok
+    except Exception as ex:
+        _debug_print(f"[reviews_db] claim_bot_tick failed for {uid}/{slot}: {ex}")
+        return False
+    finally:
+        _close_quietly(conn)
+
+
+def force_bot_claim(user_id, slot_index):
+    """Take the lease unconditionally, for a publish that must happen now."""
+    return update_bot_runtime(user_id, slot_index)
+
+
+def clear_bot_claim(user_id, slot_index):
+    """Drop the tick lease so the very next tick may publish immediately."""
+    uid = str(user_id or "").strip()
+    try:
+        slot = int(slot_index)
+    except (TypeError, ValueError):
+        return False
+    if not uid:
+        return False
+    conn = _conn()
+    if conn is None:
+        return False
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            "UPDATE bots SET last_run=NULL WHERE uid=%(uid)s AND slot_index=%(slot)s",
+            {"uid": uid, "slot": slot},
+        )
+        conn.commit()
+        return cur.rowcount > 0
+    except Exception as ex:
+        _debug_print(f"[reviews_db] clear_bot_claim failed for {uid}/{slot}: {ex}")
+        return False
+    finally:
+        _close_quietly(conn)
+
+
+def delete_bot(user_id, slot_index):
+    uid = str(user_id or "").strip()
+    try:
+        slot = int(slot_index)
+    except (TypeError, ValueError):
+        return 0
+    if not uid:
+        return 0
+    conn = _conn()
+    if conn is None:
+        return 0
+    try:
+        cur = conn.cursor()
+        cur.execute("DELETE FROM bots WHERE uid=%(uid)s AND slot_index=%(slot)s",
+                    {"uid": uid, "slot": slot})
+        deleted = max(0, cur.rowcount)
+        conn.commit()
+        return deleted
+    except Exception as ex:
+        _debug_print(f"[reviews_db] could not delete bot {uid}/{slot}: {ex}")
+        return 0
+    finally:
+        _close_quietly(conn)
+
+
+def delete_user_bots(user_id):
+    """Every bot of one account — the account-deletion cascade half that used
+    to run inside the ATP."""
+    uid = str(user_id or "").strip()
+    if not uid:
+        return 0
+    conn = _conn()
+    if conn is None:
+        return 0
+    try:
+        cur = conn.cursor()
+        cur.execute("DELETE FROM bots WHERE uid=%(uid)s", {"uid": uid})
+        deleted = max(0, cur.rowcount)
+        conn.commit()
+        return deleted
+    except Exception as ex:
+        _debug_print(f"[reviews_db] could not delete bots for {uid}: {ex}")
+        return 0
+    finally:
+        _close_quietly(conn)
+
+
+def list_running_bots():
+    """Every running bot across the fleet — the engine tick's read. The
+    explicit column list is exactly the keys the engine touches per tick."""
+    conn = _conn()
+    if conn is None:
+        return []
+    try:
+        cur = conn.cursor(dictionary=True)
+        cur.execute(
+            "SELECT uid, slot_index, token_enc, channel_id, server_ip, server_port, "
+            "edition, update_interval, message_id, embed_json, ip_reply_json, "
+            "running, webhook_url FROM bots WHERE running=1"
+        )
+        rows = cur.fetchall()
+    except Exception as ex:
+        _debug_print(f"[reviews_db] could not list running bots: {ex}")
+        return []
+    finally:
+        _close_quietly(conn)
+    return [_bot_public_dict(dict(r)) for r in rows]
+
+
+def list_all_bots():
+    """Fleet view for the admin console: every bot, running or not."""
+    conn = _conn()
+    if conn is None:
+        return []
+    try:
+        cur = conn.cursor(dictionary=True)
+        cur.execute(
+            "SELECT uid, slot_index, name, token_enc, channel_id, server_ip, server_port, "
+            "edition, update_interval, guild_id, message_id, running, last_error "
+            "FROM bots ORDER BY uid, slot_index"
+        )
+        rows = cur.fetchall()
+    except Exception as ex:
+        _debug_print(f"[reviews_db] could not list bots: {ex}")
+        return []
+    finally:
+        _close_quietly(conn)
+    out = []
+    for r in rows:
+        d = dict(r)
+        _bot_decrypt_row(d)
+        _encrypt, decrypt, _looks, _mask = _bot_crypto()
+        try:
+            d["token"] = decrypt(d["token_enc"]) if d.get("token_enc") else None
+        except Exception:
+            d["token"] = None
+        try:
+            d["slot_index"] = int(d.get("slot_index") or 0)
+        except (TypeError, ValueError):
+            d["slot_index"] = 0
+        d["id"] = d["slot_index"]
+        d["running"] = int(d.get("running") or 0)
+        out.append(d)
+    return out
+
+
+def bot_counts_by_uid():
+    """{uid: (bot_count, bots_running)} for the admin user list."""
+    conn = _conn()
+    if conn is None:
+        return {}
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            "SELECT uid, COUNT(*), SUM(CASE WHEN running=1 THEN 1 ELSE 0 END) "
+            "FROM bots GROUP BY uid"
+        )
+        return {r[0]: (int(r[1] or 0), int(r[2] or 0)) for r in cur.fetchall()}
+    except Exception as ex:
+        _debug_print(f"[reviews_db] could not count bots: {ex}")
+        return {}
+    finally:
+        _close_quietly(conn)
+
+
+def stop_user_bots(user_id, reason=None):
+    """Stop every running bot of one account — the trial-lapse half of the
+    lifecycle. Returns how many were running."""
+    uid = str(user_id or "").strip()
+    if not uid:
+        return 0
+    conn = _conn()
+    if conn is None:
+        return 0
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            "UPDATE bots SET running=0, last_error=%(reason)s "
+            "WHERE uid=%(uid)s AND running=1",
+            {"uid": uid, "reason": reason},
+        )
+        stopped = max(0, cur.rowcount)
+        conn.commit()
+        return stopped
+    except Exception as ex:
+        _debug_print(f"[reviews_db] stop_user_bots failed for {uid}: {ex}")
+        return 0
+    finally:
+        _close_quietly(conn)
+
+
+def restart_stopped_user_bots(user_id, stopped_reason):
+    """Restart bots that a previous lifecycle pass stopped for `stopped_reason`
+    — the renew half of the trial cycle."""
+    uid = str(user_id or "").strip()
+    if not uid:
+        return 0
+    conn = _conn()
+    if conn is None:
+        return 0
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            "UPDATE bots SET running=1, last_error=NULL "
+            "WHERE uid=%(uid)s AND running=0 AND last_error=%(reason)s",
+            {"uid": uid, "reason": stopped_reason},
+        )
+        restarted = max(0, cur.rowcount)
+        conn.commit()
+        return restarted
+    except Exception as ex:
+        _debug_print(f"[reviews_db] restart_stopped_user_bots failed for {uid}: {ex}")
+        return 0
+    finally:
+        _close_quietly(conn)
+
+
+def user_has_started_bot(user_id):
+    """Whether the account ever ran a bot (running now or has a tick lease)."""
+    uid = str(user_id or "").strip()
+    if not uid:
+        return False
+    conn = _conn()
+    if conn is None:
+        return False
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            "SELECT COUNT(*) FROM bots WHERE uid=%(uid)s "
+            "AND (running=1 OR last_run IS NOT NULL)",
+            {"uid": uid},
+        )
+        r = cur.fetchone()
+        return bool(r and int(r[0] or 0) > 0)
+    except Exception:
+        return False
+    finally:
+        _close_quietly(conn)
+
+
+def get_inactive_warned(user_id):
+    """Timestamp the weekly trial warning was last sent for this account.
+
+    The renew cycle recomputes the warning window from trial_expires_at on
+    every sweep, so the marker no longer needs a users column — it lives here,
+    losable like the rest of this store (worst case: one extra warning mail
+    after a HeatWave outage)."""
+    return get_app_config(f"inactive_warned:{str(user_id).strip()}")
+
+
+def set_inactive_warned(user_id, when):
+    """Mark the warning sent. Returns False when it could not be stored —
+    callers must then skip the send, because a warning that cannot be marked
+    would be re-sent on every sweep."""
+    return set_app_config(f"inactive_warned:{str(user_id).strip()}", str(when))
+
+
+def clear_inactive_warned(user_id):
+    """Renew restarts the cycle, so the marker goes with it."""
+    return set_app_config(f"inactive_warned:{str(user_id).strip()}", "")
+
+
+def _bot_flag_key(user_id, slot_index, name):
+    return f"bot:{str(user_id).strip()}:{int(slot_index)}:{name}"
+
+
+def get_bot_delivery(user_id, slot_index):
     """The bot's delivery switches as {"use_token": 0|1, "use_webhook": 0|1}.
 
-    Stored in app_config rather than the ATP's `bots` row: these are two
-    operator switches with no PII, and HeatWave being down must not stop a bot
-    from posting — an unreadable pair reads as (0, 0), which every caller treats
+    Stored in app_config rather than the bots row: two operator switches with
+    no PII, and an unreadable pair reads as (0, 0), which every caller treats
     as "no explicit choice, keep the historical precedence".
     """
     try:
-        bot_id = int(bot_id)
+        slot = int(slot_index)
     except (TypeError, ValueError):
         return {"use_token": 0, "use_webhook": 0}
     out = {}
     for name in ("use_token", "use_webhook"):
-        raw = get_app_config(_bot_flag_key(bot_id, name), "0")
+        raw = get_app_config(_bot_flag_key(user_id, slot, name), "0")
         out[name] = 1 if str(raw).strip() == "1" else 0
     return out
 
 
-def set_bot_delivery(bot_id, use_token, use_webhook):
+def set_bot_delivery(user_id, slot_index, use_token, use_webhook):
     """Store the two switches. True only when both writes land."""
     try:
-        bot_id = int(bot_id)
+        slot = int(slot_index)
     except (TypeError, ValueError):
         return False
-    ok_token = set_app_config(_bot_flag_key(bot_id, "use_token"), "1" if use_token else "0")
-    ok_hook = set_app_config(_bot_flag_key(bot_id, "use_webhook"), "1" if use_webhook else "0")
+    ok_token = set_app_config(_bot_flag_key(user_id, slot, "use_token"), "1" if use_token else "0")
+    ok_hook = set_app_config(_bot_flag_key(user_id, slot, "use_webhook"), "1" if use_webhook else "0")
     return bool(ok_token and ok_hook)
 
 

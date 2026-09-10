@@ -65,7 +65,7 @@ _SELECT_NODES = (
 
 _SELECT_NODES_WITH_USAGE = (
     "SELECT " + _NODE_PUBLIC_COLUMNS + ", "
-    "(SELECT COUNT(*) FROM panel_servers s WHERE "
+    "(SELECT COUNT(*) FROM servers s WHERE "
     + _SERVER_NODE_ID + "=nodes.id) AS servers "
     "FROM nodes ORDER BY id FETCH FIRST :lim ROWS ONLY"
 )
@@ -89,21 +89,23 @@ _UPDATE_NODE_ENABLED = "UPDATE nodes SET enabled=:enabled WHERE id=:nid"
 _DELETE_NODE = "DELETE FROM nodes WHERE id=:nid"
 
 _COUNT_SERVERS_ON_NODE = (
-    "SELECT COUNT(*) FROM panel_servers s WHERE " + _SERVER_NODE_ID + "=:nid"
+    "SELECT COUNT(*) FROM servers s WHERE " + _SERVER_NODE_ID + "=:nid"
 )
 
 # Count every row that NVL-places onto this node, including node_id NULL
 # (those follow the lowest-id node). Skipping NULLs let a second create
 # land on a node whose capacity was already filled by an unplaced row.
 #
-# LEFT JOIN on the owner rather than an inner one. panel_servers.user_id has a
-# CASCADE constraint so an ownerless row should not exist, but an inner join
-# would answer that impossibility by hiding the container — and a container
-# nobody can see is still consuming that node's memory.
+# LEFT JOIN on the owner rather than an inner one. servers."uid" has an FK to
+# users so an ownerless row should not exist, but an inner join would answer
+# that impossibility by hiding the container — and a container nobody can see
+# is still consuming that node's memory. The row carries only identity, intent
+# and placement: the runtime, version and allocation figures live on the
+# container itself, and the agent probe on the same page reports them.
 _SELECT_SERVERS_ON_NODE = (
-    "SELECT s.id, s.name, s.runtime, s.version, s.memory_mb, s.cpu_percent, "
-    "s.desired_state, s.created_at, s.user_id, s.node_id, u.username "
-    "FROM panel_servers s LEFT JOIN panel_users u ON u.id = s.user_id "
+    "SELECT s.id, s.name, s.status, s.created_at, s.\"uid\", s.node_id, "
+    "u.username "
+    "FROM servers s LEFT JOIN users u ON u.\"uid\" = s.\"uid\" "
     "WHERE " + _SERVER_NODE_ID + "=:nid "
     "ORDER BY s.created_at DESC, s.id "
     "FETCH FIRST :lim ROWS ONLY"
@@ -113,7 +115,7 @@ _COUNT_NODES = "SELECT COUNT(*) FROM nodes"
 
 _SELECT_NODE_WITH_FREE_CAPACITY = (
     "SELECT n.id FROM nodes n WHERE n.enabled=1 AND n.capacity>0 AND "
-    "(SELECT COUNT(*) FROM panel_servers s WHERE "
+    "(SELECT COUNT(*) FROM servers s WHERE "
     + _SERVER_NODE_ID + "=n.id) < n.capacity "
     "ORDER BY n.id FETCH FIRST 1 ROWS ONLY"
 )
@@ -200,11 +202,11 @@ class NodeCapacityError(Exception):
 
 
 class PanelSchemaMissing(Exception):
-    """panel_servers or panel_users is not in this database.
+    """The consolidated servers table is not in this database.
 
     Raised instead of returning an empty list, because the two states read
     identically to an operator and mean opposite things: "this node holds no
-    containers" is normal, "the hosting tables were never created here" means
+    containers" is normal, "the servers table was never created here" means
     the answer on screen is not about this node at all. list_nodes_with_usage
     below degrades to servers=0 for the same missing table — it has to, since a
     node list that fails outright would hide the registry too — so this is the
@@ -460,7 +462,7 @@ def _int_or_none(value):
 
 
 def _server_on_node_dict(row):
-    """One panel_servers row as the console's node view needs it.
+    """One servers row as the console's node view needs it.
 
     `placed` distinguishes a server the placer actually wrote this node onto
     from one that is only counted here because node_id is NULL and this is the
@@ -469,21 +471,22 @@ def _server_on_node_dict(row):
     id — so the page has to be able to tell them apart.
 
     No password_hash, no token, nothing from the owner but the id and the
-    username: this payload crosses two hops to reach a browser.
+    username: this payload crosses two hops to reach a browser. The username
+    is stored encrypted at rest, so it is decrypted here and only the
+    plaintext crosses.
     """
     if row is None:
         return None
+    username = row["username"]
+    if username and database.looks_encrypted(username):
+        username = database.decrypt(username) or None
     return {
         "id": str(row["id"] or ""),
         "name": row["name"],
-        "runtime": row["runtime"],
-        "version": row["version"],
-        "memory_mb": _int_or_none(row["memory_mb"]),
-        "cpu_percent": _int_or_none(row["cpu_percent"]),
-        "desired_state": row["desired_state"],
+        "desired_state": row["status"],
         "created_at": _iso(row["created_at"]),
-        "user_id": str(row["user_id"] or ""),
-        "username": row["username"],
+        "user_id": str(row["uid"] or ""),
+        "username": username,
         "placed": row["node_id"] is not None,
     }
 
@@ -732,10 +735,10 @@ def list_servers_on_node(node_id, limit=SERVER_LIST_MAX):
         message = str(exc)
         if _MISSING_TABLE in message or _MISSING_COLUMN in message:
             raise PanelSchemaMissing(
-                "The hosting tables (panel_servers / panel_users) are missing "
-                "or out of date on this database, so the containers on this "
-                "node cannot be listed. Start the panel once — it creates and "
-                "upgrades its own schema.") from exc
+                "The consolidated servers table is missing or out of date on "
+                "this database, so the containers on this node cannot be "
+                "listed. Start the database tier once — database.init_db() "
+                "creates and migrates the schema.") from exc
         raise
 
 
@@ -823,7 +826,7 @@ def delete_node(node_id):
 
 
 def get_server(server_id):
-    """Get a single panel_servers row by server_id."""
+    """Get a single servers row by server_id."""
     sid = str(server_id or "").strip()
     if not sid:
         return None
@@ -831,11 +834,15 @@ def get_server(server_id):
     def _query(conn):
         cur = conn.cursor()
         cur.execute(
-            "SELECT s.id, s.name, s.user_id, s.node_id "
-            "FROM panel_servers s WHERE s.id = :sid",
+            "SELECT s.id, s.name, s.\"uid\", s.node_id "
+            "FROM servers s WHERE s.id = :sid",
             {"sid": sid}
         )
-        return _fetch_one_dict(cur)
+        row = _fetch_one_dict(cur)
+        if row is not None:
+            # Callers know the owner as user_id.
+            row["user_id"] = row.pop("uid")
+        return row
 
     try:
         return _run_with_heal(_query)
@@ -845,14 +852,14 @@ def get_server(server_id):
 
 
 def delete_server(server_id):
-    """Delete a single panel_servers row by server_id."""
+    """Delete a single servers row by server_id."""
     sid = str(server_id or "").strip()
     if not sid:
         return False
 
     def _do_delete(conn):
         cur = conn.cursor()
-        cur.execute("DELETE FROM panel_servers WHERE id = :sid", {"sid": sid})
+        cur.execute("DELETE FROM servers WHERE id = :sid", {"sid": sid})
         conn.commit()
         return (cur.rowcount or 0) == 1
 

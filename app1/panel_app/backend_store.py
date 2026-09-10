@@ -55,12 +55,8 @@ _SERVER_CREATE = "/api/panel-store/server/create"
 _SERVER_LIST = "/api/panel-store/server/list"
 _SERVER_GET = "/api/panel-store/server/get"
 _SERVER_DELETE = "/api/panel-store/server/delete"
-_SERVER_STARTUP = "/api/panel-store/server/startup"
 _SERVER_NAME = "/api/panel-store/server/name"
-_SERVER_VERSION = "/api/panel-store/server/version"
 _SERVER_STATE = "/api/panel-store/server/state"
-_ACTIVITY_LOG = "/api/panel-store/activity/log"
-_ACTIVITY_LIST = "/api/panel-store/activity/list"
 
 
 def _value_error(exc):
@@ -287,31 +283,11 @@ class BackendStore:
         payload = await self._call(_SERVER_DELETE, {"server_id": server_id, "user_id": user_id})
         return _changed(payload, _SERVER_DELETE)
 
-    async def update_server_startup(self, server_id, user_id, startup):
-        payload = await self._call(
-            _SERVER_STARTUP,
-            {"server_id": server_id, "user_id": user_id, "startup": startup},
-        )
-        return _changed(payload, _SERVER_STARTUP)
-
     async def update_server_name(self, server_id, user_id, name):
         payload = await self._call(
             _SERVER_NAME, {"server_id": server_id, "user_id": user_id, "name": name}
         )
         return _changed(payload, _SERVER_NAME)
-
-    async def update_server_version(self, server_id, user_id, runtime, version, image=None):
-        payload = await self._call(
-            _SERVER_VERSION,
-            {
-                "server_id": server_id,
-                "user_id": user_id,
-                "runtime": runtime,
-                "version": version,
-                "image": image,
-            },
-        )
-        return _changed(payload, _SERVER_VERSION)
 
     async def update_server_state(self, server_id, user_id, running):
         payload = await self._call(
@@ -320,11 +296,3 @@ class BackendStore:
         )
         return _changed(payload, _SERVER_STATE)
 
-    async def log_activity(self, user_id, action, server_id=None, detail=None):
-        # BackendStore proxies to the backend's activity endpoints; this stub
-        # mirrors the other stores since settings.activity_log gates the callers.
-        pass
-
-    async def list_activity(self, user_id, limit=200):
-        # Stub: activity logging is disabled by settings.activity_log in routes.py.
-        return []
