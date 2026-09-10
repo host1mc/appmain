@@ -56,11 +56,7 @@ def _state(env, name, *, required=False):
 
 
 def print_db_env_report(tier="app"):
-    try:
-        import reviews_db
-        if not reviews_db.is_console_debug_enabled():
-            return
-    except Exception:
+    if os.environ.get("CONSOLE_DEBUG", "").strip().lower() not in ("1", "true", "yes", "on"):
         return
     env, file_env = _merged_env()
     oracle_enabled = _is_true(env.get("ORACLE_ENABLED"))

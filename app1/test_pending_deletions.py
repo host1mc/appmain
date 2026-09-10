@@ -50,7 +50,8 @@ def test_enqueue_binds_and_coerces():
     conn = FakeConn()
     ok = _run(
         lambda: reviews_db.enqueue_container_deletion(
-            "srv1", node_id=5, node_ip="10.0.0.9,127.0.0.1", purge=True),
+            "srv1", node_id=5, node_ip="10.0.0.9,127.0.0.1", node_name="edge-1",
+            purge=True),
         conn,
     )
     assert ok is True
@@ -58,7 +59,8 @@ def test_enqueue_binds_and_coerces():
     assert "INSERT INTO pending_container_deletions" in sql
     assert "node_ip" in sql
     assert "ON DUPLICATE KEY UPDATE" in sql
-    assert params == {"s": "srv1", "n": "5", "ip": "10.0.0.9,127.0.0.1",
+    assert params == {"s": "srv1", "n": "5", "nm": "edge-1",
+                      "ip": "10.0.0.9,127.0.0.1",
                       "p": 1, "now": params["now"]}
     assert conn.committed == 1
 
@@ -83,19 +85,21 @@ def test_enqueue_clamps_long_ip():
 def test_list_normalizes_rows():
     conn = FakeConn()
     conn.cur.rows = [
-        {"server_id": "srv1", "node_id": 5, "node_ip": "10.0.0.9",
+        {"server_id": "srv1", "node_id": 5, "node_name": "edge-1",
+         "node_ip": "10.0.0.9",
          "purge": 1, "requested_at": "2026-01-01T00:00:00Z"},
-        {"server_id": None, "node_id": None, "node_ip": None,
+        {"server_id": None, "node_id": None, "node_name": None, "node_ip": None,
          "purge": 0, "requested_at": None},
     ]
     rows = _run(reviews_db.list_container_deletions, conn)
     sql, _ = conn.cur.calls[-1]
-    assert "SELECT server_id, node_id, node_ip, `purge`, requested_at" in sql
+    assert "SELECT server_id, node_id, node_name, node_ip, `purge`, requested_at" in sql
     assert "ORDER BY requested_at" in sql
     assert rows == [
-        {"server_id": "srv1", "node_id": "5", "node_ip": "10.0.0.9",
+        {"server_id": "srv1", "node_id": "5", "node_name": "edge-1",
+         "node_ip": "10.0.0.9",
          "purge": True, "requested_at": "2026-01-01T00:00:00Z"},
-        {"server_id": "", "node_id": "", "node_ip": "",
+        {"server_id": "", "node_id": "", "node_name": "", "node_ip": "",
          "purge": False, "requested_at": ""},
     ]
 

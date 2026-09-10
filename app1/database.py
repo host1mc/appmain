@@ -93,6 +93,12 @@ def _enc_or_none(value):
 _ORACLE_ENABLED = False
 _ORACLE_CFG = {}
 _ORACLE_POOL = None
+# Extra ATPs (ORACLE_DSN_1, ORACLE_DSN_2, …). Same user/password unless
+# ORACLE_USER_N / ORACLE_PASSWORD_N are set. Used when the current target
+# is down, times out, or its pool/session cap is full.
+_ORACLE_TARGETS = []
+_ORACLE_TARGET_I = 0
+_ORACLE_POOLS = {}
 # Pool creation is not idempotent — two threads racing here would each build a
 # pool and only one would be kept, leaking the other's sessions against the ATP
 # session cap. One lock, one pool.
@@ -183,7 +189,7 @@ def _wallet_files_present(wallet_dir):
 
 
 def _load_config():
-    global _ORACLE_ENABLED, _ORACLE_CFG
+    global _ORACLE_ENABLED, _ORACLE_CFG, _ORACLE_TARGETS, _ORACLE_TARGET_I
     _load_env_file()
     enabled = _setting("ORACLE_ENABLED", "false").strip().lower() == "true"
     if enabled:
@@ -194,18 +200,49 @@ def _load_config():
                          "fastapi-oracle-app",
                          _setting("ORACLE_WALLET_DIR", "./Wallet_ATP")))
         wallet_present = _wallet_files_present(wallet_dir)
-        _ORACLE_CFG = {
-            "user": _required_setting("ORACLE_USER"),
-            "password": _required_setting("ORACLE_PASSWORD"),
-            "dsn": _required_setting("ORACLE_DSN"),
-            "wallet_dir": wallet_dir if wallet_present else None,
-            "wallet_password": _setting("ORACLE_WALLET_PASSWORD", ""),
-        }
+        default_user = _required_setting("ORACLE_USER")
+        default_password = _required_setting("ORACLE_PASSWORD")
+        wallet = wallet_dir if wallet_present else None
+        wallet_password = _setting("ORACLE_WALLET_PASSWORD", "")
+        targets = []
+        seen = set()
+        primary = _required_setting("ORACLE_DSN")
+        extras = [primary]
+        for idx in range(1, 8):
+            extra = _setting(f"ORACLE_DSN_{idx}", "").strip()
+            if extra:
+                extras.append(extra)
+        for i, dsn in enumerate(extras):
+            if not dsn or dsn in seen:
+                continue
+            seen.add(dsn)
+            suffix = "" if i == 0 else f"_{i}"
+            targets.append({
+                "user": _setting(f"ORACLE_USER{suffix}", default_user) or default_user,
+                "password": _setting(f"ORACLE_PASSWORD{suffix}", default_password) or default_password,
+                "dsn": dsn,
+                "wallet_dir": wallet,
+                "wallet_password": wallet_password,
+                "label": "primary" if i == 0 else f"failover-{i}",
+            })
+        _ORACLE_TARGETS = targets
+        _ORACLE_TARGET_I = 0
+        _ORACLE_CFG = dict(targets[0])
         # Only the mTLS (wallet) path needs the driver pointed at a wallet
         # directory; walletless one-way TLS reads nothing from disk.
         if wallet_present:
             os.environ["TNS_ADMIN"] = wallet_dir
         _ORACLE_ENABLED = True
+        if len(targets) > 1:
+            _debug_print(f"[database] Oracle failover: {len(targets)} DSN(s) "
+                         f"({', '.join(t['label'] for t in targets)})")
+        elif any(_setting(f"DB_{i}", "").strip() for i in range(0, 8)):
+            _debug_print(
+                "[database] DB_0/DB_1 are Mongo URIs — they do not fail over "
+                "ORACLE_DSN. Add the second ATP's SQL connect string as "
+                "ORACLE_DSN_1 to hop on DPY-4005 or full storage.",
+                file=sys.stderr,
+            )
 
 def _tier_name() -> str:
     """Which tier this process is, from the launcher that started it.
@@ -251,54 +288,56 @@ def _oracle_pool_timeout() -> int:
     return max(1, val)
 
 
+def _pool_kwargs_for(cfg):
+    import oracledb
+    oracledb.defaults.fetch_lobs = False
+    oracledb.defaults.connect_timeout = 10
+    pool_max = _oracle_pool_max()
+    pool_wait = _oracle_pool_timeout()
+    pool_kwargs = dict(
+        user=cfg["user"],
+        password=cfg["password"],
+        dsn=cfg["dsn"],
+        min=0,
+        max=pool_max,
+        increment=1,
+        getmode=getattr(oracledb, "POOL_GETMODE_TIMEDWAIT", getattr(oracledb, "POOL_GETMODE_WAIT", 2)),
+        wait_timeout=pool_wait * 1000,
+        timeout=30,
+    )
+    if cfg.get("wallet_dir"):
+        pool_kwargs.update(
+            config_dir=cfg["wallet_dir"],
+            wallet_location=cfg["wallet_dir"],
+            wallet_password=cfg.get("wallet_password", ""),
+        )
+    return pool_kwargs, pool_max
+
+
+def _oracle_pool_for(cfg):
+    key = cfg["dsn"]
+    pool = _ORACLE_POOLS.get(key)
+    if pool is not None:
+        return pool
+    with _ORACLE_POOL_LOCK:
+        pool = _ORACLE_POOLS.get(key)
+        if pool is not None:
+            return pool
+        import oracledb
+        pool_kwargs, pool_max = _pool_kwargs_for(cfg)
+        pool = oracledb.create_pool(**pool_kwargs)
+        _ORACLE_POOLS[key] = pool
+        _debug_print(f"[database] Oracle pool created ({cfg.get('label', 'dsn')} max={pool_max}"
+              + (f", tier={_tier_name()}" if _tier_name() else "") + ")")
+    return pool
+
+
 def _oracle_pool():
     global _ORACLE_POOL
-    if _ORACLE_POOL is not None:
-        return _ORACLE_POOL
-    with _ORACLE_POOL_LOCK:
-        # re-check inside the lock: the loser of the race must reuse the winner's
-        # pool, not build a second one
-        if _ORACLE_POOL is not None:
-            return _ORACLE_POOL
-        import oracledb
-        oracledb.defaults.fetch_lobs = False
-        oracledb.defaults.connect_timeout = 10
-        pool_max = _oracle_pool_max()
-        pool_wait = _oracle_pool_timeout()
-        # Shed, don't queue. The ATP grants the whole fleet only ~20 concurrent
-        # sessions, and the default getmode (POOL_GETMODE_WAIT) waits for a free
-        # one with no bound — so under load every acquire() past the pool's max
-        # parks its caller's web-server thread indefinitely and the tier stalls
-        # behind the pool instead of staying responsive. POOL_GETMODE_TIMEDWAIT
-        # caps that wait at wait_timeout, after which acquire() raises and the
-        # request fails fast: a fast 503 keeps a thread free to serve the next
-        # caller, where a 30s park would have held it hostage. wait_timeout is in
-        # milliseconds and governs *waiting for a session from the pool* — which
-        # is the acquire wait we want short. It is a distinct knob from `timeout`
-        # below, which is the idle-session eviction time (seconds a session may
-        # sit unused before the pool closes it) and is left as it was.
-        pool_kwargs = dict(
-            user=_ORACLE_CFG["user"],
-            password=_ORACLE_CFG["password"],
-            dsn=_ORACLE_CFG["dsn"],
-            min=0,
-            max=pool_max,
-            increment=1,
-            getmode=getattr(oracledb, "POOL_GETMODE_TIMEDWAIT", getattr(oracledb, "POOL_GETMODE_WAIT", 2)),
-            wait_timeout=pool_wait * 1000,
-            timeout=30,
-        )
-        # Wallet kwargs only when a wallet is actually on disk; otherwise this is
-        # a walletless one-way TLS connection driven entirely by the descriptor.
-        if _ORACLE_CFG.get("wallet_dir"):
-            pool_kwargs.update(
-                config_dir=_ORACLE_CFG["wallet_dir"],
-                wallet_location=_ORACLE_CFG["wallet_dir"],
-                wallet_password=_ORACLE_CFG.get("wallet_password", ""),
-            )
-        _ORACLE_POOL = oracledb.create_pool(**pool_kwargs)
-        _debug_print(f"[database] Oracle pool created (max={pool_max}"
-              + (f", tier={_tier_name()}" if _tier_name() else "") + ")")
+    cfg = _ORACLE_CFG or (_ORACLE_TARGETS[0] if _ORACLE_TARGETS else None)
+    if not cfg:
+        raise RuntimeError("Oracle is not configured")
+    _ORACLE_POOL = _oracle_pool_for(cfg)
     return _ORACLE_POOL
 
 def _pool_saturated(pool) -> bool:
@@ -315,30 +354,146 @@ def _pool_saturated(pool) -> bool:
         return True
 
 
-def _oracle_conn():
-    pool = _oracle_pool()
+_ORACLE_DOWN_MARKERS = (
+    "DPY-4005", "DPY-6005", "DPY-4011", "DPY-3010", "DPY-4027",
+    "ORA-12541", "ORA-12514", "ORA-12170", "ORA-12537", "ORA-03113",
+    "ORA-03114", "ORA-01033", "ORA-01034", "ORA-01109", "ORA-00018",
+    "ORA-12519", "NJS-500",
+    "timed out", "connection refused", "could not connect",
+)
+
+
+def _is_oracle_unreachable(exc) -> bool:
+    msg = str(exc or "")
+    return any(tag in msg for tag in _ORACLE_DOWN_MARKERS)
+
+
+_ORACLE_STORAGE_MARKERS = (
+    "ORA-01653", "ORA-01654", "ORA-01652", "ORA-01658", "ORA-01659",
+    "ORA-01631", "ORA-01632", "ORA-01688", "ORA-01691",
+    "ORA-01536", "ORA-12953", "ORA-12954", "ORA-30036",
+    "unable to extend",
+)
+_STORAGE_CACHE = {}
+_STORAGE_TTL = 30.0
+_STORAGE_PCT = 0.95
+_STORAGE_MIN_FREE = 32 * 1024 * 1024
+
+
+def _is_oracle_storage_full(exc) -> bool:
+    msg = str(exc or "")
+    return any(tag.lower() in msg.lower() for tag in _ORACLE_STORAGE_MARKERS)
+
+
+def _dsn_storage_full(conn, dsn) -> bool:
+    """True when this ATP is out of (or nearly out of) tablespace."""
+    now = time.monotonic()
+    hit = _STORAGE_CACHE.get(dsn)
+    if hit and now - hit[0] < _STORAGE_TTL:
+        return hit[1]
+    full = False
     try:
-        return pool.acquire()
+        cur = conn.cursor()
+        cur.execute("SELECT NVL(SUM(bytes), 0) FROM user_segments")
+        used = int(cur.fetchone()[0] or 0)
+        cur.execute(
+            "SELECT NVL(SUM(CASE WHEN max_bytes < 0 THEN NULL ELSE max_bytes END), 0) "
+            "FROM user_ts_quotas"
+        )
+        quota = int(cur.fetchone()[0] or 0)
+        if quota <= 0:
+            try:
+                quota = int(float(_setting("ORACLE_STORAGE_GB", "20"))) * (1024 ** 3)
+            except (TypeError, ValueError):
+                quota = 20 * (1024 ** 3)
+        remaining = quota - used
+        full = remaining <= _STORAGE_MIN_FREE or (quota and used / quota >= _STORAGE_PCT)
+        if full:
+            _debug_print(
+                f"[database] Oracle storage full used={used} quota={quota}",
+                file=sys.stderr,
+            )
     except Exception as ex:
-        # DPY-4005 means only "no session within wait_timeout", and that covers two
-        # states that want opposite handling. Either the pool is at max with every
-        # session busy — contention, and the fast failure above is the point — or the
-        # pool is still below max and the wait expired while a *new* session was
-        # being dialled. The second is a cold pool, which min=0 plus the 30s idle
-        # timeout makes the normal state of any tier that touches Oracle less often
-        # than that, and it could never succeed when the ATP took longer than
-        # wait_timeout (5s) to hand over a session even though connect_timeout allows
-        # it 10s. The maintenance daemon showed it plainly: its sweep is
-        # single-threaded and every task closes its connection before the next one
-        # acquires, so its pool of 2 cannot be exhausted, yet each sweep reported
-        # DPY-4005 and logged "shedding with 503" against nothing.
-        #
-        # So retry once, and only while the pool was still growing: the connect then
-        # gets its full connect_timeout across the two waits, and a saturated pool
-        # still sheds on the first failure.
-        if not _is_pool_exhausted(ex) or _pool_saturated(pool):
-            raise
-    return pool.acquire()
+        full = _is_oracle_storage_full(ex)
+    _STORAGE_CACHE[dsn] = (now, full)
+    return full
+
+
+def _failover_oracle(reason):
+    """Move the live target to the next DSN. Returns True if there is one."""
+    global _ORACLE_CFG, _ORACLE_POOL, _ORACLE_TARGET_I, _SCHEMA_ENSURED
+    if len(_ORACLE_TARGETS) < 2:
+        return False
+    nxt = (_ORACLE_TARGET_I + 1) % len(_ORACLE_TARGETS)
+    if nxt == _ORACLE_TARGET_I:
+        return False
+    prev = _ORACLE_TARGETS[_ORACLE_TARGET_I]
+    _ORACLE_TARGET_I = nxt
+    _ORACLE_CFG = dict(_ORACLE_TARGETS[nxt])
+    _ORACLE_POOL = None
+    # The standby ATP may not have this process's schema pass yet.
+    _SCHEMA_ENSURED = False
+    _debug_print(f"[database] Oracle failover {prev.get('label')} -> "
+                 f"{_ORACLE_CFG.get('label')}: {reason}", file=sys.stderr)
+    return True
+
+
+def _is_pool_exhausted(exc) -> bool:
+    msg = str(exc or "")
+    if "DPY-4005" in msg:
+        return True
+    args = getattr(exc, "args", None) or ()
+    if args:
+        code = getattr(args[0], "full_code", None)
+        if code == "DPY-4005":
+            return True
+    return False
+
+
+def _oracle_conn():
+    last_ex = None
+    tried = set()
+    n = max(1, len(_ORACLE_TARGETS) or 1)
+    for _ in range(n):
+        cfg = _ORACLE_CFG or {}
+        key = cfg.get("dsn")
+        if not key or key in tried:
+            if not _failover_oracle("no dsn"):
+                break
+            continue
+        tried.add(key)
+        pool = _oracle_pool()
+        try:
+            conn = pool.acquire()
+        except Exception as ex:
+            last_ex = ex
+            # Do not wait on the same pool again — DPY-4005 already burned
+            # wait_timeout. Hop to ORACLE_DSN_n while one remains.
+            if not (
+                _is_pool_exhausted(ex)
+                or _is_oracle_unreachable(ex)
+                or _is_oracle_storage_full(ex)
+            ):
+                raise
+            if not _failover_oracle(ex):
+                _debug_print(
+                    "[database] Oracle failover skipped (set ORACLE_DSN_1): "
+                    f"{ex}",
+                    file=sys.stderr,
+                )
+                raise
+            continue
+        if len(_ORACLE_TARGETS) > 1 and _dsn_storage_full(conn, key):
+            try:
+                conn.close()
+            except Exception:
+                pass
+            if _failover_oracle("storage full"):
+                continue
+        return conn
+    if last_ex:
+        raise last_ex
+    raise RuntimeError("Oracle is not configured")
 
 # One per object _ensure_oracle_cols_on() can create, so a cold start that loses
 # every race in turn still converges. Five tiers boot at once and the function
@@ -461,6 +616,7 @@ def _ensure_oracle_cols_on(conn):
                 slots VARCHAR2(10) DEFAULT '1',
                 container_slots VARCHAR2(10) DEFAULT '1',
                 email_verified VARCHAR2(5) DEFAULT '0',
+                github_verified VARCHAR2(5) DEFAULT '0',
                 account_type VARCHAR2(20) DEFAULT 'trial',
                 trial_expires_at VARCHAR2(50),
                 is_active NUMBER DEFAULT 1,
@@ -469,18 +625,17 @@ def _ensure_oracle_cols_on(conn):
                 ads_disabled NUMBER DEFAULT 0,
                 is_banned NUMBER DEFAULT 0,
                 banned_reason VARCHAR2(2000),
-                discord_bot_token VARCHAR2(500),
-                webhook_token VARCHAR2(500),
                 fingerprint_ip VARCHAR2(500),
                 verified_at VARCHAR2(50),
                 last_active_at VARCHAR2(50),
-                inactive_warned_at VARCHAR2(50),
-                bot_stopped_at VARCHAR2(50)
+                bot_stopped_at VARCHAR2(50),
+                banned_at VARCHAR2(50),
+                banned_purged_at VARCHAR2(50)
             )
         """)
         # Mirrors the CREATE above. A column left out of this set is re-ADDed
         # below and only survives because ORA-01430 is tolerated.
-        existing = {"uid","username","username_lookup_hash","username_ci_lookup_hash","email","email_lookup_hash","password","display_name","slots","container_slots","email_verified","account_type","trial_expires_at","is_active","created_at","last_login","ads_disabled","is_banned","banned_reason","discord_bot_token","webhook_token","fingerprint_ip","verified_at","last_active_at","inactive_warned_at","bot_stopped_at"}
+        existing = {"uid","username","username_lookup_hash","username_ci_lookup_hash","email","email_lookup_hash","password","display_name","slots","container_slots","email_verified","github_verified","account_type","trial_expires_at","is_active","created_at","last_login","ads_disabled","is_banned","banned_reason","fingerprint_ip","verified_at","last_active_at","bot_stopped_at","banned_at","banned_purged_at"}
     else:
         cur.execute("SELECT column_name FROM user_tab_columns WHERE table_name='USERS'")
         existing = {r[0].lower() for r in cur.fetchall()}
@@ -496,19 +651,19 @@ def _ensure_oracle_cols_on(conn):
         "slots": "VARCHAR2(10) DEFAULT '1'",
         "container_slots": "VARCHAR2(10) DEFAULT '1'",
         "email_verified": "VARCHAR2(5) DEFAULT '0'",
+        "github_verified": "VARCHAR2(5) DEFAULT '0'",
         "account_type": "VARCHAR2(20) DEFAULT 'trial'",
         "trial_expires_at": "VARCHAR2(50)",
         "is_active": "NUMBER DEFAULT 1",
         "ads_disabled": "NUMBER DEFAULT 0",
         "is_banned": "NUMBER DEFAULT 0",
         "banned_reason": "VARCHAR2(2000)",
-        "discord_bot_token": "VARCHAR2(500)",
-        "webhook_token": "VARCHAR2(500)",
         "fingerprint_ip": "VARCHAR2(500)",
         "verified_at": "VARCHAR2(50)",
         "last_active_at": "VARCHAR2(50)",
-        "inactive_warned_at": "VARCHAR2(50)",
         "bot_stopped_at": "VARCHAR2(50)",
+        "banned_at": "VARCHAR2(50)",
+        "banned_purged_at": "VARCHAR2(50)",
     }
     for col, dtype in needed.items():
         if col not in existing:
@@ -521,113 +676,38 @@ def _ensure_oracle_cols_on(conn):
                     _debug_print(f"[database] Column {col} already exists, skipping")
                 else:
                     raise
+    # One consolidated server table. The old hosting_servers, panel_servers
+    # and panel_users tables are gone: a server row is uid + name + status,
+    # linked to users by a real foreign key on uid. The container's runtime,
+    # startup command and image live on the container itself (the node agent
+    # stores them in the container's labels / .container_config.json), not in
+    # this table and not anywhere the panel renders them. node_id stays as the
+    # routing key that tells the panel which node agent owns the container.
     cur.execute(
-        "SELECT COUNT(*) FROM user_tab_columns WHERE table_name='BOTS'"
-    )
-    if cur.fetchone()[0] == 0:
-        # uid is the user link. Slot identity is (uid, slot_index). There is no
-        # separate user_id column — the users table is keyed on uid alone.
-        cur.execute("""
-            CREATE TABLE bots (
-                id NUMBER GENERATED BY DEFAULT AS IDENTITY PRIMARY KEY,
-                "uid" VARCHAR2(10) NOT NULL,
-                name VARCHAR2(255) DEFAULT 'My Bot',
-                slot_index NUMBER DEFAULT 0,
-                server_ip VARCHAR2(255),
-                server_port NUMBER DEFAULT 25565,
-                edition VARCHAR2(20) DEFAULT 'java',
-                token_enc VARCHAR2(500),
-                guild_id VARCHAR2(500),
-                channel_id VARCHAR2(500),
-                message_id VARCHAR2(100),
-                embed_json CLOB,
-                ip_reply_json CLOB,
-                webhook_url VARCHAR2(500),
-                update_interval NUMBER DEFAULT 60,
-                running NUMBER DEFAULT 0,
-                last_run VARCHAR2(50),
-                last_status CLOB,
-                last_error VARCHAR2(500),
-                created_at VARCHAR2(50) NOT NULL,
-                updated_at VARCHAR2(50)
-            )
-        """)
-    cur.execute(
-        "SELECT column_name FROM user_tab_columns WHERE table_name='BOTS'"
-    )
-    bot_cols = {r[0].lower() for r in cur.fetchall()}
-    for col, dtype in [("uid", "VARCHAR2(10)"),
-                         ("ip_reply_json", "CLOB"),
-                         ("webhook_url", "VARCHAR2(500)")]:
-        if col not in bot_cols:
-            if not _IDENTIFIER_RE.fullmatch(col):
-                raise ValueError(f"invalid column name in DDL: {col!r}")
-            _alter_retry(cur, f"ALTER TABLE bots ADD {_qcol(col)} {dtype}", f"bots.{col}")
-    # Discord IDs are short in plaintext, but these two columns are encrypted
-    # at rest. A Fernet token for an 18-20 digit ID is about 120 characters, so
-    # the original VARCHAR2(100) schema rejected every normal save.
-    cur.execute("""
-        SELECT column_name, data_length FROM user_tab_columns
-        WHERE table_name='BOTS' AND column_name IN ('GUILD_ID','CHANNEL_ID')
-    """)
-    for column_name, data_length in cur.fetchall():
-        if int(data_length or 0) < 500:
-            if not _IDENTIFIER_RE.fullmatch(column_name):
-                raise ValueError(f"invalid column name in DDL: {column_name!r}")
-            _alter_retry(
-                cur, f"ALTER TABLE bots MODIFY ({column_name} VARCHAR2(500))",
-                f"bots.{column_name.lower()} width")
-    # DC bot hosting servers: user code that the engine runs as supervised
-    # processes. id is a Python-side UUID like users.id — INSERT ... RETURNING
-    # has no precedent in this module, and a post-insert re-query would race a
-    # concurrent create from the same account. name/code/start_command are
-    # encrypted at rest like every other user payload in this database.
-    cur.execute(
-        "SELECT COUNT(*) FROM user_tab_columns WHERE table_name='HOSTING_SERVERS'"
+        "SELECT COUNT(*) FROM user_tab_columns WHERE table_name='SERVERS'"
     )
     if cur.fetchone()[0] == 0:
         cur.execute("""
-            CREATE TABLE hosting_servers (
+            CREATE TABLE servers (
                 id VARCHAR2(36) PRIMARY KEY,
                 "uid" VARCHAR2(10) NOT NULL,
-                name VARCHAR2(500),
-                runtime VARCHAR2(30) DEFAULT 'python',
-                start_command VARCHAR2(255),
-                code CLOB,
-                status VARCHAR2(16) DEFAULT 'stopped',
-                pid NUMBER,
-                last_error VARCHAR2(1000),
-                created_at VARCHAR2(50) NOT NULL,
-                updated_at VARCHAR2(50)
-            )
-        """)
-        # A read index, not a correctness requirement; losing the race against
-        # another tier's identical CREATE is handled by the caller.
-        try:
-            cur.execute(
-                "CREATE INDEX hosting_servers_uid ON hosting_servers (\"uid\")")
-        except Exception as ex:
-            _debug_print(f"[database] could not create hosting_servers_uid index: {ex}")
-    # Point-in-time snapshots of a hosting server (code + text files, plus its
-    # name/runtime/start command), encrypted at rest like every user payload.
-    cur.execute(
-        "SELECT COUNT(*) FROM user_tab_columns WHERE table_name='HOSTING_BACKUPS'"
-    )
-    if cur.fetchone()[0] == 0:
-        cur.execute("""
-            CREATE TABLE hosting_backups (
-                id VARCHAR2(36) PRIMARY KEY,
-                server_id VARCHAR2(36),
-                payload CLOB,
-                created_at VARCHAR2(50) NOT NULL
+                name VARCHAR2(255),
+                status NUMBER DEFAULT 0 NOT NULL,
+                node_id NUMBER,
+                created_at DATE NOT NULL,
+                FOREIGN KEY ("uid") REFERENCES users ("uid")
             )
         """)
         try:
-            cur.execute(
-                "CREATE INDEX hosting_backups_server "
-                "ON hosting_backups (server_id)")
+            cur.execute("CREATE INDEX servers_uid ON servers (\"uid\")")
         except Exception as ex:
-            _debug_print(f"[database] could not create hosting_backups_server index: {ex}")
+            _debug_print(f"[database] could not create servers_uid index: {ex}")
+    # fingerprints is ONE table for both the current device binding and the
+    # device history (the old fingerprint_history table is gone). Every row is
+    # a sighting; a user's "current" device is simply their newest row. uid is
+    # therefore NOT unique — one account accumulates one row per distinct
+    # device/IP sighting, and bind_fingerprint dedupes against the newest row
+    # so a user on one machine still costs one row, not one per login.
     cur.execute(
         "SELECT COUNT(*) FROM user_tab_columns WHERE table_name='FINGERPRINTS'"
     )
@@ -635,15 +715,24 @@ def _ensure_oracle_cols_on(conn):
         cur.execute("""
             CREATE TABLE fingerprints (
                 id NUMBER GENERATED BY DEFAULT AS IDENTITY PRIMARY KEY,
-                "uid" VARCHAR2(10) NOT NULL UNIQUE,
+                "uid" VARCHAR2(10) NOT NULL,
                 fingerprint_hash VARCHAR2(500) NOT NULL,
                 lookup_hash VARCHAR2(500) NOT NULL,
                 device_info_enc CLOB,
                 ip_address VARCHAR2(255),
                 ip_lookup_hash VARCHAR2(64),
-                created_at VARCHAR2(50) NOT NULL
+                created_at VARCHAR2(50) NOT NULL,
+                FOREIGN KEY ("uid") REFERENCES users ("uid")
             )
         """)
+        for idx_sql, what in (
+            ("CREATE INDEX fp_uid ON fingerprints (\"uid\")", "fp_uid"),
+            ("CREATE INDEX fp_lookup ON fingerprints (lookup_hash)", "fp_lookup"),
+        ):
+            try:
+                cur.execute(idx_sql)
+            except Exception as ex:
+                _debug_print(f"[database] could not create {what}: {ex}")
     else:
         cur.execute("SELECT column_name FROM user_tab_columns WHERE table_name='FINGERPRINTS'")
         fp_cols = {r[0].lower() for r in cur.fetchall()}
@@ -657,54 +746,44 @@ def _ensure_oracle_cols_on(conn):
         if "ip_lookup_hash" not in fp_cols:
             _alter_retry(cur, "ALTER TABLE fingerprints ADD ip_lookup_hash VARCHAR2(64)",
                          "fingerprints.ip_lookup_hash")
-        # One device may now carry several accounts, so lookup_hash must not be
-        # unique any more; repeat signups are flagged, not blocked.
+        # The merged table keeps many rows per user, so any older UNIQUE
+        # constraint on uid must go (the lookup_hash uniqueness was already
+        # dropped for the same multi-account reason).
         cur.execute("""
-            SELECT uc.constraint_name FROM user_constraints uc
+            SELECT uc.constraint_name, ucc.column_name FROM user_constraints uc
             JOIN user_cons_columns ucc ON ucc.constraint_name = uc.constraint_name
             WHERE uc.table_name='FINGERPRINTS' AND uc.constraint_type='U'
-              AND ucc.column_name='LOOKUP_HASH'
+              AND ucc.column_name IN ('LOOKUP_HASH','UID')
         """)
-        for (cname,) in cur.fetchall():
+        for cname, _col in cur.fetchall():
             try:
                 if not _IDENTIFIER_RE.fullmatch(cname):
                     raise ValueError(f"invalid constraint name: {cname!r}")
                 cur.execute(f"ALTER TABLE fingerprints DROP CONSTRAINT {cname}")
             except Exception as ex:
                 _debug_print(f"[database] could not drop {cname} on fingerprints: {ex}")
-    cur.execute(
-        "SELECT COUNT(*) FROM user_tab_columns WHERE table_name='FINGERPRINT_HISTORY'"
-    )
-    if cur.fetchone()[0] == 0:
-        # fingerprints holds one current row per user and is overwritten on every
-        # login, so the previous device was unrecoverable. This is the append-only
-        # record behind it: no UNIQUE on user_id, and nothing ever UPDATEs a row.
-        # record_fingerprint_history only writes when the hash or the address
-        # actually changed, so a user on one machine costs one row, not one per
-        # login — device_info_enc is a 10-25 KB CLOB and the ATP cap is shared.
+        # The unique index Oracle created for the old "uid ... UNIQUE" column
+        # constraint survives a DROP CONSTRAINT only when it was built
+        # separately; drop anything unique that still sits on uid alone.
         cur.execute("""
-            CREATE TABLE fingerprint_history (
-                id NUMBER GENERATED BY DEFAULT AS IDENTITY PRIMARY KEY,
-                "uid" VARCHAR2(10) NOT NULL,
-                fingerprint_hash VARCHAR2(500) NOT NULL,
-                lookup_hash VARCHAR2(500) NOT NULL,
-                device_info_enc CLOB,
-                ip_address VARCHAR2(255),
-                ip_lookup_hash VARCHAR2(64),
-                created_at VARCHAR2(50) NOT NULL
-            )
+            SELECT i.index_name FROM user_indexes i
+            WHERE i.table_name='FINGERPRINTS' AND i.uniqueness='UNIQUE'
+              AND NOT EXISTS (
+                  SELECT 1 FROM user_ind_columns ic2
+                  WHERE ic2.index_name = i.index_name AND ic2.column_position > 1
+              )
+              AND EXISTS (
+                  SELECT 1 FROM user_ind_columns ic
+                  WHERE ic.index_name = i.index_name AND ic.column_name='UID'
+              )
         """)
-        # Indexes are a read optimisation, not a correctness requirement, and a
-        # second tier racing the same CREATE raises ORA-00955 rather than a lock
-        # error _alter_retry would retry. Losing that race must not stop startup.
-        for idx_sql, what in (
-            ("CREATE INDEX fp_hist_uid ON fingerprint_history (\"uid\")", "fp_hist_uid"),
-            ("CREATE INDEX fp_hist_lookup ON fingerprint_history (lookup_hash)", "fp_hist_lookup"),
-        ):
+        for (iname,) in cur.fetchall():
             try:
-                cur.execute(idx_sql)
+                if not _IDENTIFIER_RE.fullmatch(iname):
+                    raise ValueError(f"invalid index name: {iname!r}")
+                cur.execute(f"DROP INDEX {iname}")
             except Exception as ex:
-                _debug_print(f"[database] could not create {what}: {ex}")
+                _debug_print(f"[database] could not drop unique index {iname}: {ex}")
     cur.execute(
         "SELECT COUNT(*) FROM user_tab_columns WHERE table_name='DEVICE_EVENTS'"
     )
@@ -842,10 +921,6 @@ def _ensure_oracle_cols_on(conn):
             ("LOOKUP_HASH", "VARCHAR2(64)"),
             ("IP_ADDRESS", "VARCHAR2(200)"),
         ]),
-        ("FINGERPRINT_HISTORY", [
-            ("LOOKUP_HASH", "VARCHAR2(64)"),
-            ("IP_ADDRESS", "VARCHAR2(200)"),
-        ]),
         ("DEVICE_EVENTS", [
             ("LOOKUP_HASH", "VARCHAR2(64)"),
             ("IP_ADDRESS", "VARCHAR2(200)"),
@@ -856,14 +931,6 @@ def _ensure_oracle_cols_on(conn):
         ("USERS", [
             ("EMAIL_VERIFIED", "NUMBER DEFAULT 0"),
             ("SLOTS", "NUMBER DEFAULT 1"),
-        ]),
-        ("BOTS", [
-            ("MESSAGE_ID", "VARCHAR2(50)"),
-            ("LAST_ERROR", "VARCHAR2(200)"),
-        ]),
-        ("HOSTING_SERVERS", [
-            ("LAST_ERROR", "VARCHAR2(500)"),
-            ("NAME", "VARCHAR2(300)"),
         ]),
         ("OTP_CODES", [
             ("CODE", "VARCHAR2(100)"),
@@ -907,7 +974,180 @@ def _ensure_oracle_cols_on(conn):
         _remove_legacy_user_schema(conn, cur)
     except Exception as ex:
         _debug_print(f"[database] legacy schema removal incomplete: {ex}")
+    try:
+        _consolidate_schema(conn, cur)
+    except Exception as ex:
+        _debug_print(f"[database] schema consolidation incomplete: {ex}")
+    try:
+        _ensure_uid_foreign_keys(cur)
+    except Exception as ex:
+        _debug_print(f"[database] uid foreign key pass incomplete: {ex}")
     conn.commit()
+
+
+def _table_exists(cur, table):
+    cur.execute("SELECT COUNT(*) FROM user_tables WHERE table_name=:t", {"t": table})
+    return cur.fetchone()[0] > 0
+
+
+def _drop_table_quietly(cur, table):
+    try:
+        cur.execute(f"DROP TABLE {table} CASCADE CONSTRAINTS PURGE")
+    except Exception as ex:
+        if "ORA-00942" not in str(ex):
+            _debug_print(f"[database] could not drop table {table}: {ex}")
+
+
+def _consolidate_schema(conn, cur):
+    """One-time consolidation into the new schema shape.
+
+    * fingerprint_history rows move into fingerprints (the merged table), then
+      fingerprint_history is dropped.
+    * panel_servers and hosting_servers rows move into the single servers
+      table (uid + name + status); panel_users container grants move onto
+      users.container_slots; panel_users / panel_servers / panel_activity /
+      hosting_servers / hosting_backups are dropped.
+    * Oracle bots rows move to the HeatWave bots table (same ciphertext — the
+      Fernet key is shared), then the Oracle bots table is dropped. The drop
+      only happens once HeatWave actually holds the rows; with no HeatWave
+      configured the Oracle table is left in place (unread by the new code,
+      but the data survives until the store exists).
+    * users columns that moved elsewhere (discord_bot_token, webhook_token —
+      now in the bots table; inactive_warned_at — the weekly renew cycle
+      recomputes it) are dropped.
+
+    Every step is idempotent and race-tolerant the same way the rest of this
+    bootstrap is: five tiers run it concurrently, inserts are NOT EXISTS-
+    guarded, and a DROP that loses the race reads ORA-00942.
+    """
+    # ── fingerprints + fingerprint_history → one table ──────────────
+    if _table_exists(cur, "FINGERPRINT_HISTORY"):
+        cur.execute("""
+            INSERT INTO fingerprints ("uid", fingerprint_hash, lookup_hash,
+                                      device_info_enc, ip_address, ip_lookup_hash, created_at)
+            SELECT h."uid", h.fingerprint_hash, h.lookup_hash, h.device_info_enc,
+                   h.ip_address, h.ip_lookup_hash, h.created_at
+            FROM fingerprint_history h
+            WHERE NOT EXISTS (
+                SELECT 1 FROM fingerprints f
+                WHERE f."uid" = h."uid"
+                  AND f.lookup_hash = h.lookup_hash
+                  AND NVL(f.ip_lookup_hash, '~') = NVL(h.ip_lookup_hash, '~')
+                  AND f.created_at = h.created_at
+            )
+        """)
+        _drop_table_quietly(cur, "FINGERPRINT_HISTORY")
+    # ── panel_users container grants → users.container_slots ────────
+    if _table_exists(cur, "PANEL_USERS"):
+        cur.execute("""
+            SELECT id, container_slots FROM panel_users
+            WHERE container_slots IS NOT NULL
+        """)
+        for pid, slots in cur.fetchall():
+            cur.execute("UPDATE users SET container_slots=:s WHERE \"uid\"=:id",
+                        {"s": str(int(slots)), "id": pid})
+    # ── panel_servers + hosting_servers → servers ───────────────────
+    if _table_exists(cur, "PANEL_SERVERS"):
+        cur.execute("""
+            INSERT INTO servers (id, "uid", name, status, node_id, created_at)
+            SELECT p.id, p.user_id, p.name, NVL(p.desired_state, 0), p.node_id,
+                   NVL(p.created_at, SYSDATE)
+            FROM panel_servers p
+            WHERE EXISTS (SELECT 1 FROM users u WHERE u."uid" = p.user_id)
+              AND NOT EXISTS (SELECT 1 FROM servers s WHERE s.id = p.id)
+        """)
+    if _table_exists(cur, "HOSTING_SERVERS"):
+        cur.execute("""
+            INSERT INTO servers (id, "uid", name, status, node_id, created_at)
+            SELECT h.id, h."uid", h.name,
+                   CASE WHEN h.status = 'running' THEN 1 ELSE 0 END, NULL, SYSDATE
+            FROM hosting_servers h
+            WHERE EXISTS (SELECT 1 FROM users u WHERE u."uid" = h."uid")
+              AND NOT EXISTS (SELECT 1 FROM servers s WHERE s.id = h.id)
+        """)
+    for gone in ("PANEL_ACTIVITY", "PANEL_SERVERS", "PANEL_USERS",
+                 "HOSTING_BACKUPS", "HOSTING_SERVERS"):
+        if _table_exists(cur, gone):
+            _drop_table_quietly(cur, gone)
+    # ── Oracle bots → HeatWave bots ─────────────────────────────────
+    if _table_exists(cur, "BOTS"):
+        moved = False
+        try:
+            import reviews_db
+            if reviews_db.enabled():
+                mconn = reviews_db._conn()
+                if mconn is not None:
+                    try:
+                        cur.execute(
+                            "SELECT \"uid\", NVL(slot_index,0), name, server_ip, server_port, "
+                            "edition, token_enc, guild_id, channel_id, message_id, embed_json, "
+                            "ip_reply_json, webhook_url, update_interval, NVL(running,0), "
+                            "last_run, last_status, last_error, created_at, updated_at FROM bots"
+                        )
+                        rows = cur.fetchall()
+                        mcur = mconn.cursor()
+                        for r in rows:
+                            mcur.execute(
+                                "INSERT IGNORE INTO bots (uid, slot_index, name, server_ip, "
+                                "server_port, edition, token_enc, guild_id, channel_id, "
+                                "message_id, embed_json, ip_reply_json, webhook_url, "
+                                "update_interval, running, last_run, last_status, last_error, "
+                                "created_at, updated_at) VALUES "
+                                "(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
+                                tuple(r),
+                            )
+                        mconn.commit()
+                        mcur.execute("SELECT COUNT(*) FROM bots")
+                        moved = int(mcur.fetchone()[0] or 0) >= len(rows)
+                    finally:
+                        try:
+                            mconn.close()
+                        except Exception:
+                            pass
+        except Exception as ex:
+            _debug_print(f"[database] bots move to HeatWave not completed: {ex}")
+        if moved:
+            _drop_table_quietly(cur, "BOTS")
+    # ── users columns that moved elsewhere ──────────────────────────
+    for col in ("discord_bot_token", "webhook_token", "inactive_warned_at"):
+        _drop_column_quietly(cur, "USERS", col.upper())
+
+
+def _ensure_uid_foreign_keys(cur):
+    """Make uid a real foreign key on every user-linked Oracle table.
+
+    Cross-store links cannot be enforced in SQL — the HeatWave bots and
+    reviews tables carry uid as the logical link — but every child table that
+    lives in this schema next to users gets an actual constraint. Skipped per
+    table when orphaned rows predate the constraint; the row-level cleanups
+    (delete_user etc.) keep the rest consistent from here on.
+    """
+    for table in ("SERVERS", "FINGERPRINTS", "SESSIONS", "DEVICE_EVENTS",
+                  "USER_AD_ZONE_OVERRIDES"):
+        if not _table_exists(cur, table):
+            continue
+        cname = f"fk_{table.lower()}_uid"
+        cur.execute(
+            "SELECT COUNT(*) FROM user_constraints "
+            "WHERE table_name=:t AND constraint_name=:c",
+            {"t": table, "c": cname.upper()})
+        if cur.fetchone()[0]:
+            continue
+        cur.execute(
+            f"SELECT COUNT(*) FROM {table} WHERE \"uid\" IS NOT NULL "
+            f"AND \"uid\" NOT IN (SELECT \"uid\" FROM users)")
+        if cur.fetchone()[0]:
+            _debug_print(f"[database] {cname} skipped: orphaned uid rows exist")
+            continue
+        try:
+            _alter_retry(
+                cur,
+                f"ALTER TABLE {table} ADD CONSTRAINT {cname} "
+                f"FOREIGN KEY (\"uid\") REFERENCES users (\"uid\")",
+                f"{table} uid FK")
+        except Exception as ex:
+            if "ORA-02260" not in str(ex) and "ORA-02264" not in str(ex):
+                _debug_print(f"[database] could not add {cname}: {ex}")
 
 
 _LEGACY_CHILD_TABLES = (
@@ -1361,23 +1601,6 @@ def default_ip_reply():
     }
 
 
-def _bot_json_obj(raw, default_factory):
-    """Parse a stored bot blob into a dict, or hand back a fresh default.
-
-    The column holds client-authored JSON and rows predate the write-side guard,
-    so it can be absent, empty, unparseable, or valid JSON that is not an object.
-    `"x"`, `5`, `true` and `[1]` all cleared the old `json.loads(...) or
-    default()` test truthy and reached the caller, where the first .get() on one
-    of them is an AttributeError on a live authenticated request."""
-    try:
-        parsed = json.loads(raw or "{}")
-    except Exception:
-        parsed = None
-    if not isinstance(parsed, dict) or not parsed:
-        return default_factory()
-    return parsed
-
-
 def init_db():
     """Bring the Oracle schema up to date. Idempotent, so every tier can call it."""
     _ensure_oracle_cols()
@@ -1574,6 +1797,14 @@ def create_user(username, password, display_name=None, slots=1, email=None, acco
         if not email:
             email = f"user_{uuid.uuid4().hex[:12]}@placeholder.local"
         email = email.strip().lower()
+        # Email is an identity key here — both GitHub OAuth and password login
+        # resolve an account by it — so a second account under the same address
+        # must not be creatable. Without this, get_user_by_email had to choose
+        # between duplicates and the OAuth-adopt path could act on the wrong row.
+        cur.execute("SELECT \"uid\" FROM users WHERE email_lookup_hash=:h",
+                    {"h": lookup_hash(email)})
+        if cur.fetchone():
+            return False, "Email already registered"
         flask_hash = hash_password(password)
         verified_val = '1' if email_verified else '0'
         cur.execute(
@@ -1584,8 +1815,14 @@ def create_user(username, password, display_name=None, slots=1, email=None, acco
              "active": 1, "cat": _now(), "pwd": flask_hash,
              "dname": encrypt(display_name or username), "sl": str(slots), "csl": str(container_slots), "actype": account_type, "texp": trial_expires, "ever": verified_val}
         )
-        _oracle_ensure_bot_slots(cur, uid, slots)
         uconn.commit()
+        # The account's bot slots live in HeatWave; a failure there leaves the
+        # account created and the slots converging on the next ensure call.
+        try:
+            import reviews_db
+            reviews_db.ensure_bot_slots(uid, slots)
+        except Exception as ex:
+            _debug_print(f"[database] could not seed bot slots for {uid}: {ex}")
     except Exception as e:
         # The detail belongs in the log, not in the returned string: backend.py's
         # register route hands this value straight to the visitor, so an ORA text
@@ -1598,38 +1835,14 @@ def create_user(username, password, display_name=None, slots=1, email=None, acco
     return True, uid
 
 
-def _oracle_ensure_bot_slots(cur, uid, slots):
-    slots = int(slots)
-    cur.execute("SELECT COUNT(*) as cnt FROM bots WHERE \"uid\"=:uid_param", {"uid_param": uid})
-    r = cur.fetchone()
-    existing = r["cnt"] if hasattr(r, "keys") else r[0]
-    for i in range(existing, slots):
-        # Seeded encrypted like every other write to these columns, so a fresh
-        # slot is not the one row in the table that leaks its payload.
-        cur.execute(
-            "INSERT INTO bots(\"uid\", name, slot_index, created_at, embed_json) "
-            "VALUES(:uid_param,:name,:idx,:cat,:embed)",
-            {"uid_param": uid, "name": encrypt(f"Bot #{i+1}"), "idx": i,
-             "cat": _now(), "embed": encrypt(json.dumps(default_embed()))},
-        )
-
-
 def ensure_bot_slots(uid, slots):
     """Insert bot rows for any declared slots that lack one. Never deletes —
     safe to call from read paths that just want the list to match the count."""
     try:
-        slots = int(slots)
-    except (ValueError, TypeError):
-        return
-    uconn = _user_conn()
-    try:
-        cur = uconn.cursor()
-        _oracle_ensure_bot_slots(cur, uid, slots)
-        uconn.commit()
+        import reviews_db
+        reviews_db.ensure_bot_slots(uid, slots)
     except Exception as e:
         _debug_print(f"[database] ensure_bot_slots failed for {uid}: {e}")
-    finally:
-        uconn.close()
 
 
 def get_smtp_config(prefix="smtp"):
@@ -2001,23 +2214,14 @@ def generate_otp(email, purpose="register"):
     try:
         cur = uconn.cursor()
         cur.execute(
-            "UPDATE otp_codes SET used=1 "
-            "WHERE email_lookup_hash=:h AND purpose=:purpose AND used=0",
+            "DELETE FROM otp_codes "
+            "WHERE email_lookup_hash=:h AND purpose=:purpose",
             {"h": lookup_hash(email), "purpose": purpose})
         cur.execute(
             "INSERT INTO otp_codes(email, email_lookup_hash, code, purpose, expires_at, created_at, attempts) "
             "VALUES(:email,:eh,:code,:purpose,:expires,:now,0)",
             {"email": encrypt(email), "eh": lookup_hash(email), "code": code_hash,
              "purpose": purpose, "expires": expires, "now": _now()},
-        )
-        cur.execute(
-            "DELETE FROM otp_codes WHERE id NOT IN ("
-            "SELECT id FROM ("
-            "SELECT id FROM otp_codes "
-            "WHERE email_lookup_hash=:h AND purpose=:purpose AND used=0 "
-            "ORDER BY created_at DESC FETCH FIRST 1 ROWS ONLY"
-            ")) AND email_lookup_hash=:h AND purpose=:purpose AND used=0",
-            {"h": lookup_hash(email), "purpose": purpose},
         )
         uconn.commit()
     finally:
@@ -2051,7 +2255,7 @@ def verify_otp(email, code, purpose="register", mark_used=True):
             else:
                 oid, expires, stored, tries = row[0], row[1], row[2], row[3]
             if int(tries or 0) >= OTP_MAX_ATTEMPTS:
-                cur.execute("UPDATE otp_codes SET used=1 WHERE id=:id AND used=0", {"id": oid})
+                cur.execute("DELETE FROM otp_codes WHERE id=:id", {"id": oid})
                 uconn.commit()
                 continue
 
@@ -2073,19 +2277,26 @@ def verify_otp(email, code, purpose="register", mark_used=True):
 
             if not otp_matches:
                 cur.execute(
-                    "UPDATE otp_codes SET attempts = NVL(attempts, 0) + 1, "
-                    "used = CASE WHEN NVL(attempts, 0) + 1 >= :cap THEN 1 ELSE used END "
+                    "UPDATE otp_codes SET attempts = NVL(attempts, 0) + 1 "
                     "WHERE id=:id AND used=0",
-                    {"cap": OTP_MAX_ATTEMPTS, "id": oid})
+                    {"id": oid})
+                uconn.commit()
+                cur.execute(
+                    "DELETE FROM otp_codes WHERE id=:id AND NVL(attempts, 0) >= :cap",
+                    {"id": oid, "cap": OTP_MAX_ATTEMPTS})
                 uconn.commit()
                 continue
             try:
                 if datetime.fromisoformat(expires) < _utcnow():
+                    cur.execute("DELETE FROM otp_codes WHERE id=:id", {"id": oid})
+                    uconn.commit()
                     return False
             except Exception:
+                cur.execute("DELETE FROM otp_codes WHERE id=:id", {"id": oid})
+                uconn.commit()
                 return False
             if mark_used:
-                cur.execute("UPDATE otp_codes SET used=1 WHERE id=:id AND used=0", {"id": oid})
+                cur.execute("DELETE FROM otp_codes WHERE id=:id AND used=0", {"id": oid})
                 uconn.commit()
                 if cur.rowcount != 1:
                     return False
@@ -2106,7 +2317,7 @@ def cleanup_expired_otps():
 
 
 def _delete_user_panel_servers_and_containers(user_id):
-    """Delete all panel servers for a user from Oracle and their containers on the node agent."""
+    """Delete all of a user's servers from Oracle and their containers on the node agent."""
     node_url = os.getenv("NODE_URL", "http://127.0.0.1:8081").rstrip("/")
     node_token = os.getenv("NODE_TOKEN", "")
 
@@ -2116,11 +2327,12 @@ def _delete_user_panel_servers_and_containers(user_id):
     oconn = _oracle_conn()
     try:
         cur = oconn.cursor()
-        cur.execute("SELECT id FROM panel_servers WHERE user_id = :u_id", {"u_id": user_id})
-        server_ids = [row[0] for row in cur.fetchall()]
+        cur.execute("SELECT id, node_id FROM servers WHERE \"uid\" = :u_id", {"u_id": user_id})
+        rows = [(row[0], row[1]) for row in cur.fetchall()]
+        server_ids = [r[0] for r in rows]
 
         unconfirmed = []
-        for server_id in server_ids:
+        for server_id, node_id in rows:
             confirmed = False
             try:
                 url = f"{node_url}/api/v1/servers/{server_id}?purge=true"
@@ -2134,22 +2346,21 @@ def _delete_user_panel_servers_and_containers(user_id):
             except Exception:
                 pass
             if not confirmed:
-                unconfirmed.append(server_id)
+                unconfirmed.append((server_id, node_id or ""))
 
         if server_ids:
             placeholders = ",".join(":" + str(i) for i in range(1, len(server_ids) + 1))
             params = {str(i): sid for i, sid in enumerate(server_ids, 1)}
-            cur.execute(f"DELETE FROM panel_servers WHERE id IN ({placeholders})", params)
+            cur.execute(f"DELETE FROM servers WHERE id IN ({placeholders})", params)
             oconn.commit()
             # Rows are gone but some node deletes weren't confirmed. Record them
             # so the panel reconcile sweep drains the containers when the node
-            # returns. node_id is unknown here (this layer has no node column);
-            # the drain clears by server id, so the empty label is harmless.
+            # returns.
             if unconfirmed:
                 try:
                     import reviews_db
-                    for sid in unconfirmed:
-                        reviews_db.enqueue_container_deletion(sid, node_id="", purge=True)
+                    for sid, node_id in unconfirmed:
+                        reviews_db.enqueue_container_deletion(sid, node_id=node_id, purge=True)
                 except Exception:
                     pass
     finally:
@@ -2207,19 +2418,65 @@ def delete_user_panel_servers_and_containers(user_id):
 def delete_user(uid):
     delete_user_panel_servers_and_containers(uid)
 
+    # Bots live in HeatWave; a HeatWave outage must not block the Oracle-side
+    # purge, so the cascade half degrades to a skipped step like every other
+    # reviews_db write.
+    try:
+        import reviews_db
+        reviews_db.delete_user_bots(uid)
+    except Exception as ex:
+        _debug_print(f"[database] could not delete bots for {uid}: {ex}")
+
     uconn = _user_conn()
     try:
         cur = uconn.cursor()
         cur.execute("DELETE FROM sessions WHERE \"uid\"=:id", {"id": uid})
-        cur.execute("DELETE FROM bots WHERE \"uid\"=:id", {"id": uid})
         cur.execute("DELETE FROM device_events WHERE \"uid\"=:id", {"id": uid})
         cur.execute("DELETE FROM user_ad_zone_overrides WHERE \"uid\"=:id", {"id": uid})
+        cur.execute("DELETE FROM servers WHERE \"uid\"=:id", {"id": uid})
         # Preserve the account row itself and its fingerprint-related records.
         # The app-side deletion path is now a data purge, not an account erase:
         # username, email, password hash, and fingerprint bindings stay in place.
         uconn.commit()
     finally:
         uconn.close()
+
+
+BAN_APPEAL_DAYS = 1  # banned users may appeal for this long before data is purged
+
+
+def purge_expired_ban_appeals():
+    """Once the appeal window closes, purge a banned user's data the same way the
+    renew-lapse path does — delete_user() drops sessions/bots/containers/panel
+    rows but keeps the identity and fingerprint, so the ban still recognises a
+    return. Runs once per user (banned_purged_at guards re-runs)."""
+    uconn = _user_conn()
+    try:
+        cur = uconn.cursor()
+        cur.execute("SELECT \"uid\", banned_at FROM users "
+                    "WHERE is_banned=1 AND banned_at IS NOT NULL AND banned_purged_at IS NULL")
+        rows = cur.fetchall()
+    finally:
+        uconn.close()
+    cutoff = _shared_utcnow() - timedelta(days=BAN_APPEAL_DAYS)
+    for r in rows:
+        uid = r["uid"] if hasattr(r, "keys") else r[0]
+        banned_at = r["banned_at"] if hasattr(r, "keys") else r[1]
+        dt = _parse_iso(banned_at)
+        if dt is None or dt > cutoff:
+            continue  # unparseable timestamp is left alone — never purge on garbage
+        try:
+            delete_user(uid)
+            uconn = _user_conn()
+            try:
+                cur = uconn.cursor()
+                cur.execute("UPDATE users SET banned_purged_at=:ts WHERE \"uid\"=:id",
+                            {"ts": _now(), "id": str(uid)})
+                uconn.commit()
+            finally:
+                uconn.close()
+        except Exception as ex:
+            _debug_print(f"[database] ban-appeal purge failed for {uid}: {ex}")
 
 
 def list_users():
@@ -2236,8 +2493,13 @@ def list_users():
         rows = [dict(r) if hasattr(r, 'keys') else {
             cur.description[i][0].lower(): r[i] for i in range(len(r))
         } for r in cur.fetchall()]
-        cur.execute("SELECT \"uid\", COUNT(*) as cnt, SUM(CASE WHEN running=1 THEN 1 ELSE 0 END) as running_cnt FROM bots GROUP BY \"uid\"")
-        bot_map = {r[0]: (r[1], r[2] or 0) for r in cur.fetchall()}
+        # Bots live in HeatWave now; the counts degrade to "none" when that
+        # store is unreachable, the same way the bot list itself does.
+        try:
+            import reviews_db
+            bot_map = reviews_db.bot_counts_by_uid()
+        except Exception:
+            bot_map = {}
         cur.execute("SELECT \"uid\" FROM fingerprints")
         fp_set = {r[0] for r in cur.fetchall()}
         uconn.close()
@@ -2315,7 +2577,7 @@ def is_renew_open(u):
 
 
 def _user_row_plaintext(u):
-    """Decrypt the at-rest username / display_name / email / banned_reason / tokens /
+    """Decrypt the at-rest username / display_name / email / banned_reason /
     fingerprint_ip of a users row in place. Rows written before
     encryption landed pass through unchanged. Callers only ever see the plaintext —
     the ciphertext never leaves this module.
@@ -2323,7 +2585,7 @@ def _user_row_plaintext(u):
     if not u:
         return u
     for col in ("username", "display_name", "email", "banned_reason",
-                "discord_bot_token", "webhook_token", "fingerprint_ip"):
+                "fingerprint_ip"):
         val = u.get(col)
         if val and looks_encrypted(val):
             u[col] = decrypt(val) or None
@@ -2362,9 +2624,16 @@ def _get_user_by(column, value):
     try:
         cur = uconn.cursor()
         cur.execute(f"SELECT * FROM users WHERE {column}=:v", {"v": value})
-        r = cur.fetchone()
-        if not r:
+        # Exactly one match, or nothing. These columns are meant to be unique,
+        # but a database migrated before email_lookup_hash/username_lookup_hash
+        # were UNIQUE can hold duplicates. Resolving one at random would let a
+        # second account registered under someone else's email be selected by
+        # the email login and the GitHub-adopt path, so a tie fails closed the
+        # same way _get_user_by_ci_username does below.
+        rows = cur.fetchmany(2)
+        if len(rows) != 1:
             return None
+        r = rows[0]
         if hasattr(r, "keys"):
             u = dict(r)
         else:
@@ -2506,8 +2775,8 @@ def admin_set_user_password(user_id, new_password):
     reachable from the loopback admin console, where the caller is already the
     operator, and is how a locked-out user gets back in without email working.
     """
-    if not new_password or len(str(new_password)) < 6:
-        return False, "Password must be at least 6 characters"
+    if not new_password or len(str(new_password)) < 8:
+        return False, "Password must be at least 8 characters"
     if not get_user(user_id):
         return False, "User not found"
     uconn = _user_conn()
@@ -2534,8 +2803,14 @@ def accounts_on_device(fingerprint_hash=None, lookup_hash=None):
     uconn = _user_conn()
     try:
         cur = uconn.cursor()
-        cur.execute("SELECT \"uid\", created_at FROM fingerprints WHERE lookup_hash=:h ORDER BY created_at DESC",
-                    {"h": lookup})
+        # Only each account's newest row counts: the merged table keeps old
+        # devices as history, and an account that has moved to a new machine
+        # is no longer "on" the old one.
+        cur.execute(
+            "SELECT \"uid\", created_at FROM fingerprints WHERE lookup_hash=:h "
+            "AND id IN (SELECT MAX(id) FROM fingerprints GROUP BY \"uid\") "
+            "ORDER BY created_at DESC",
+            {"h": lookup})
         rows = cur.fetchall()
     finally:
         uconn.close()
@@ -2608,7 +2883,12 @@ def accounts_on_ip(ip_address):
         # ciphertext (bind_fingerprint writes it encrypted and the startup
         # migration converts the rest), so comparing a plaintext IP to that column
         # could only ever return nothing while looking like a safety net.
-        cur.execute("SELECT \"uid\" FROM fingerprints WHERE ip_lookup_hash=:h", {"h": lookup_hash(ip_address)})
+        # Only each account's newest row counts — old sightings stay as
+        # history but no longer say where the account is bound now.
+        cur.execute(
+            "SELECT \"uid\" FROM fingerprints WHERE ip_lookup_hash=:h "
+            "AND id IN (SELECT MAX(id) FROM fingerprints GROUP BY \"uid\")",
+            {"h": lookup_hash(ip_address)})
         rows = cur.fetchall()
         if not rows:
             _warn_if_ip_index_unusable(cur)
@@ -2628,8 +2908,10 @@ def ban_user(user_id, reason="Banned"):
     uconn = _user_conn()
     try:
         cur = uconn.cursor()
-        cur.execute("UPDATE users SET is_banned=:v, banned_reason=:r WHERE \"uid\"=:id",
-                    {"v": val, "r": encrypt(reason) if reason else reason, "id": str(user_id)})
+        cur.execute("UPDATE users SET is_banned=:v, banned_reason=:r, "
+                    "banned_at=:ts, banned_purged_at=NULL WHERE \"uid\"=:id",
+                    {"v": val, "r": encrypt(reason) if reason else reason,
+                     "ts": _now(), "id": str(user_id)})
         uconn.commit()
     finally:
         uconn.close()
@@ -2639,7 +2921,8 @@ def unban_user(user_id):
     uconn = _user_conn()
     try:
         cur = uconn.cursor()
-        cur.execute("UPDATE users SET is_banned=0, banned_reason=NULL WHERE \"uid\"=:id", {"id": str(user_id)})
+        cur.execute("UPDATE users SET is_banned=0, banned_reason=NULL, "
+                    "banned_at=NULL, banned_purged_at=NULL WHERE \"uid\"=:id", {"id": str(user_id)})
         uconn.commit()
     finally:
         uconn.close()
@@ -2666,6 +2949,24 @@ def is_user_banned(user_id):
         uconn.close()
 
 
+def is_email_banned(email):
+    """Whether this email belongs to a banned account. The ban model is per-uid
+    (users.is_banned); a banned row carrying this email hash *is* the email ban,
+    so a banned user cannot return under a fresh account (e.g. via GitHub) with
+    the same verified email. Keyed by the same lookup_hash as users."""
+    email = (email or "").strip().lower()
+    if not email:
+        return False
+    uconn = _user_conn()
+    try:
+        cur = uconn.cursor()
+        cur.execute("SELECT 1 FROM users WHERE email_lookup_hash=:lh AND is_banned=1",
+                    {"lh": lookup_hash(email)})
+        return cur.fetchone() is not None
+    finally:
+        uconn.close()
+
+
 def is_user_active(user_id):
     uconn = _user_conn()
     try:
@@ -2681,11 +2982,17 @@ def is_user_active(user_id):
 
 
 def get_fingerprint(user_id):
-    """Return the decrypted fingerprint hash for a user, or None."""
+    """Return the decrypted fingerprint hash of a user's CURRENT device.
+
+    fingerprints is the merged current+history table, so the current binding
+    is the user's newest row."""
     uconn = _user_conn()
     try:
         cur = uconn.cursor()
-        cur.execute("SELECT fingerprint_hash FROM fingerprints WHERE \"uid\"=:id", {"id": user_id})
+        cur.execute(
+            "SELECT fingerprint_hash FROM fingerprints WHERE \"uid\"=:id "
+            "AND id = (SELECT MAX(id) FROM fingerprints WHERE \"uid\"=:id2)",
+            {"id": user_id, "id2": user_id})
         r = cur.fetchone()
         if not r:
             return None
@@ -2722,51 +3029,51 @@ def fingerprint_owner(fingerprint_hash):
 
 
 def bind_fingerprint(user_id, fingerprint_hash, device_info=None, ip_address=None):
-    """Bind a device to a user — one bound device per account, but a device may
-    hold several accounts (repeat signups are flagged, never capped).
+    """Bind a device to a user.
+
+    fingerprints is the merged current+history table: binding appends a
+    sighting row, deduplicated against the user's newest row, so a repeat
+    sighting from the same device+IP costs nothing while a new device becomes
+    both the new current binding and the next history entry in one write.
     Returns (ok, error)."""
     if not fingerprint_hash:
         return False, "Missing device fingerprint"
-    uconn = _user_conn()
-    try:
-        cur = uconn.cursor()
-        lookup = _fp_lookup(fingerprint_hash)
-        encrypted = encrypt(fingerprint_hash)
-        if device_info:
-            if isinstance(device_info, str):
-                device_info = json.loads(device_info)
-            if ip_address:
-                device_info["ip_address"] = ip_address
-            device_enc = encrypt(json.dumps(device_info))
-        elif ip_address:
-            device_enc = encrypt(json.dumps({"ip_address": ip_address}))
-        else:
-            device_enc = None
-        cur.execute("DELETE FROM fingerprints WHERE \"uid\"=:id", {"id": user_id})
-        cur.execute(
-            "INSERT INTO fingerprints(\"uid\", fingerprint_hash, lookup_hash, device_info_enc, ip_address, ip_lookup_hash, created_at) "
-            "VALUES(:u_id,:fh,:lh,:de,:ip,:iph,:cat)",
-            {"u_id": user_id, "fh": encrypted, "lh": lookup, "de": device_enc,
-             "ip": encrypt(ip_address) if ip_address else None,
-             "iph": lookup_hash(ip_address) if ip_address else None,
-             "cat": _now()},
-        )
-        uconn.commit()
-    except Exception as ex:
-        _debug_print(f"[database] bind_device failed: {ex}", file=sys.stderr)
+    recorded = record_fingerprint_history(user_id, fingerprint_hash, device_info, ip_address)
+    if recorded is False and not _fingerprint_row_exists(user_id, fingerprint_hash, ip_address):
         return False, "Could not bind this device. Please try again later."
-    finally:
-        uconn.close()
-    # Deliberately after the connection is back in the pool. ORACLE_POOL_MAX is 2
-    # on an Always-Free ATP, so holding a second connection inside the first is
-    # how two concurrent binds deadlock each other.
-    record_fingerprint_history(user_id, fingerprint_hash, device_info, ip_address)
     update_user_atp_fingerprint_ip(user_id, fingerprint=fingerprint_hash, ip_address=ip_address)
     return True, None
 
 
+def _fingerprint_row_exists(user_id, fingerprint_hash, ip_address=None):
+    """Whether the user's newest row already is this device+IP sighting."""
+    lookup = _fp_lookup(fingerprint_hash)
+    if not lookup:
+        return False
+    iph = lookup_hash(ip_address) if ip_address else None
+    uconn = _user_conn()
+    try:
+        cur = uconn.cursor()
+        cur.execute(
+            "SELECT lookup_hash, ip_lookup_hash FROM fingerprints WHERE \"uid\"=:id "
+            "AND id = (SELECT MAX(id) FROM fingerprints WHERE \"uid\"=:id2)",
+            {"id": user_id, "id2": user_id})
+        r = cur.fetchone()
+        if not r:
+            return False
+        lh = r["lookup_hash"] if hasattr(r, "keys") else r[0]
+        stored_iph = r["ip_lookup_hash"] if hasattr(r, "keys") else r[1]
+        return lh == lookup and (stored_iph or None) == (iph or None)
+    except Exception:
+        return False
+    finally:
+        uconn.close()
+
+
 def reset_fingerprint(user_id):
-    """Clear a user's bound fingerprint so they can re-bind from a new device."""
+    """Clear a user's fingerprint record so they can re-bind from a new
+    device. The merged table holds the history too, and a reset is the one
+    explicit request to forget it, so every row for the account goes."""
     uconn = _user_conn()
     try:
         cur = uconn.cursor()
@@ -2778,7 +3085,7 @@ def reset_fingerprint(user_id):
 
 
 def update_fingerprint_device_info(user_id, device_info, ip_address=None):
-    """Update the encrypted device info for an existing fingerprint."""
+    """Update the encrypted device info on the user's CURRENT (newest) row."""
     if not device_info and not ip_address:
         return
     if device_info and isinstance(device_info, str):
@@ -2794,19 +3101,22 @@ def update_fingerprint_device_info(user_id, device_info, ip_address=None):
     try:
         cur = uconn.cursor()
         device_enc = encrypt(json.dumps(device_info)) if device_info else None
+        # The newest row is the current binding; history rows keep the device
+        # info they were recorded with.
+        newest = " AND id = (SELECT MAX(id) FROM fingerprints WHERE \"uid\"=:id)"
         if device_enc and ip_address:
-            cur.execute("UPDATE fingerprints SET device_info_enc=:de, ip_address=:ip, ip_lookup_hash=:iph WHERE \"uid\"=:id",
+            cur.execute("UPDATE fingerprints SET device_info_enc=:de, ip_address=:ip, ip_lookup_hash=:iph WHERE \"uid\"=:id" + newest,
                         {"de": device_enc, "ip": encrypt(ip_address),
                          "iph": lookup_hash(ip_address), "id": user_id})
         elif device_enc:
-            cur.execute("UPDATE fingerprints SET device_info_enc=:de WHERE \"uid\"=:id",
+            cur.execute("UPDATE fingerprints SET device_info_enc=:de WHERE \"uid\"=:id" + newest,
                         {"de": device_enc, "id": user_id})
         else:
             # No device blob this time, but a live IP: refresh the address and its
             # index and leave the stored blob alone. Without this branch a login
             # from a browser that sent no fingerprint_detail left the admin
             # console showing an IP older than the last login.
-            cur.execute("UPDATE fingerprints SET ip_address=:ip, ip_lookup_hash=:iph WHERE \"uid\"=:id",
+            cur.execute("UPDATE fingerprints SET ip_address=:ip, ip_lookup_hash=:iph WHERE \"uid\"=:id" + newest,
                         {"ip": encrypt(ip_address), "iph": lookup_hash(ip_address), "id": user_id})
         uconn.commit()
     finally:
@@ -2814,11 +3124,16 @@ def update_fingerprint_device_info(user_id, device_info, ip_address=None):
 
 
 def fingerprint_status(user_id):
-    """Return dict of fingerprint info for admin display (hash + device details decrypted)."""
+    """Return dict of the CURRENT fingerprint for admin display (hash + device
+    details decrypted). The current binding is the user's newest row."""
     uconn = _user_conn()
     try:
         cur = uconn.cursor()
-        cur.execute("SELECT fingerprint_hash, device_info_enc, ip_address, created_at FROM fingerprints WHERE \"uid\"=:id", {"id": user_id})
+        cur.execute(
+            "SELECT fingerprint_hash, device_info_enc, ip_address, created_at "
+            "FROM fingerprints WHERE \"uid\"=:id "
+            "AND id = (SELECT MAX(id) FROM fingerprints WHERE \"uid\"=:id2)",
+            {"id": user_id, "id2": user_id})
         r = cur.fetchone()
     finally:
         uconn.close()
@@ -2859,10 +3174,11 @@ def fingerprint_status(user_id):
 
 
 def record_fingerprint_history(user_id, fingerprint_hash, device_info=None, ip_address=None):
-    """Append this sighting to the user's device history, if it is new.
+    """Append this sighting to the merged fingerprints table, if it is new.
 
-    `fingerprints` keeps one row per user and overwrites it on every login, so
-    the previous device was lost. This is the append-only record behind it.
+    This is the one fingerprint write: the same table holds the current
+    binding and the history, so a sighting that differs from the user's newest
+    row becomes both at once.
 
     Deduplicated against the newest row only: a user logging in daily from one
     machine writes a single row, and an alternating pair of devices still records
@@ -2893,15 +3209,20 @@ def record_fingerprint_history(user_id, fingerprint_hash, device_info=None, ip_a
     try:
         cur = uconn.cursor()
         ip_hash = lookup_hash(ip_address) if ip_address else None
+        # Dedupe against the newest row only — see the docstring.
         cur.execute(
-            "SELECT 1 FROM fingerprint_history "
-            "WHERE \"uid\"=:id AND lookup_hash=:lh AND (ip_lookup_hash IS NULL AND :iph IS NULL OR ip_lookup_hash=:iph)",
-            {"id": user_id, "lh": lookup, "iph": ip_hash},
+            "SELECT lookup_hash, ip_lookup_hash FROM fingerprints "
+            "WHERE \"uid\"=:id AND id = (SELECT MAX(id) FROM fingerprints WHERE \"uid\"=:id2)",
+            {"id": user_id, "id2": user_id},
         )
-        if cur.fetchone():
-            return False
+        r = cur.fetchone()
+        if r:
+            lh = r["lookup_hash"] if hasattr(r, "keys") else r[0]
+            stored_iph = r["ip_lookup_hash"] if hasattr(r, "keys") else r[1]
+            if lh == lookup and (stored_iph or None) == (ip_hash or None):
+                return False
         cur.execute(
-            "INSERT INTO fingerprint_history(\"uid\", fingerprint_hash, lookup_hash, "
+            "INSERT INTO fingerprints(\"uid\", fingerprint_hash, lookup_hash, "
             "device_info_enc, ip_address, ip_lookup_hash, created_at) "
             "VALUES(:id, :fh, :lh, :de, :ip, :iph, :now)",
             {"id": user_id, "fh": encrypt(fingerprint_hash), "lh": lookup,
@@ -2912,14 +3233,15 @@ def record_fingerprint_history(user_id, fingerprint_hash, device_info=None, ip_a
         uconn.commit()
         return True
     except Exception as ex:
-        _debug_print(f"[database] fingerprint history not recorded for {user_id}: {ex}")
+        _debug_print(f"[database] fingerprint sighting not recorded for {user_id}: {ex}")
         return False
     finally:
         uconn.close()
 
 
 def get_fingerprint_history(user_id, limit=50):
-    """Every distinct device this account has been seen on, newest first."""
+    """Every distinct device this account has been seen on, newest first —
+    the same merged table the current binding lives in."""
     if not user_id:
         return []
     try:
@@ -2931,7 +3253,7 @@ def get_fingerprint_history(user_id, limit=50):
         cur = uconn.cursor()
         cur.execute(
             "SELECT id, fingerprint_hash, lookup_hash, device_info_enc, ip_address, created_at "
-            "FROM fingerprint_history WHERE \"uid\"=:id ORDER BY id DESC "
+            "FROM fingerprints WHERE \"uid\"=:id ORDER BY id DESC "
             "FETCH FIRST :lim ROWS ONLY",
             {"id": user_id, "lim": limit},
         )
@@ -3293,45 +3615,27 @@ def update_user_slots(user_id, slots):
         slots = max(0, int(slots))
     except (ValueError, TypeError):
         raise ValueError(f"slots must be a number, got {slots!r}")
+    # The bot rows themselves live in HeatWave: seed any new slots and trim
+    # any above the new count there, then record the grant on the users row.
+    try:
+        import reviews_db
+        reviews_db.ensure_bot_slots(user_id, slots)
+        if slots > 0:
+            for bot in reviews_db.get_user_bots(user_id):
+                if int(bot.get("slot_index") or 0) >= slots:
+                    reviews_db.delete_bot(user_id, bot["slot_index"])
+        else:
+            reviews_db.delete_user_bots(user_id)
+    except Exception as ex:
+        _debug_print(f"[database] bot slot sync failed for {user_id}: {ex}")
     uconn = _user_conn()
     try:
         cur = uconn.cursor()
         cur.execute("UPDATE users SET slots=:slots WHERE \"uid\"=:id", {"slots": str(slots), "id": user_id})
-        _oracle_ensure_bot_slots(cur, user_id, slots)
-        if slots > 0:
-            cur.execute("DELETE FROM bots WHERE \"uid\"=:uid_param AND slot_index >= :idx",
-                        {"uid_param": user_id, "idx": slots})
-        else:
-            cur.execute("DELETE FROM bots WHERE \"uid\"=:uid_param", {"uid_param": user_id})
         uconn.commit()
     finally:
         uconn.close()
     update_user_atp_slots(user_id, embed_slots=slots)
-
-
-def update_user_atp_tokens(user_id, discord_bot_token=None, webhook_token=None):
-    if not user_id:
-        return
-    uconn = _user_conn()
-    try:
-        cur = uconn.cursor()
-        sets = {}
-        if discord_bot_token is not None and discord_bot_token != "":
-            sets["discord_bot_token"] = encrypt(str(discord_bot_token).strip())
-        if webhook_token is not None and webhook_token != "":
-            sets["webhook_token"] = encrypt(str(webhook_token).strip())
-        if sets:
-            _validate = frozenset({"discord_bot_token", "webhook_token"})
-            for k in sets:
-                _validate_identifier(k, allow=_validate)
-            assignments = ", ".join(f"{k}=:{k}" for k in sets)
-            sets["u_id"] = str(user_id)
-            cur.execute(f"UPDATE users SET {assignments} WHERE \"uid\"=:u_id", sets)
-            uconn.commit()
-    except Exception as ex:
-        _debug_print(f"[database] update_user_atp_tokens failed for {user_id}: {ex}", file=sys.stderr)
-    finally:
-        uconn.close()
 
 
 def update_user_atp_fingerprint_ip(user_id, fingerprint=None, ip_address=None):
@@ -3360,12 +3664,13 @@ def update_user_atp_slots(user_id, embed_slots=None, container_slots=None):
         cur = uconn.cursor()
         sets = {}
         if embed_slots is not None:
+            # embed_slots is derived from slots at read time; the column is
+            # gone from the users table.
             sets["slots"] = str(embed_slots)
-            sets["embed_slots"] = str(embed_slots)
         if container_slots is not None:
             sets["container_slots"] = str(container_slots)
         if sets:
-            _validate = frozenset({"slots", "container_slots", "embed_slots"})
+            _validate = frozenset({"slots", "container_slots"})
             for k in sets:
                 _validate_identifier(k, allow=_validate)
             assignments = ", ".join(f"{k}=:{k}" for k in sets)
@@ -3377,200 +3682,6 @@ def update_user_atp_slots(user_id, embed_slots=None, container_slots=None):
     finally:
         uconn.close()
 
-
-# Bot columns that are Fernet-encrypted at rest. None of them appears in a
-# WHERE / LIKE / ORDER BY / GROUP BY / join predicate anywhere in this module —
-# Fernet is non-deterministic, so any column that did would have to stay
-# plaintext. server_port, update_interval, slot_index and running are compared as
-# numbers and are not secrets; last_status is public Minecraft server status that
-# every engine tick rewrites, and encrypting it would inflate the one write this
-# app went out of its way to shrink.
-_BOT_ENC_FIELDS = ("name", "server_ip", "guild_id", "channel_id", "embed_json", "ip_reply_json", "webhook_url")
-
-
-def _decrypt_bot_row(d):
-    """Decrypt the encrypted-at-rest bot columns in place. Rows written before
-    encryption landed pass through unchanged — see _dec_or_raw."""
-    for k in _BOT_ENC_FIELDS:
-        if k in d:
-            d[k] = _dec_or_raw(d[k])
-    return d
-
-
-def get_user_bots(user_id):
-    uconn = _user_conn()
-    try:
-        cur = uconn.cursor()
-        cur.execute("SELECT * FROM bots WHERE \"uid\"=:uid_param ORDER BY slot_index", {"uid_param": user_id})
-        cols = [d[0].lower() for d in cur.description]
-        rows = [dict(zip(cols, r)) for r in cur.fetchall()]
-    finally:
-        uconn.close()
-    out = []
-    for d in rows:
-        _decrypt_bot_row(d)
-        d["token"] = decrypt(d.get("token_enc"))
-        d["token_masked"] = mask(d["token"])
-        d["webhook_url_masked"] = mask(d.get("webhook_url"))
-        d["embed"] = _bot_json_obj(d.get("embed_json"), default_embed)
-        d["ip_reply"] = _bot_json_obj(d.get("ip_reply_json"), default_ip_reply)
-        out.append(d)
-    return out
-
-
-def get_bot(bot_id):
-    uconn = _user_conn()
-    try:
-        cur = uconn.cursor()
-        cur.execute("SELECT * FROM bots WHERE id=:id", {"id": bot_id})
-        r = cur.fetchone()
-        if not r:
-            return None
-        if hasattr(r, "keys"):
-            d = dict(r)
-        else:
-            cols = [d[0].lower() for d in cur.description]
-            d = dict(zip(cols, r))
-    finally:
-        uconn.close()
-    _decrypt_bot_row(d)
-    d["token"] = decrypt(d.get("token_enc"))
-    d["token_masked"] = mask(d["token"])
-    d["webhook_url_masked"] = mask(d.get("webhook_url"))
-    d["embed"] = _bot_json_obj(d.get("embed_json"), default_embed)
-    d["ip_reply"] = _bot_json_obj(d.get("ip_reply_json"), default_ip_reply)
-    return d
-
-
-# Byte ceiling on a bot's client-authored JSON blob, matching backend.py's
-# EMBED_JSON_MAX_BYTES so a payload that tier accepted is never refused here.
-# The bound has to exist on this side too: the admin console reaches
-# save_bot_config through its own handler, which checks that embed is an object
-# but never how large it is, and the maintenance daemon does not validate at all.
-_BOT_JSON_MAX_BYTES = 65536
-
-
-def _bot_json_blob(value, label):
-    """Serialise a bot builder blob for its CLOB column, or raise ValueError.
-
-    Refused rather than coerced: json.dumps() would store a bare list or string
-    just as happily, and every reader of these columns calls .get() on the
-    result. Refused rather than truncated too — a clipped JSON blob no longer
-    parses, so the read path would answer every later request with the defaults
-    instead of the configuration the user believes they saved."""
-    if not isinstance(value, dict):
-        raise ValueError(f"{label} must be a JSON object")
-    try:
-        encoded = json.dumps(value)
-    except (TypeError, ValueError):
-        raise ValueError(f"{label} is not serialisable as JSON")
-    if len(encoded.encode("utf-8", "replace")) > _BOT_JSON_MAX_BYTES:
-        raise ValueError(f"{label} is too large (max {_BOT_JSON_MAX_BYTES} bytes)")
-    return encoded
-
-
-def save_bot_config(bot_id, *, user_id=None, name=None, server_ip=None, server_port=None, edition=None,
-                    token=None, guild_id=None, channel_id=None, webhook_url=None,
-                    update_interval=None, embed=None, ip_reply=None):
-    uconn = _user_conn()
-    try:
-        cur = uconn.cursor()
-        if user_id is not None:
-            # Scope the write to the owner so a bot reassigned between the
-            # caller's ownership check and this UPDATE cannot be modified.
-            cur.execute("SELECT id FROM bots WHERE id=:id AND \"uid\"=:u_id",
-                        {"id": bot_id, "u_id": user_id})
-        else:
-            cur.execute("SELECT id FROM bots WHERE id=:id", {"id": bot_id})
-        if not cur.fetchone():
-            return False
-        fields = {}
-        # The five _BOT_ENC_FIELDS columns are encrypted here, on the assignment,
-        # so a partial save never mixes ciphertext and plaintext in one row.
-        if name is not None:
-            fields["name"] = encrypt(str(name).strip())
-        if server_ip is not None:
-            fields["server_ip"] = encrypt(str(server_ip).strip())
-        clean_edition = None
-        if edition is not None:
-            clean_edition = str(edition).strip().lower() or "java"
-            fields["edition"] = clean_edition
-        if server_port is not None:
-            raw_port = str(server_port).strip()
-            if not raw_port:
-                # A missing port is a request to keep the stored value. When the
-                # UI explicitly saves an edition alongside a blank port, persist
-                # that edition's documented default instead of always forcing
-                # Java's 25565 onto Bedrock configurations.
-                if clean_edition is not None:
-                    fields["server_port"] = 19132 if clean_edition == "bedrock" else 25565
-            else:
-                try:
-                    parsed_port = int(raw_port)
-                except (ValueError, TypeError):
-                    raise ValueError("Server port must be a number")
-                if parsed_port < 1 or parsed_port > 65535:
-                    raise ValueError("Server port must be between 1 and 65535")
-                fields["server_port"] = parsed_port
-        if token is not None and token != "":
-            fields["token_enc"] = encrypt(str(token).strip())
-            fields["message_id"] = None
-        if guild_id is not None:
-            clean_guild_id = str(guild_id).strip()
-            if clean_guild_id and (not clean_guild_id.isdigit() or len(clean_guild_id) > 25):
-                raise ValueError("Guild ID must be a Discord numeric ID")
-            fields["guild_id"] = encrypt(clean_guild_id)
-        if channel_id is not None:
-            clean_channel_id = str(channel_id).strip()
-            if clean_channel_id and (not clean_channel_id.isdigit() or len(clean_channel_id) > 25):
-                raise ValueError("Channel ID must be a Discord numeric ID")
-            fields["channel_id"] = encrypt(clean_channel_id)
-            fields["message_id"] = None
-        if update_interval is not None:
-            try:
-                fields["update_interval"] = max(15, int(update_interval))
-            except (ValueError, TypeError):
-                fields["update_interval"] = 60
-        if embed is not None:
-            fields["embed_json"] = encrypt(_bot_json_blob(embed, "embed"))
-            fields["message_id"] = None
-        if ip_reply is not None:
-            fields["ip_reply_json"] = encrypt(_bot_json_blob(ip_reply, "ip_reply"))
-        if webhook_url is not None and webhook_url != "":
-            # A blank value means "keep the existing webhook", mirroring the
-            # token field. Any real change starts a new message chain — the
-            # stored message_id belongs to the old destination.
-            fields["webhook_url"] = encrypt(str(webhook_url).strip())
-            fields["message_id"] = None
-        fields["updated_at"] = _now()
-        fields["last_error"] = None
-        if fields:
-            _BOT_CONFIG_COLUMNS = frozenset({
-                "name", "server_ip", "edition", "server_port",
-                "token_enc", "message_id", "guild_id", "channel_id",
-                "update_interval", "embed_json", "ip_reply_json",
-                "webhook_url", "last_error", "updated_at",
-            })
-            for k in fields:
-                _validate_identifier(k, allow=_BOT_CONFIG_COLUMNS)
-            sets = ", ".join(f"{k}=:{k}" for k in fields)
-            vals = {**fields, "id": bot_id}
-            where = "WHERE id=:id"
-            if user_id is not None:
-                # :u_id, never :uid — UID is an Oracle reserved word, so a bind
-                # named uid raises ORA-01745 and fails the whole save.
-                where += " AND \"uid\"=:u_id"
-                vals["u_id"] = user_id
-            cur.execute(f"UPDATE bots SET {sets} {where}", vals)
-            uconn.commit()
-            if user_id:
-                if token is not None and token != "":
-                    update_user_atp_tokens(user_id, discord_bot_token=token)
-                if webhook_url is not None and webhook_url != "":
-                    update_user_atp_tokens(user_id, webhook_token=webhook_url)
-        return True
-    finally:
-        uconn.close()
 
 
 def set_user_account_type(user_id, account_type):
@@ -3649,14 +3760,15 @@ def expire_trial_bots():
         rows = cur.fetchall()
         for r in rows:
             uid = r["uid"] if hasattr(r, "keys") else r[0]
-            cur.execute("UPDATE bots SET running=0, last_error='Trial expired' WHERE \"uid\"=:uid_param AND running=1", {"uid_param": uid})
+            # Bots live in HeatWave; the servers table carries the container
+            # intent for the panel.
             try:
-                cur.execute("SELECT id FROM hosting_servers WHERE \"uid\"=:uid_param", {"uid_param": uid})
-                hosting_ids = [row[0] for row in cur.fetchall()]
+                import reviews_db
+                reviews_db.stop_user_bots(uid, reason="Trial expired")
             except Exception:
-                hosting_ids = []
-            for server_id in hosting_ids:
-                set_hosting_status(server_id, "stopped", pid=None, last_error="Trial expired")
+                pass
+            cur.execute("UPDATE servers SET status=0 WHERE \"uid\"=:uid_param",
+                        {"uid_param": uid})
         if rows:
             uconn.commit()
     except Exception:
@@ -3781,49 +3893,48 @@ def renew_user(user_id):
         if now < expires_at - timedelta(days=window_days):
             return "too_early"
         new_deadline = expires_at + timedelta(days=stop_days)
-        cur.execute("UPDATE users SET bot_stopped_at=NULL, inactive_warned_at=NULL, "
+        cur.execute("UPDATE users SET bot_stopped_at=NULL, "
                     "trial_expires_at=:d WHERE \"uid\"=:id",
                     {"d": new_deadline.isoformat(), "id": user_id})
-        # Restart any bots that a previous run stopped.
-        cur.execute("UPDATE bots SET running=1, last_error=NULL "
-                    "WHERE \"uid\"=:id AND running=0 AND last_error='Stopped: inactive account'",
-                    {"id": user_id})
         try:
-            cur.execute("UPDATE hosting_servers SET status='running', last_error=NULL "
-                        "WHERE \"uid\"=:id AND status='stopped'", {"id": user_id})
+            cur.execute("UPDATE servers SET status=1 WHERE \"uid\"=:id AND status=0",
+                        {"id": user_id})
         except Exception:
             pass
         uconn.commit()
+        # Restart any bots that a previous run stopped, and clear the weekly
+        # warning marker — both live in HeatWave now.
+        try:
+            import reviews_db
+            reviews_db.restart_stopped_user_bots(user_id, "Stopped: inactive account")
+            reviews_db.clear_inactive_warned(user_id)
+        except Exception:
+            pass
         return "renewed"
     finally:
         uconn.close()
 
 
 def _stop_trial_workloads(cur, user_id, *, reason="Trial expired"):
-    cur.execute("UPDATE bots SET running=0, last_error=:reason WHERE \"uid\"=:id AND running=1",
-                {"reason": reason, "id": user_id})
     try:
-        cur.execute("SELECT id FROM hosting_servers WHERE \"uid\"=:id", {"id": user_id})
-        hosting_ids = [row[0] for row in cur.fetchall()]
+        import reviews_db
+        reviews_db.stop_user_bots(user_id, reason=reason)
     except Exception:
-        hosting_ids = []
-    for server_id in hosting_ids:
-        set_hosting_status(server_id, "stopped", pid=None, last_error=reason)
+        pass
+    cur.execute("UPDATE servers SET status=0 WHERE \"uid\"=:id", {"id": user_id})
 
 
 def _delete_trial_workloads(user_id):
     """Delete user-owned workloads while leaving the account row intact."""
+    try:
+        import reviews_db
+        reviews_db.delete_user_bots(user_id)
+    except Exception:
+        pass
     uconn = _user_conn()
     try:
         cur = uconn.cursor()
-        cur.execute("DELETE FROM bots WHERE \"uid\"=:id", {"id": user_id})
-        try:
-            cur.execute("SELECT id FROM hosting_servers WHERE \"uid\"=:id", {"id": user_id})
-            hosting_ids = [row[0] for row in cur.fetchall()]
-        except Exception:
-            hosting_ids = []
-        for server_id in hosting_ids:
-            delete_hosting_server(server_id)
+        cur.execute("DELETE FROM servers WHERE \"uid\"=:id", {"id": user_id})
         uconn.commit()
     finally:
         uconn.close()
@@ -3841,18 +3952,18 @@ def _parse_iso(value):
         return None
 
 
-def _user_started_bot(cur, uid):
-    cur.execute("SELECT COUNT(*) FROM bots WHERE \"uid\"=:id "
-                "AND (running=1 OR last_run IS NOT NULL)", {"id": uid})
-    return cur.fetchone()[0] > 0
-
-
 def inactivity_sweep():
     """Run the trial renew cycle.
 
     Trial accounts get one warning three days before expiry, an expiry-day mail
     when workloads are stopped, a one-day grace period, and then deletion of
     the user-owned workloads only. The account record itself stays in place.
+
+    The "warning already sent" marker no longer lives on the users row — the
+    cycle renews weekly and recomputes its window from trial_expires_at, so
+    the marker sits in HeatWave (reviews_db.get/set_inactive_warned) and a
+    warning is only sent when the marker can be stored: an unmarkable send
+    would repeat on every sweep.
     """
     renew_days = int(renew_config.RENEW_CYCLE_DAYS)
     warn_days = int(renew_config.RENEW_WARN_DAYS_BEFORE)
@@ -3867,7 +3978,7 @@ def inactivity_sweep():
         cur = uconn.cursor()
         cur.execute("""
             SELECT "uid", username, email, email_verified, verified_at, created_at,
-                   trial_expires_at, bot_stopped_at, inactive_warned_at
+                   trial_expires_at, bot_stopped_at
             FROM users
             WHERE account_type = 'trial'
         """)
@@ -3899,17 +4010,32 @@ def inactivity_sweep():
                 cur.execute("UPDATE users SET trial_expires_at=:now WHERE \"uid\"=:id",
                             {"now": expires_at.isoformat(), "id": uid})
 
-            if to_addr and not r.get("inactive_warned_at") and now >= (expires_at - timedelta(days=warn_days)) and now < expires_at:
+            if to_addr and now >= (expires_at - timedelta(days=warn_days)) and now < expires_at:
+                warned_at = None
+                try:
+                    import reviews_db
+                    warned_at = reviews_db.get_inactive_warned(uid)
+                except Exception:
+                    pass
+                if warned_at:
+                    continue
                 days_left = max(1, (expires_at - now).days)
                 uconn.commit()
+                # Mark before sending: the sweep runs every minute, and a send
+                # that cannot be marked would mail the user on every pass.
+                marked = False
+                try:
+                    import reviews_db
+                    marked = reviews_db.set_inactive_warned(uid, now.isoformat())
+                except Exception:
+                    marked = False
+                if not marked:
+                    continue
                 try:
                     send_trial_warning(to_addr, username, days_left=days_left,
                                        status="upcoming", expires_at=expires_at)
                 except Exception as ex:
                     _debug_print(f"[database] trial warning mail failed for {username}: {ex}")
-                else:
-                    cur.execute("UPDATE users SET inactive_warned_at=:now WHERE \"uid\"=:id",
-                                {"now": now.isoformat(), "id": uid})
                 continue
 
             stopped = _parse_iso(r.get("bot_stopped_at"))
@@ -3921,7 +4047,7 @@ def inactivity_sweep():
                                            grace_days=grace_days)
                     except Exception as ex:
                         _debug_print(f"[database] trial expiry mail failed for {username}: {ex}")
-                cur.execute("UPDATE users SET bot_stopped_at=:now, inactive_warned_at=NULL WHERE \"uid\"=:id",
+                cur.execute("UPDATE users SET bot_stopped_at=:now WHERE \"uid\"=:id",
                             {"now": now.isoformat(), "id": uid})
                 _stop_trial_workloads(cur, uid, reason="Trial expired")
                 continue
@@ -3929,10 +4055,14 @@ def inactivity_sweep():
             if stopped is not None:
                 if now < stopped + timedelta(days=grace_days):
                     continue
-                cur.execute("SELECT COUNT(*) FROM bots WHERE \"uid\"=:id", {"id": uid})
-                bot_count = cur.fetchone()[0] or 0
+                bot_count = 0
                 try:
-                    cur.execute("SELECT COUNT(*) FROM hosting_servers WHERE \"uid\"=:id", {"id": uid})
+                    import reviews_db
+                    bot_count = len(reviews_db.get_user_bots(uid))
+                except Exception:
+                    bot_count = 0
+                try:
+                    cur.execute("SELECT COUNT(*) FROM servers WHERE \"uid\"=:id", {"id": uid})
                     host_count = cur.fetchone()[0] or 0
                 except Exception:
                     host_count = 0
@@ -3944,263 +4074,6 @@ def inactivity_sweep():
         uconn.commit()
     except Exception:
         traceback.print_exc()
-    finally:
-        uconn.close()
-
-
-def set_bot_running(bot_id, running: bool):
-    uconn = _user_conn()
-    try:
-        cur = uconn.cursor()
-        cur.execute("UPDATE bots SET running=:r, last_error=NULL WHERE id=:id",
-                    {"r": int(bool(running)), "id": bot_id})
-        uconn.commit()
-    finally:
-        uconn.close()
-
-
-def update_bot_runtime(bot_id, *, message_id=None, last_status=None, last_error=None):
-    # Shared clock, not the local one: this write extends the tick lease, so
-    # it has to be comparable with the cutoff every other engine computes.
-    last_run = _shared_now()
-    uconn = _user_conn()
-    try:
-        cur = uconn.cursor()
-        fields = {"last_run": last_run}
-        if message_id is not None:
-            fields["message_id"] = message_id
-        if last_status is not None:
-            fields["last_status"] = json.dumps(last_status)
-        if last_error is not None:
-            fields["last_error"] = last_error
-        _BOT_TICK_COLUMNS = frozenset({
-            "last_run", "message_id", "last_status", "last_error",
-        })
-        for k in fields:
-            _validate_identifier(k, allow=_BOT_TICK_COLUMNS)
-        sets = ", ".join(f"{k}=:{k}" for k in fields)
-        vals = {**fields, "id": bot_id}
-        cur.execute(f"UPDATE bots SET {sets} WHERE id=:id", vals)
-        uconn.commit()
-    finally:
-        uconn.close()
-
-
-def claim_bot_tick(bot_id, interval):
-    """True for exactly one caller per bot per interval. Serialises N engines.
-
-    One atomic conditional UPDATE on the existing bots.last_run column: the
-    first engine to move last_run forward wins, everyone else sees rowcount 0.
-    The comparison is a lexicographic string compare on an ISO-8601 UTC column,
-    which is the same ordering trick used by expire_trial_bots().
-
-    Both timestamps come from _shared_utcnow(), i.e. the database's clock, so
-    two instances whose system clocks disagree still measure the lease against
-    one clock. Without that, a host running a minute behind would compute a
-    cutoff in the past and win a claim its peer had just taken — the two engines
-    would publish the same bot seconds apart.
-    """
-    try:
-        secs = int(interval)
-    except (TypeError, ValueError):
-        secs = 60
-    base = _shared_utcnow()
-    cutoff = (base - timedelta(seconds=max(0, secs))).isoformat()
-    uconn = _user_conn()
-    try:
-        cur = uconn.cursor()
-        cur.execute("UPDATE bots SET last_run=:now WHERE id=:id "
-                    "AND (last_run IS NULL OR last_run <= :cutoff)",
-                    {"now": base.isoformat(), "id": bot_id, "cutoff": cutoff})
-        ok = cur.rowcount == 1
-        uconn.commit()
-    finally:
-        uconn.close()
-    return ok
-
-
-def force_bot_claim(bot_id):
-    """Take the lease unconditionally, for a publish that must happen now.
-
-    A manual refresh has to go out whatever the schedule says, but it must not
-    leave a window in which another engine also publishes. Clearing the lease
-    would do exactly that: last_run NULL means the next tick on *any* instance
-    is free to post, and it may do so within TICK_SECONDS of this publish.
-    Stamping it forward instead reserves the bot for one interval, so the manual
-    publish is the only one.
-    """
-    now = _shared_now()
-    uconn = _user_conn()
-    try:
-        cur = uconn.cursor()
-        cur.execute("UPDATE bots SET last_run=:now WHERE id=:id",
-                    {"now": now, "id": bot_id})
-        uconn.commit()
-    finally:
-        uconn.close()
-
-
-def clear_bot_claim(bot_id):
-    """Drop the tick lease so the very next tick may publish immediately."""
-    uconn = _user_conn()
-    try:
-        cur = uconn.cursor()
-        cur.execute("UPDATE bots SET last_run=NULL WHERE id=:id", {"id": bot_id})
-        uconn.commit()
-    finally:
-        uconn.close()
-
-
-def delete_bot(bot_id):
-    uconn = _user_conn()
-    try:
-        cur = uconn.cursor()
-        cur.execute("DELETE FROM bots WHERE id=:id", {"id": bot_id})
-        uconn.commit()
-    finally:
-        uconn.close()
-
-
-def _decrypt_hosting_row(d):
-    """Decrypt the encrypted-at-rest hosting columns in place. Rows written
-    before encryption landed pass through unchanged — see _dec_or_raw."""
-    for k in ("name", "start_command", "code"):
-        if k in d:
-            d[k] = _dec_or_raw(d[k])
-    return d
-
-
-def create_hosting_server(user_id, name, runtime, start_command, code):
-    """Create a hosting server row; returns the new server id, or None."""
-    server_id = str(uuid.uuid4())
-    uconn = _user_conn()
-    try:
-        cur = uconn.cursor()
-        cur.execute(
-            "INSERT INTO hosting_servers(id, \"uid\", name, runtime, start_command, "
-            "code, status, created_at) "
-            "VALUES(:id,:uid_param,:name,:rt,:cmd,:code,'stopped',:cat)",
-            {"id": server_id, "uid_param": user_id,
-             "name": encrypt(name), "rt": runtime,
-             "cmd": encrypt(start_command), "code": encrypt(code),
-             "cat": _now()},
-        )
-        uconn.commit()
-        return server_id
-    except Exception as e:
-        _debug_print(f"[database] create_hosting_server failed: {e}", file=sys.stderr)
-        return None
-    finally:
-        uconn.close()
-
-
-def update_hosting_server(server_id, *, name=None, runtime=None,
-                          start_command=None, code=None):
-    """Update the editable fields of one server; False if no such row."""
-    uconn = _user_conn()
-    try:
-        cur = uconn.cursor()
-        fields = {"updated_at": _now()}
-        if name is not None:
-            fields["name"] = encrypt(name)
-        if runtime is not None:
-            fields["runtime"] = runtime
-        if start_command is not None:
-            fields["start_command"] = encrypt(start_command)
-        if code is not None:
-            fields["code"] = encrypt(code)
-        _HOSTING_UPDATE_COLUMNS = frozenset({
-            "name", "runtime", "start_command", "code", "updated_at",
-        })
-        for k in fields:
-            _validate_identifier(k, allow=_HOSTING_UPDATE_COLUMNS)
-        sets = ", ".join(f"{k}=:{k}" for k in fields)
-        cur.execute(f"UPDATE hosting_servers SET {sets} WHERE id=:id",
-                    {**fields, "id": str(server_id)})
-        ok = cur.rowcount == 1
-        uconn.commit()
-        return ok
-    except Exception as e:
-        _debug_print(f"[database] update_hosting_server failed for {server_id}: {e}",
-              file=sys.stderr)
-        return False
-    finally:
-        uconn.close()
-
-
-def set_hosting_status(server_id, status, pid=None, last_error=None):
-    """Move one server between lifecycle states.
-
-    pid is written when given, cleared on stopped/error, and left untouched
-    otherwise. last_error is only written when not None, so a caller that has
-    nothing to say cannot clobber a previous error message.
-    """
-    fields = {"status": status, "updated_at": _now()}
-    if pid is not None:
-        fields["pid"] = pid
-    elif status in ("stopped", "error"):
-        fields["pid"] = None
-    if last_error is not None:
-        fields["last_error"] = last_error
-    _HOSTING_STATUS_COLUMNS = frozenset({
-        "status", "updated_at", "pid", "last_error",
-    })
-    for k in fields:
-        _validate_identifier(k, allow=_HOSTING_STATUS_COLUMNS)
-    uconn = _user_conn()
-    try:
-        cur = uconn.cursor()
-        sets = ", ".join(f"{k}=:{k}" for k in fields)
-        cur.execute(f"UPDATE hosting_servers SET {sets} WHERE id=:id",
-                    {**fields, "id": str(server_id)})
-        uconn.commit()
-    finally:
-        uconn.close()
-
-
-def delete_hosting_server(server_id):
-    uconn = _user_conn()
-    try:
-        cur = uconn.cursor()
-        cur.execute("DELETE FROM hosting_servers WHERE id=:id", {"id": str(server_id)})
-        cur.execute("DELETE FROM hosting_backups WHERE server_id=:id",
-                    {"id": str(server_id)})
-        uconn.commit()
-    finally:
-        uconn.close()
-
-
-def _decrypt_hosting_backup_row(d):
-    if "payload" in d:
-        d["payload"] = _dec_or_raw(d["payload"])
-    return d
-
-
-def create_hosting_backup(server_id, payload):
-    """Store one snapshot, evicting the oldest beyond the per-server cap.
-    Returns (backup_id, kept_count) or (None, kept_count) on failure."""
-    backup_id = str(uuid.uuid4())
-    uconn = _user_conn()
-    try:
-        cur = uconn.cursor()
-        cur.execute(
-            "INSERT INTO hosting_backups(id, server_id, payload, created_at) "
-            "VALUES(:id,:sid,:payload,:cat)",
-            {"id": backup_id, "sid": str(server_id),
-             "payload": encrypt(payload), "cat": _now()})
-        cur.execute("SELECT id FROM hosting_backups WHERE server_id=:sid "
-                    "ORDER BY created_at DESC, id",
-                    {"sid": str(server_id)})
-        ids = [r[0] for r in cur.fetchall()]
-        too_many = ids[HOSTING_BACKUP_LIMIT:]
-        for stale in too_many:
-            cur.execute("DELETE FROM hosting_backups WHERE id=:id",
-                        {"id": stale})
-        uconn.commit()
-        return backup_id, len(ids) - len(too_many)
-    except Exception as e:
-        _debug_print(f"[database] create_hosting_backup failed: {e}", file=sys.stderr)
-        return None, 0
     finally:
         uconn.close()
 
@@ -4664,54 +4537,19 @@ def get_all_user_zone_overrides(user_id):
 
 
 def list_running_bots():
-    # Explicit column list, not SELECT *: the engine re-reads every running bot
-    # every 5s and last_status is a CLOB that oracledb materialises into a full
-    # Python str (fetch_lobs = False) — and the tick never reads it, process_bot
-    # overwrites it. These are exactly the keys engine.py touches on a tick.
-    cols_sql = ("id, \"uid\", token_enc, channel_id, server_ip, server_port, "
-                "edition, update_interval, message_id, embed_json, ip_reply_json, "
-                "running, webhook_url")
-    uconn = _user_conn()
-    try:
-        cur = uconn.cursor()
-        cur.execute(f"SELECT {cols_sql} FROM bots WHERE running=1")
-        cols = [d[0].lower() for d in cur.description]
-        rows = [dict(zip(cols, r)) for r in cur.fetchall()]
-    finally:
-        uconn.close()
-    out = []
-    for d in rows:
-        _decrypt_bot_row(d)
-        d["token"] = decrypt(d.get("token_enc"))
-        d["embed"] = _bot_json_obj(d.get("embed_json"), default_embed)
-        d["ip_reply"] = _bot_json_obj(d.get("ip_reply_json"), default_ip_reply)
-        out.append(d)
-    return out
+    """Every running bot across the fleet — the engine tick's read.
+
+    The bots table lives in HeatWave now; this is a pass-through so engine.py
+    keeps one read path. Degrades to an empty tick when HeatWave is down.
+    """
+    import reviews_db
+    return reviews_db.list_running_bots()
 
 
 def list_all_bots():
-    # The fleet view needs every bot (running or not) plus the name column the
-    # engine tick never reads. Token is decrypted so the console can mask it —
-    # same contract as list_running_bots().
-    cols_sql = ("id, \"uid\", name, token_enc, channel_id, server_ip, server_port, "
-                "edition, update_interval, guild_id, slot_index, message_id, "
-                "running, last_error")
-    uconn = _user_conn()
-    try:
-        cur = uconn.cursor()
-        cur.execute(f"SELECT {cols_sql} FROM bots ORDER BY \"uid\", id")
-        cols = [d[0].lower() for d in cur.description]
-        rows = [dict(zip(cols, r)) for r in cur.fetchall()]
-    finally:
-        uconn.close()
-    out = []
-    for d in rows:
-        _decrypt_bot_row(d)
-        d["token"] = decrypt(d.get("token_enc"))
-        out.append(d)
-    return out
-
-
+    """Fleet view for the admin console: every bot, running or not."""
+    import reviews_db
+    return reviews_db.list_all_bots()
 def get_all_sessions(limit=200):
     uconn = _user_conn()
     try:
@@ -4749,20 +4587,14 @@ def cleanup_expired_sessions():
 
 _DEVICE_EVENTS_RETENTION_DAYS = 90
 _FINGERPRINT_HISTORY_RETENTION_DAYS = 180
-_PANEL_ACTIVITY_RETENTION_DAYS = 90
-_HOSTING_BACKUPS_PER_SERVER = 5
-# Mirrors panel_data.EXTERNAL_PLACEHOLDER, which cannot be imported here
-# because panel_data imports this module.
-_PANEL_MIRROR_PASSWORD_HASH = "external:oracle"
 
 
 def cleanup_used_otps():
-    """Remove OTP codes already marked used (consumed or expired)."""
+    """Remove leftover used OTP rows; live codes are deleted on first use."""
     uconn = _user_conn()
     try:
         cur = uconn.cursor()
-        cur.execute("DELETE FROM otp_codes WHERE used=1 AND expires_at < :now",
-                    {"now": _now()})
+        cur.execute("DELETE FROM otp_codes WHERE used=1")
         uconn.commit()
     finally:
         uconn.close()
@@ -4783,77 +4615,37 @@ def cleanup_reviewed_device_events():
 
 
 def cleanup_fingerprint_history():
-    """Remove fingerprint history older than the retention window.  Each login
-    appends a row; keeping 180 days is enough for device-trust audits."""
+    """Prune old fingerprint rows beyond the retention window.
+
+    The fingerprints table is append-only and holds the current binding as its
+    newest row per uid.  Rows older than the retention window are dropped, but
+    a user's newest row always survives — otherwise every sweep could wipe the
+    live device binding the moment the retention window lapses.
+    """
     cutoff = _days_ago(_FINGERPRINT_HISTORY_RETENTION_DAYS)
     uconn = _user_conn()
     try:
         cur = uconn.cursor()
-        cur.execute("DELETE FROM fingerprint_history WHERE created_at < :cutoff",
-                    {"cutoff": cutoff})
-        uconn.commit()
-    finally:
-        uconn.close()
-
-
-def cleanup_panel_activity():
-    """Remove panel activity logs older than the retention window."""
-    cutoff = _days_ago(_PANEL_ACTIVITY_RETENTION_DAYS)
-    uconn = _user_conn()
-    try:
-        cur = uconn.cursor()
-        cur.execute("DELETE FROM panel_activity WHERE created_at < :cutoff",
-                    {"cutoff": cutoff})
-        uconn.commit()
-    finally:
-        uconn.close()
-
-
-def cleanup_old_backups():
-    """Keep only the most recent N backups per hosting server."""
-    uconn = _user_conn()
-    try:
-        cur = uconn.cursor()
         cur.execute("""
-            DELETE FROM hosting_backups WHERE id IN (
-                SELECT id FROM (
-                    SELECT id, ROW_NUMBER() OVER (
-                        PARTITION BY server_id ORDER BY created_at DESC
-                    ) AS rn
-                    FROM hosting_backups
-                ) WHERE rn > :keep
-            )
-        """, {"keep": _HOSTING_BACKUPS_PER_SERVER})
+            DELETE FROM fingerprints
+             WHERE created_at < :cutoff
+               AND id NOT IN (SELECT MAX(id) FROM fingerprints GROUP BY "uid")
+        """, {"cutoff": cutoff})
         uconn.commit()
     finally:
         uconn.close()
 
 
 def cleanup_orphaned_panel_data():
-    """Remove panel children whose parent user was deleted from the main
-    users table.  The FK cascades should handle this, but a schema built
-        by an earlier migration can lack the constraint."""
+    """Remove server rows whose parent user no longer exists.
+
+    servers.uid now carries a real FK to users, so deletes cascade; this only
+    runs on schema versions that predate the constraint.
+    """
     uconn = _user_conn()
     try:
         cur = uconn.cursor()
-        # Only the mirror rows track a main users row: ensure_user_by_id
-        # stamps them with the placeholder hash, while create_user mints
-        # panel-native accounts that never exist in users at all.
-        cur.execute("""
-            DELETE FROM panel_users
-             WHERE password_hash = :ext
-               AND id NOT IN (SELECT "uid" FROM users)
-        """, {"ext": _PANEL_MIRROR_PASSWORD_HASH})
-        cur.execute("""
-            DELETE FROM panel_servers WHERE user_id NOT IN (
-                SELECT id FROM panel_users
-            )
-        """)
-        cur.execute("""
-            DELETE FROM panel_activity WHERE user_id NOT IN (
-                SELECT id FROM panel_users
-            )
-        """)
+        cur.execute("DELETE FROM servers WHERE \"uid\" NOT IN (SELECT \"uid\" FROM users)")
         uconn.commit()
     finally:
         uconn.close()
@@ -4875,6 +4667,32 @@ def get_auto_ban_enabled():
 def set_auto_ban_enabled(enabled: bool):
     """Toggle automatic banning on/off."""
     set_setting("auto_ban_enabled", "1" if enabled else "0")
+
+
+def get_signup_password_enabled():
+    """Whether email/password self-service registration is open. Default on."""
+    v = get_setting("signup_password_enabled")
+    if v is not None:
+        return v == "1"
+    return True
+
+
+def set_signup_password_enabled(enabled: bool):
+    """Open or close email/password registration for the whole fleet."""
+    set_setting("signup_password_enabled", "1" if enabled else "0")
+
+
+def get_signup_github_enabled():
+    """Whether GitHub sign-up is open. Default on now that the OAuth flow is wired."""
+    v = get_setting("signup_github_enabled")
+    if v is not None:
+        return v == "1"
+    return True
+
+
+def set_signup_github_enabled(enabled: bool):
+    """Open or close GitHub sign-up for the whole fleet."""
+    set_setting("signup_github_enabled", "1" if enabled else "0")
 
 
 # ---------------------------------------------------------------------------
@@ -4906,13 +4724,6 @@ PANEL_FLAGS = {
         "label": "Self-service registration",
         "default": False,
         "detail": "Whether visitors can create their own panel account.",
-    },
-    "activity_log": {
-        "label": "Activity audit trail",
-        "default": False,
-        "detail": "Persist a row per user action (deploy, power, upload, command, "
-                  "password change) to the shared store. The Activity page renders "
-                  "empty while this is off.",
     },
     "deploys": {
         "label": "New deployments",
@@ -5089,33 +4900,18 @@ def _get_panel_settings_on(conn):
 # one container per account; anything above that is granted here, per account,
 # and the panel enforces it (panel_app/routes.py, user_max_servers).
 #
-# It lives on the panel's own panel_users row rather than in a settings row per
-# account, because the panel already loads that row on every request that
-# enforces the quota — so reading the grant costs no extra query, and a fleet of
-# accounts costs one small NUMBER column instead of one settings row each.
-#
-# Three states, and the difference between the first two is the point:
+# It lives on users.container_slots — one column the user row already carries,
+# no extra table. Three states, and the difference between the first two is
+# the point:
 #
 #   NULL  no grant     — the account gets the fleet figure
 #   0     switched off — an explicit decision, not the absence of one
 #   N     exactly N, whatever the fleet figure moves to
 #
 # Deliberately *not* users.slots: that column counts Minecraft status-bot slots
-# and update_user_slots cascades DELETE FROM bots off it, so writing a container
+# and update_user_slots cascades bot deletes off it, so writing a container
 # grant through it would delete the account's bots.
 PANEL_CONTAINER_SLOTS_HIGH = PANEL_LIMITS["max_servers"]["high"]
-
-# Same placeholder panel_app/store.py writes into a mirrored row: an unusable
-# hash, so a row this module creates holds an identity and not a credential and
-# Oracle stays the only thing that can authenticate the user.
-_PANEL_EXTERNAL_PLACEHOLDER = "external:oracle"
-
-# panel_users.username is VARCHAR2(100) — panel_app/store.py USERNAME_MAX_CHARS.
-_PANEL_USERNAME_MAX = 100
-
-# Oracle errors meaning the panel's own schema is not there yet: the table
-# (ORA-00942) or the column ensure_schema adds at panel startup (ORA-00904).
-_PANEL_SCHEMA_MISSING = ("ORA-00942", "ORA-00904")
 
 
 def _panel_container_slots(value):
@@ -5137,23 +4933,13 @@ def _panel_container_slots(value):
 
 
 def get_panel_container_slots(user_id):
-    """One account's container grant, or None when it has none.
-
-    None also covers "no panel_users row yet" and "the panel has not created its
-    schema here yet": the row is written on first panel sign-in, and all three
-    cases mean the same thing to the panel — use the fleet figure.
-    """
+    """One account's container grant, or None when it has none (fleet figure)."""
     uconn = _user_conn()
     try:
         cur = uconn.cursor()
-        cur.execute("SELECT container_slots FROM panel_users WHERE id=:id",
+        cur.execute("SELECT container_slots FROM users WHERE \"uid\"=:id",
                     {"id": user_id})
         row = cur.fetchone()
-    except Exception as e:
-        if not any(tag in str(e) for tag in _PANEL_SCHEMA_MISSING):
-            raise
-        _debug_print(f"[panel] container grant unreadable, using the fleet figure: {e}")
-        return None
     finally:
         uconn.close()
     if not row or row[0] is None:
@@ -5164,61 +4950,20 @@ def get_panel_container_slots(user_id):
 def set_panel_container_slots(user_id, slots):
     """Write one account's container grant. Returns the stored value.
 
-    UPDATE first, and mirror a panel_users row when the account has none: that
-    row is only created on first panel sign-in, so without this a grant could
-    not be handed out until its owner had visited the panel once — which is the
-    wrong way round, since the reason to raise the grant is usually that they
-    are about to.
+    None clears the grant back to the fleet figure. The account must already
+    exist — grants are per account, never the reason to create one.
     """
     stored = _panel_container_slots(slots)
-    username = None
-    # Naive UTC, matching what the panel writes: SQLAlchemy renders
-    # its DateTime as an Oracle DATE, which has nowhere to keep an
-    # offset.
-    created = _shared_utcnow().replace(tzinfo=None)
     uconn = _user_conn()
     try:
         cur = uconn.cursor()
-        cur.execute("UPDATE panel_users SET container_slots=:slots WHERE id=:id",
-                    {"slots": stored, "id": user_id})
+        cur.execute("UPDATE users SET container_slots=:slots WHERE \"uid\"=:id",
+                    {"slots": None if stored is None else str(stored), "id": user_id})
         if cur.rowcount == 0:
-            if stored is None:
-                # Nothing to clear, and a row whose only content is "no grant"
-                # is the row the panel would write anyway on first sign-in.
-                return None
-            # Read the name through the same cursor rather than get_user(): a
-            # second connection here would be a second session out of a pool
-            # sized for two.
-            cur.execute("SELECT username FROM users WHERE \"uid\"=:id", {"id": user_id})
-            account = cur.fetchone()
-            if not account:
-                raise ValueError(f"no such account: {user_id!r}")
-            username = (_row_plaintext(account[0]) or str(user_id))[:_PANEL_USERNAME_MAX]
-            cur.execute(
-                """INSERT INTO panel_users
-                       (id, username, password_hash, container_slots, created_at)
-                   VALUES (:id, :username, :ph, :slots, :created)""",
-                {"id": user_id, "username": username,
-                 "ph": _PANEL_EXTERNAL_PLACEHOLDER, "slots": stored,
-                 "created": created},
-            )
+            raise ValueError(f"no such account: {user_id!r}")
         uconn.commit()
-    except Exception as e:
+    except Exception:
         uconn.rollback()
-        if "ORA-00001" in str(e):
-            # The unique index on lower(panel_users.username) already holds this
-            # name under a different id, which is a mirror that has not finished
-            # migrating rather than a bad request. Said plainly instead of as an
-            # Oracle code, because the fix is to that other row.
-            raise ValueError(
-                f"another panel row already holds the username {username!r}; "
-                f"the grant cannot be stored until that row is reconciled"
-            ) from e
-        if any(tag in str(e) for tag in _PANEL_SCHEMA_MISSING):
-            raise ValueError(
-                "the panel's own tables are not in this schema yet — start the "
-                "panel once so it creates them, then set the grant"
-            ) from e
         raise
     finally:
         uconn.close()
@@ -5240,6 +4985,20 @@ def verify_user_email(uid, verified=True):
         else:
             cur.execute("UPDATE users SET email_verified=:v WHERE \"uid\"=:u_id",
                         {"v": 0, "u_id": uid})
+        uconn.commit()
+    finally:
+        uconn.close()
+
+
+def set_github_verified(uid, value=True):
+    """Record how the email was proven. email_verified says the address is
+    verified; github_verified says it was GitHub OAuth, not the OTP code. Stored
+    '1'/'0' the same way email_verified is."""
+    uconn = _user_conn()
+    try:
+        cur = uconn.cursor()
+        cur.execute("UPDATE users SET github_verified=:v WHERE \"uid\"=:u_id",
+                    {"v": '1' if value else '0', "u_id": uid})
         uconn.commit()
     finally:
         uconn.close()

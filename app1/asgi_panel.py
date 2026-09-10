@@ -131,17 +131,15 @@ _PANEL_BIND_DEFAULT = "127.0.0.1"
 
 @asynccontextmanager
 async def _lifespan(_app):
-    """Bring the panel's schema up to date, then hold the Oracle engine open.
+    """Hold the panel's Oracle engine open for the process lifetime.
 
-    ensure_schema() creates a panel table this schema does not have and adds a
-    column an older one is missing; both halves are additive, race-tolerant and
-    a no-op once the schema matches the models, so it runs on every start rather
-    than behind PANEL_INIT_DB. It has to: create_all checks at table level only,
-    so a panel_servers table built before desired_state existed never gained it
-    and every page that lists servers answered ORA-00904 until a migration was
-    run by hand. close_db() disposes the connection pool on shutdown. With the
-    SQLite store there is no async engine at all — the store builds its own file,
-    and adds the same column itself — so neither half applies.
+    The panel owns no schema any more — ``users`` and the consolidated
+    ``servers`` table belong to the host app's database.init_db() — so
+    ensure_schema() is a no-op heal hook kept for OracleStore's ORA-00904
+    path, and there are no panel migrations left to run by hand. close_db()
+    disposes the connection pool on shutdown. With the SQLite store there is
+    no async engine at all — the store builds its own file — so neither half
+    applies.
     """
     reconcile_task = _start_reconcile_task()
     try:
@@ -173,11 +171,10 @@ async def _lifespan(_app):
             # failure it reports is one that leaves pages broken until the next
             # restart — which is how ORA-00904 went unexplained for three of them.
             _debug_print(
-                f"[panel] WARNING: schema check/repair failed: {exc}\n"
-                "[panel] The panel is serving anyway, but any column this would have "
-                "added is still missing and every page selecting it will 500. Fix the "
-                "connection and restart this tier, or run "
-                "migrations/run_002_desired_state.py --apply by hand.",
+                f"[panel] WARNING: schema check failed: {exc}\n"
+                "[panel] The panel is serving anyway. The check is a no-op now that "
+                "the host app owns the schema, so this only matters if the database "
+                "is unreachable at boot — fix the connection and restart this tier.",
                 file=sys.stderr,
             )
         try:
@@ -220,7 +217,7 @@ def _start_reconcile_task():
                     reviews_db.log_app_error("ReconcileSweepFailed", f"[panel] reconcile sweep failed: {type(exc).__name__}: {exc}", module="asgi_panel", flagged=1)
                 except Exception:
                     pass
-                _debug__debug_print(f"[panel] reconcile sweep failed: {type(exc).__name__}: {exc}",
+                _debug_print(f"[panel] reconcile sweep failed: {type(exc).__name__}: {exc}",
                              file=sys.stderr)
 
     return asyncio.ensure_future(_loop())
@@ -311,10 +308,21 @@ def serve():
             "(and NODE_URL to its address) before starting the tier.",
             file=sys.stderr,
         )
+    try:
+        import logging
+        import reviews_db
+        quiet = not reviews_db.is_console_debug_enabled()
+    except Exception:
+        quiet = True
+    if quiet:
+        import logging
+        for name in ("uvicorn", "uvicorn.error", "uvicorn.access", "panel_app"):
+            logging.getLogger(name).setLevel(logging.ERROR)
     uvicorn.run(
         application,
         host=host,
         port=port,
+        log_level="error" if quiet else "info",
         # Pinned rather than left to default. uvicorn reads WEB_CONCURRENCY from
         # the environment whenever this is None, and the shared .env every tier
         # reads is already loaded by the time serve() runs. A WEB_CONCURRENCY set

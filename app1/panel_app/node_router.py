@@ -100,9 +100,6 @@ class NodeRouter:
                     # happens here. ping walks every address the node lists, so a
                     # node is only skipped when none of them answers.
                     if not candidate.ping():
-                        _log.warning(
-                            "node_router: node %s answered on none of its addresses", nid
-                        )
                         continue
                     client = candidate
                     _log.info("node_router: resolved default node %s url=%s", nid, candidate.base_url)

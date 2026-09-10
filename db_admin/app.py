@@ -1,4 +1,4 @@
-﻿"""DB Admin — console for Oracle SQL, MongoDB, and HeatWave MySQL.
+"""DB Admin — console for Oracle SQL, MongoDB, and HeatWave MySQL.
 
 Run:
     python app.py [--host 0.0.0.0] [--port 8004] [--debug]
@@ -10,6 +10,7 @@ import datetime
 import io
 import json
 import os
+import re
 import sys
 import time
 from decimal import Decimal
@@ -17,22 +18,29 @@ from datetime import date
 from urllib.parse import quote
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-APP_DIR = os.path.join(BASE_DIR, "..", "app")
-if APP_DIR not in sys.path:
-    sys.path.insert(0, APP_DIR)
+# crypto_util lives in app1 (and a vendored copy in admin). The old "app"
+# sibling does not exist in this repo, so imports silently fell through.
+for _candidate in (
+    os.path.join(BASE_DIR, "..", "app1"),
+    os.path.join(BASE_DIR, "..", "admin"),
+):
+    _abs = os.path.abspath(_candidate)
+    if os.path.isdir(_abs) and _abs not in sys.path:
+        sys.path.insert(0, _abs)
 
 
 # Shard IDs
 SHARD_ORACLE = 0      # Oracle SQL - BOTHOST (default)
 SHARD_ORACLE_2 = 1    # Oracle SQL - BOTHOST1
 SHARD_HEATWAVE = 99   # HeatWave MySQL
+SHARD_MONGO_BASE = 100  # Mongo shard ids are SHARD_MONGO_BASE + DB_<idx> (100..163)
 
 
 def _load_env():
     env_path = os.path.join(BASE_DIR, ".env")
     if not os.path.exists(env_path):
-        raise SystemExit(f"missing .env: {env_path}")
-    with open(env_path) as f:
+        return
+    with open(env_path, encoding="utf-8-sig") as f:
         for line in f:
             line = line.strip()
             if not line or line.startswith("#") or "=" not in line:
@@ -58,53 +66,210 @@ from flask import (
     Response,
     abort,
     flash,
+    g,
     jsonify,
     redirect,
     render_template,
     request,
+    session,
     url_for,
 )
 
 app = Flask(__name__)
-app.secret_key = os.environ.get("DBADMIN_SECRET") or os.urandom(32)
+
+
+def _persist_secret():
+    raw = (os.environ.get("DBADMIN_SECRET") or "").strip()
+    if raw:
+        return raw
+    path = os.path.join(BASE_DIR, "data", "flask_secret")
+    try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        if os.path.exists(path):
+            stored = open(path, encoding="ascii").read().strip()
+            if stored:
+                return stored
+        import secrets as _secrets
+        value = _secrets.token_hex(32)
+        fd = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+        with os.fdopen(fd, "w", encoding="ascii") as fh:
+            fh.write(value)
+        return value
+    except FileExistsError:
+        return open(path, encoding="ascii").read().strip() or os.urandom(32).hex()
+    except OSError:
+        return os.urandom(32).hex()
+
+
+app.secret_key = _persist_secret()
+app.config["SESSION_COOKIE_HTTPONLY"] = True
+app.config["SESSION_COOKIE_SAMESITE"] = "Lax"
+app.config["SESSION_COOKIE_SECURE"] = False
 
 # ─── Oracle SQL ──────────────────────────────────────────────────────────────
 
 _oracle_pools = {}  # {shard_id: connection}
+_oracle_live = {}   # requested shard -> dsn index actually in use
+_oracle_skip = set()  # DSN strings skipped because storage is full
+
+
+def _resolve_shard(shard_id=None):
+    """SHARD_ORACLE is 0, which is falsy — never use ``shard_id or``."""
+    if shard_id is None:
+        return _get_shard_id()
+    return shard_id
+
+
+def _oracle_targets():
+    """ORACLE_DSN, ORACLE_DSN_1, ORACLE_DSN_2, … from .env."""
+    out = []
+    primary = (os.environ.get("ORACLE_DSN") or "").strip()
+    if primary:
+        out.append({
+            "i": 0,
+            "dsn": primary,
+            "user": os.environ.get("ORACLE_USER", "ADMIN"),
+            "password": os.environ.get("ORACLE_PASSWORD", ""),
+        })
+    for idx in range(1, 8):
+        dsn = (os.environ.get(f"ORACLE_DSN_{idx}") or "").strip()
+        if not dsn:
+            continue
+        out.append({
+            "i": idx,
+            "dsn": dsn,
+            "user": os.environ.get(f"ORACLE_USER_{idx}") or os.environ.get("ORACLE_USER", "ADMIN"),
+            "password": os.environ.get(f"ORACLE_PASSWORD_{idx}") or os.environ.get("ORACLE_PASSWORD", ""),
+        })
+    return out
 
 
 def _oracle_conn(shard_id=None):
-    """Get an Oracle SQL connection for the given shard."""
-    sid = shard_id or _get_shard_id()
+    """Get an Oracle SQL connection; hop to the next DSN if this one is down."""
+    sid = _resolve_shard(shard_id)
     if sid in _oracle_pools:
-        return _oracle_pools[sid]
+        conn = _oracle_pools[sid]
+        try:
+            conn.ping()
+            return conn
+        except Exception:
+            try:
+                conn.close()
+            except Exception:
+                pass
+            _oracle_pools.pop(sid, None)
     import oracledb
     oracledb.defaults.fetch_lobs = False
-    user = os.environ.get("ORACLE_USER", "ADMIN")
-    password = os.environ.get("ORACLE_PASSWORD", "")
-    if sid == SHARD_ORACLE_2:
-        dsn = os.environ.get("ORACLE_DSN_1", "")
-    else:
-        dsn = os.environ.get("ORACLE_DSN", "")
-    if not dsn:
-        raise SystemExit(f"ORACLE_DSN{'_1' if sid == SHARD_ORACLE_2 else ''} not set in .env")
-    _oracle_pools[sid] = oracledb.connect(user=user, password=password, dsn=dsn)
-    return _oracle_pools[sid]
+    targets = _oracle_targets()
+    if not targets:
+        raise RuntimeError("ORACLE_DSN not set")
+    start = 0
+    for n, t in enumerate(targets):
+        if t["i"] == sid:
+            start = n
+            break
+    last = None
+    for t in targets[start:] + targets[:start]:
+        if t["dsn"] in _oracle_skip and any(x["dsn"] not in _oracle_skip for x in targets):
+            continue
+        try:
+            conn = oracledb.connect(user=t["user"], password=t["password"], dsn=t["dsn"])
+            if _oracle_storage_full(conn) and any(x["dsn"] != t["dsn"] for x in targets):
+                _oracle_skip.add(t["dsn"])
+                print(f"[db_admin] Oracle DSN index {t['i']} storage full, next DSN")
+                try:
+                    conn.close()
+                except Exception:
+                    pass
+                continue
+            _oracle_pools[sid] = conn
+            _oracle_live[sid] = t["i"]
+            if t["i"] != sid:
+                print(f"[db_admin] Oracle failover shard {sid} -> DSN_{t['i'] or ''}")
+            return conn
+        except Exception as ex:
+            last = ex
+            print(f"[db_admin] Oracle DSN index {t['i']} unreachable: {ex}")
+            continue
+    raise RuntimeError(f"Oracle unreachable: {last}")
+
+
+_ORACLE_STORAGE_MARKERS = (
+    "ORA-01653", "ORA-01654", "ORA-01652", "ORA-01658", "ORA-01659",
+    "ORA-01631", "ORA-01632", "ORA-01688", "ORA-01691",
+    "ORA-01536", "ORA-12953", "ORA-12954", "ORA-30036",
+    "unable to extend",
+)
+
+
+def _is_oracle_storage_full(exc) -> bool:
+    msg = str(exc or "")
+    return any(tag.lower() in msg.lower() for tag in _ORACLE_STORAGE_MARKERS)
+
+
+def _oracle_storage_full(conn) -> bool:
+    try:
+        cur = conn.cursor()
+        cur.execute("SELECT NVL(SUM(bytes), 0) FROM user_segments")
+        used = int(cur.fetchone()[0] or 0)
+        cur.execute(
+            "SELECT NVL(SUM(CASE WHEN max_bytes < 0 THEN NULL ELSE max_bytes END), 0) "
+            "FROM user_ts_quotas"
+        )
+        quota = int(cur.fetchone()[0] or 0)
+        cur.close()
+        if quota <= 0:
+            try:
+                quota = int(float(os.environ.get("ORACLE_STORAGE_GB", "20"))) * (1024 ** 3)
+            except (TypeError, ValueError):
+                quota = 20 * (1024 ** 3)
+        remaining = quota - used
+        return remaining <= 32 * 1024 * 1024 or (quota and used / quota >= 0.95)
+    except Exception as ex:
+        return _is_oracle_storage_full(ex)
 
 
 def _oracle_query(sql, params=None, shard_id=None):
     """Execute SQL on Oracle and return list of dicts."""
-    conn = _oracle_conn(shard_id)
-    cur = conn.cursor()
-    try:
-        cur.execute(sql, params or ())
-        if cur.description:
-            cols = [d[0] for d in cur.description]
-            return [dict(zip(cols, row)) for row in cur.fetchall()]
-        conn.commit()
-        return []
-    finally:
-        cur.close()
+    sid = _resolve_shard(shard_id)
+    last = None
+    for _attempt in range(3):
+        conn = _oracle_conn(sid)
+        cur = conn.cursor()
+        try:
+            cur.execute(sql, params or ())
+            if cur.description:
+                cols = [d[0] for d in cur.description]
+                rows = []
+                for row in cur.fetchall():
+                    rec = dict(zip(cols, row))
+                    rec.pop("RN", None)
+                    rec.pop("rn", None)
+                    rows.append(rec)
+                return rows
+            conn.commit()
+            return []
+        except Exception as ex:
+            last = ex
+            try:
+                conn.close()
+            except Exception:
+                pass
+            _oracle_pools.pop(sid, None)
+            if _is_oracle_storage_full(ex):
+                live_i = _oracle_live.get(sid)
+                for t in _oracle_targets():
+                    if t["i"] == live_i:
+                        _oracle_skip.add(t["dsn"])
+                        break
+            print(f"[db_admin] Oracle query failed, retry/failover: {ex}")
+            continue
+        finally:
+            try:
+                cur.close()
+            except Exception:
+                pass
+    raise last
 
 
 # ─── MongoDB ─────────────────────────────────────────────────────────────────
@@ -129,9 +294,9 @@ def _mongo(shard_id=None):
     if shard_id not in _mongo_dbs:
         from pymongo import MongoClient
         shards = _load_mongo_shard_uris()
-        uri = shards.get(shard_id, "")
+        uri = shards.get(shard_id - SHARD_MONGO_BASE, "")
         if not uri:
-            raise SystemExit(f"No MongoDB URI for shard {shard_id}")
+            raise RuntimeError(f"No MongoDB URI for shard {shard_id}")
         _mongo_clients[shard_id] = MongoClient(uri, tls=True)
         _mongo_dbs[shard_id] = _mongo_clients[shard_id].get_database()
     return _mongo_dbs[shard_id]
@@ -149,23 +314,31 @@ def _heatwave_enabled():
 def _heatwave_connect():
     global _heatwave_conn
     if _heatwave_conn is not None:
-        return _heatwave_conn
+        try:
+            _heatwave_conn.ping(reconnect=True, attempts=1, delay=0)
+            return _heatwave_conn
+        except Exception:
+            try:
+                _heatwave_conn.close()
+            except Exception:
+                pass
+            _heatwave_conn = None
     import mysql.connector
     ssl_ca = os.environ.get("MYSQL_SSL_CA", "").strip()
-    if not os.path.isabs(ssl_ca):
-        ssl_ca = os.path.join(BASE_DIR, ssl_ca)
-    _heatwave_conn = mysql.connector.connect(
-        host=os.environ.get("MYSQL_HOST", "10.0.4.247"),
+    kwargs = dict(
+        host=os.environ.get("MYSQL_HOST", ""),
         port=int(os.environ.get("MYSQL_PORT", "3306")),
         user=os.environ.get("MYSQL_USER", "ADMIN"),
         password=os.environ.get("MYSQL_PASSWORD", ""),
         database=os.environ.get("MYSQL_DATABASE", "heatwavesql"),
-        ssl_ca=ssl_ca,
-        ssl_verify_cert=True,
-        ssl_verify_identity=False,
         connection_timeout=10,
         charset="utf8mb4",
     )
+    if ssl_ca:
+        if not os.path.isabs(ssl_ca):
+            ssl_ca = os.path.join(BASE_DIR, ssl_ca)
+        kwargs.update(ssl_ca=ssl_ca, ssl_verify_cert=True, ssl_verify_identity=False)
+    _heatwave_conn = mysql.connector.connect(**kwargs)
     return _heatwave_conn
 
 
@@ -184,88 +357,130 @@ def _heatwave_query(sql, params=None):
 
 # ─── shard helpers ───────────────────────────────────────────────────────────
 
+_IDENT_RE = __import__("re").compile(r"\A[A-Za-z][A-Za-z0-9_$#]{0,127}\Z")
+_TEXT_TYPES = (
+    "CHAR", "NCHAR", "VARCHAR", "VARCHAR2", "NVARCHAR2", "CLOB", "NCLOB",
+    "LONG", "TEXT", "TINYTEXT", "MEDIUMTEXT", "LONGTEXT", "JSON", "ENUM",
+)
+
+
+def _ident(name):
+    text = str(name or "").strip()
+    if not _IDENT_RE.match(text):
+        raise ValueError(f"invalid identifier: {name!r}")
+    return text
+
+
+def _ora_ident(name):
+    return '"' + _ident(name).replace('"', "") + '"'
+
+
+def _my_ident(name):
+    return "`" + _ident(name).replace("`", "") + "`"
+
+
+def _pk_field(fields):
+    by_upper = {str(k).upper(): k for k in (fields or {})}
+    for candidate in ("ID", "UID", "USER_ID", "USERID", "_ID"):
+        if candidate in by_upper:
+            return by_upper[candidate]
+    return next(iter(fields), None) if fields else None
+
+
+def _text_columns(fields):
+    out = []
+    for name, dtype in (fields or {}).items():
+        kind = str(dtype or "").upper()
+        if any(kind.startswith(t) or t in kind for t in _TEXT_TYPES):
+            out.append(name)
+    return out or list(fields.keys())
+
+
 def _get_shard_id():
     try:
-        from flask import session
         return session.get("shard_id", SHARD_ORACLE)
     except RuntimeError:
         return SHARD_ORACLE
 
 
 def get_available_shards():
-    shards = [SHARD_ORACLE]
-    if os.environ.get("ORACLE_DSN_1"):
-        shards.append(SHARD_ORACLE_2)
+    shards = [t["i"] for t in _oracle_targets()] or [SHARD_ORACLE]
     if _heatwave_enabled():
         shards.append(SHARD_HEATWAVE)
+    for idx in sorted(_load_mongo_shard_uris()):
+        shards.append(SHARD_MONGO_BASE + idx)
     return shards
 
 
 def _is_oracle(shard_id=None):
-    s = shard_id or _get_shard_id()
-    return s in (SHARD_ORACLE, SHARD_ORACLE_2)
+    s = _resolve_shard(shard_id)
+    return s != SHARD_HEATWAVE and s < SHARD_MONGO_BASE
 
 
 def _is_heatwave(shard_id=None):
-    return (shard_id or _get_shard_id()) == SHARD_HEATWAVE
+    return _resolve_shard(shard_id) == SHARD_HEATWAVE
 
 
 def _is_mongo(shard_id=None):
-    s = shard_id or _get_shard_id()
-    return s != SHARD_ORACLE and s != SHARD_ORACLE_2 and s != SHARD_HEATWAVE
+    return _resolve_shard(shard_id) >= SHARD_MONGO_BASE
 
 
-def _try_all_collections(shard_id=None):
-    """Try to get tables from one shard; if it fails, try the next."""
-    sid = shard_id or _get_shard_id()
-    order = [sid] + [s for s in get_available_shards() if s != sid]
-    connected_result = None
-    for s in order:
-        try:
-            if _is_oracle(s):
-                rows = _oracle_query("SELECT table_name FROM user_tables ORDER BY table_name", shard_id=s)
-                result = [r["TABLE_NAME"] for r in rows]
-                if connected_result is None:
-                    connected_result = (result, s)
-                if result:
-                    return result, s
-            elif _is_heatwave(s):
-                rows = _heatwave_query("SHOW TABLES")
-                result = sorted([list(r.values())[0] for r in rows] if rows else [])
-                if connected_result is None:
-                    connected_result = (result, s)
-                if result:
-                    return result, s
-        except Exception as e:
-            print(f"[fallback] Shard {s} failed: {e}")
-    return connected_result or ([], sid)
+def _list_tables(shard_id=None):
+    s = _resolve_shard(shard_id)
+    if _is_oracle(s):
+        rows = _oracle_query(
+            "SELECT table_name FROM user_tables ORDER BY table_name", shard_id=s
+        )
+        return [r["TABLE_NAME"] for r in rows]
+    if _is_heatwave(s):
+        rows = _heatwave_query("SHOW TABLES")
+        return sorted(str(list(r.values())[0]) for r in rows) if rows else []
+    if _is_mongo(s):
+        return sorted(_mongo(s).list_collection_names())
+    return []
+
+
+def has_request_context():
+    try:
+        request.path
+        return True
+    except RuntimeError:
+        return False
 
 
 def all_collections():
-    result, _ = _try_all_collections()
-    return result
+    if has_request_context() and getattr(g, "_all_collections", None) is not None:
+        return g._all_collections
+    try:
+        names = _list_tables()
+    except Exception as exc:
+        print(f"[db_admin] list tables failed: {exc}")
+        names = []
+    if has_request_context():
+        g._all_collections = names
+    return names
 
 
 def collection_fields(coll_name):
-    shard_id = _get_shard_id()
-    order = [shard_id] + [s for s in get_available_shards() if s != shard_id]
-    for s in order:
-        try:
-            if _is_oracle(s):
-                rows = _oracle_query(
-                    "SELECT column_name, data_type FROM user_tab_columns "
-                    "WHERE table_name = :1 ORDER BY column_id", [coll_name.upper()], shard_id=s
-                )
-                if rows:
-                    return {r["COLUMN_NAME"]: r["DATA_TYPE"] for r in rows}
-                return {}
-            elif _is_heatwave(s):
-                rows = _heatwave_query(f"DESCRIBE `{coll_name}`")
-                if rows:
-                    return {r["Field"]: r["Type"] for r in rows}
-                return {}
-        except Exception:
-            continue
+    s = _get_shard_id()
+    try:
+        name = _ident(coll_name)
+        if _is_oracle(s):
+            rows = _oracle_query(
+                "SELECT column_name, data_type FROM user_tab_columns "
+                "WHERE table_name = :1 ORDER BY column_id",
+                [name.upper()],
+                shard_id=s,
+            )
+            return {r["COLUMN_NAME"]: r["DATA_TYPE"] for r in rows} if rows else {}
+        if _is_heatwave(s):
+            rows = _heatwave_query(f"DESCRIBE {_my_ident(name)}")
+            return {r["Field"]: r["Type"] for r in rows} if rows else {}
+        if _is_mongo(s):
+            sample = _mongo(s)[name].find_one() or {}
+            return {k: type(v).__name__ for k, v in sample.items()}
+    except Exception as exc:
+        print(f"[db_admin] fields for {coll_name} failed: {exc}")
     return {}
 
 
@@ -283,22 +498,96 @@ def _user_id_field(coll_name, fields):
 
 
 def collection_count(coll_name):
-    shard_id = _get_shard_id()
-    order = [shard_id] + [s for s in get_available_shards() if s != shard_id]
-    for s in order:
-        try:
-            if _is_oracle(s):
-                rows = _oracle_query(f'SELECT COUNT(*) AS cnt FROM "{coll_name}"', shard_id=s)
-                return rows[0]["CNT"] if rows else 0
-            elif _is_heatwave(s):
-                rows = _heatwave_query(f"SELECT COUNT(*) AS cnt FROM `{coll_name}`")
-                return rows[0]["cnt"] if rows else 0
-        except Exception:
-            continue
+    s = _get_shard_id()
+    try:
+        name = _ident(coll_name)
+        if _is_oracle(s):
+            rows = _oracle_query(
+                f"SELECT COUNT(*) AS cnt FROM {_ora_ident(name)}", shard_id=s
+            )
+            return rows[0]["CNT"] if rows else 0
+        if _is_heatwave(s):
+            rows = _heatwave_query(f"SELECT COUNT(*) AS cnt FROM {_my_ident(name)}")
+            return rows[0]["cnt"] if rows else 0
+        if _is_mongo(s):
+            return _mongo(s)[name].estimated_document_count()
+    except Exception as exc:
+        print(f"[db_admin] count {coll_name} failed: {exc}")
     return 0
 
 
+def _fmt_bytes(n):
+    n = float(n or 0)
+    for unit in ("B", "KB", "MB", "GB", "TB"):
+        if n < 1024 or unit == "TB":
+            if unit == "B":
+                return f"{int(n)} {unit}"
+            return f"{n:.2f} {unit}"
+        n /= 1024.0
+    return f"{n:.2f} TB"
+
+
+def storage_report():
+    """Used vs remaining storage on the current data plane."""
+    used = 0
+    quota = 0
+    note = ""
+    s = _get_shard_id()
+    try:
+        if _is_oracle(s):
+            rows = _oracle_query(
+                "SELECT NVL(SUM(bytes), 0) AS used FROM user_segments", shard_id=s
+            )
+            used = int(rows[0]["USED"] if rows else 0)
+            qrows = _oracle_query(
+                "SELECT NVL(SUM(CASE WHEN max_bytes < 0 THEN NULL ELSE max_bytes END), 0) AS q "
+                "FROM user_ts_quotas",
+                shard_id=s,
+            )
+            quota = int(qrows[0]["Q"] if qrows else 0)
+            if quota <= 0:
+                try:
+                    quota = int(float(os.environ.get("ORACLE_STORAGE_GB", "20"))) * (1024 ** 3)
+                    note = "quota from ORACLE_STORAGE_GB (default 20 GB ATP)"
+                except (TypeError, ValueError):
+                    quota = 20 * (1024 ** 3)
+                    note = "default 20 GB ATP cap"
+        elif _is_heatwave(s):
+            rows = _heatwave_query(
+                "SELECT COALESCE(SUM(data_length + index_length), 0) AS used "
+                "FROM information_schema.tables WHERE table_schema = DATABASE()"
+            )
+            used = int(rows[0]["used"] if rows else 0)
+            try:
+                quota = int(float(os.environ.get("MYSQL_STORAGE_GB", "50"))) * (1024 ** 3)
+            except (TypeError, ValueError):
+                quota = 50 * (1024 ** 3)
+            note = "quota from MYSQL_STORAGE_GB (default 50 GB)"
+        elif _is_mongo(s):
+            stats = _mongo(s).command("dbStats")
+            used = int(stats.get("dataSize") or 0) + int(stats.get("indexSize") or 0)
+            quota = int(stats.get("fsTotalSize") or 0)
+            note = "Mongo dbStats"
+    except Exception as exc:
+        print(f"[db_admin] storage_report: {exc}")
+        note = str(exc)
+    remaining = max(0, quota - used) if quota else 0
+    pct = (100.0 * used / quota) if quota else 0.0
+    return {
+        "used": used,
+        "quota": quota,
+        "remaining": remaining,
+        "pct": min(100.0, pct),
+        "used_h": _fmt_bytes(used),
+        "quota_h": _fmt_bytes(quota) if quota else "unknown",
+        "remaining_h": _fmt_bytes(remaining) if quota else "unknown",
+        "note": note,
+    }
+
+
 def collections_report():
+    if has_request_context() and getattr(g, "_collections_report", None) is not None:
+        return g._collections_report
     out = []
     all_names = all_collections()
     for name in all_names:
@@ -315,21 +604,102 @@ def collections_report():
             out.append({"name": name, "rows": 0, "fields": 0, "field_list": []})
     out.sort(key=lambda x: -x["rows"])
     total_rows = sum(t["rows"] for t in out)
-    return out, {"rows": total_rows, "collections": len(out)}
+    result = (out, {"rows": total_rows, "collections": len(out)})
+    if has_request_context():
+        g._collections_report = result
+    return result
+
+
+def username_map():
+    """uid -> display username for the current shard."""
+    if has_request_context() and getattr(g, "_username_map", None) is not None:
+        return g._username_map
+    names = {}
+    all_cols = all_collections()
+    if not any(c.upper() == "USERS" for c in all_cols):
+        if has_request_context():
+            g._username_map = names
+        return names
+    users_tbl = next(c for c in all_cols if c.upper() == "USERS")
+    fields = collection_fields(users_tbl)
+    users_id_field = _user_id_field(users_tbl, fields) or (
+        list(fields.keys())[0] if fields else "uid")
+    shard_id = _get_shard_id()
+    try:
+        if _is_oracle(shard_id):
+            rows = _oracle_query(f'SELECT * FROM "{users_tbl}" WHERE ROWNUM <= 2000')
+        elif _is_heatwave(shard_id):
+            rows = _heatwave_query(f"SELECT * FROM {_my_ident(users_tbl)} LIMIT 2000")
+        else:
+            rows = list(_mongo(shard_id)[users_tbl].find().limit(2000))
+        for doc in rows or []:
+            uid = str(_iget(doc, users_id_field) or _iget(doc, "UID") or _iget(doc, "uid") or "")
+            uname = _iget(doc, "USERNAME") or _iget(doc, "username") or _iget(doc, "DISPLAY_NAME") or ""
+            if uname and _looks_encrypted(str(uname)) and _decrypt:
+                try:
+                    uname = _decrypt(str(uname))
+                except Exception:
+                    pass
+            if uid and uname:
+                names[uid] = str(uname)
+    except Exception as exc:
+        print(f"[db_admin] username_map: {exc}")
+    if has_request_context():
+        g._username_map = names
+    return names
+
+
+USERS_SCAN_CAP = 40  # ponytail: max user-linked tables GROUP-BY'd for the overview; raise if a plane needs an exhaustive identity list
+
+
+def _linked_tables(shard_id, all_cols):
+    """(table, user_id_column) for every table that joins back to a user.
+
+    On Oracle this resolves in a single user_tab_columns query rather than one
+    per table, which is what made the Identities overview hang on a wide
+    catalog.  HeatWave/Mongo keep the per-table sample (small, rarely used)."""
+    if _is_oracle(shard_id):
+        try:
+            rows = _oracle_query(
+                "SELECT table_name, column_name FROM user_tab_columns "
+                "WHERE column_name IN ('UID', 'USER_ID', 'USERID') "
+                "OR (table_name = 'USERS' AND column_name = 'ID')",
+                shard_id=shard_id,
+            )
+        except Exception:
+            rows = []
+        known = {c.upper(): c for c in all_cols}
+        rank = {"UID": 0, "USER_ID": 1, "USERID": 2, "ID": 3}
+        best = {}
+        for r in rows:
+            disp = known.get(str(r["TABLE_NAME"]).upper())
+            col = r["COLUMN_NAME"]
+            if not disp:
+                continue
+            if disp not in best or rank.get(col, 9) < rank.get(best[disp], 9):
+                best[disp] = col
+        return list(best.items())
+    out = []
+    for coll_name in all_cols:
+        id_field = _user_id_field(coll_name, collection_fields(coll_name))
+        if id_field:
+            out.append((coll_name, id_field))
+    return out
 
 
 def users_report():
+    """Per-uid row counts across tables that link back to a user."""
     all_cols = all_collections()
     shard_id = _get_shard_id()
     per_user = {}
 
-    # Find tables with a user-linking column
-    for coll_name in all_cols:
-        fields = collection_fields(coll_name)
-        id_field = _user_id_field(coll_name, fields)
-        if not id_field:
-            continue
+    linked = _linked_tables(shard_id, all_cols)
+    # USERS first so identities still resolve when the scan is capped
+    linked.sort(key=lambda cf: cf[0].upper() != "USERS")
+    if len(linked) > USERS_SCAN_CAP:
+        linked = linked[:USERS_SCAN_CAP]
 
+    for coll_name, id_field in linked:
         if _is_oracle(shard_id):
             try:
                 rows = _oracle_query(
@@ -363,51 +733,17 @@ def users_report():
             try:
                 col = _mongo(shard_id)[coll_name]
                 pipeline = [{"$group": {"_id": f"${id_field}", "count": {"$sum": 1}}}]
-                for g in col.aggregate(pipeline):
-                    uid = str(g["_id"]) if g["_id"] is not None else ""
+                for grp in col.aggregate(pipeline):
+                    uid = str(grp["_id"]) if grp["_id"] is not None else ""
                     if not uid:
                         continue
                     per_user.setdefault(uid, {})
-                    per_user[uid][coll_name] = g["count"]
+                    per_user[uid][coll_name] = grp["count"]
             except Exception:
                 pass
 
     # Get usernames from USERS table
-    names = {}
-    if any(c.upper() == "USERS" for c in all_cols):
-        users_tbl = next(c for c in all_cols if c.upper() == "USERS")
-        fields = collection_fields(users_tbl)
-        users_id_field = _user_id_field(users_tbl, fields) or (
-            list(fields.keys())[0] if fields else "uid")
-        if _is_oracle(shard_id):
-            try:
-                rows = _oracle_query(f'SELECT * FROM "{users_tbl}" WHERE ROWNUM <= 500')
-                for doc in rows:
-                    uid = str(_iget(doc, users_id_field) or "")
-                    uname = _iget(doc, "USERNAME") or ""
-                    if uname and _looks_encrypted(str(uname)) and _decrypt:
-                        try:
-                            uname = _decrypt(str(uname))
-                        except Exception:
-                            pass
-                    if uid:
-                        names[uid] = str(uname) if uname else ""
-            except Exception:
-                pass
-        elif not _is_heatwave(shard_id):
-            try:
-                for doc in _mongo(shard_id)[users_tbl].find({}, {"_id": 1, "username": 1}).limit(500):
-                    uid = str(doc.get("_id", ""))
-                    uname = doc.get("username", "")
-                    if uname and _looks_encrypted(str(uname)) and _decrypt:
-                        try:
-                            uname = _decrypt(str(uname))
-                        except Exception:
-                            pass
-                    if uid:
-                        names[uid] = str(uname) if uname else ""
-            except Exception:
-                pass
+    names = username_map()
 
     result = []
     for uid, cols_d in per_user.items():
@@ -464,6 +800,10 @@ def display_value(val, col="", key=None):
             except Exception:
                 return "[cannot decrypt]"
         return "[encrypted]"
+    if _leaf(col) in ("uid", "user_id", "userid"):
+        uname = username_map().get(s)
+        if uname:
+            return uname
     return s
 
 
@@ -503,7 +843,13 @@ def switch_shard(shard_id):
         flash(f"Switched to database shard {shard_id}", "success")
     else:
         flash(f"Shard {shard_id} not available", "error")
-    return redirect(url_for("dashboard"))
+    dest = _local_next(url_for("dashboard"))
+    # a table/user open on the old plane may be absent on the new one → its list
+    if dest.startswith("/table/"):
+        dest = url_for("tables_page")
+    elif dest.startswith("/user/"):
+        dest = url_for("users_page")
+    return redirect(dest)
 
 
 def _known_table(tname):
@@ -514,15 +860,36 @@ def _known_table(tname):
 @app.route("/")
 def dashboard():
     tables, totals = collections_report()
-    users = users_report()
-    top_tables = sorted(tables, key=lambda t: -t["rows"])[:8]
+    storage = storage_report()
+    live = sum(1 for t in tables if t.get("rows"))
     return render_template(
         "dashboard.html",
         tables=tables,
         totals=totals,
-        users=users[:10],
-        user_count=len(users),
-        top_tables=top_tables,
+        storage=storage,
+        live_count=live,
+        field_count=sum(t.get("fields") or 0 for t in tables),
+    )
+
+
+@app.route("/analytics")
+def analytics_page():
+    tables, totals = collections_report()
+    live_count = sum(1 for t in tables if t.get("rows"))
+    idle_count = max(0, len(tables) - live_count)
+    peak = tables[0] if tables else None
+    peak_share = (100.0 * peak["rows"] / totals["rows"]) if peak and totals.get("rows") else 0.0
+    field_sum = sum(t.get("fields") or 0 for t in tables)
+    avg_fields = round(field_sum / len(tables), 1) if tables else 0
+    return render_template(
+        "analytics.html",
+        tables=tables,
+        totals=totals,
+        live_count=live_count,
+        idle_count=idle_count,
+        peak=peak,
+        peak_share=peak_share,
+        avg_fields=avg_fields,
     )
 
 
@@ -548,61 +915,69 @@ def table_view(tname):
     skip = (page - 1) * per_page
     rows = []
 
-    # Try selected shard first, then fallback
-    order = [shard_id] + [s for s in get_available_shards() if s != shard_id]
-    for s in order:
-        try:
-            if _is_oracle(s):
-                if q:
-                    like_clauses = [f'"{c}" LIKE :q' for c in col_names]
-                    where = " OR ".join(like_clauses)
-                    count_rows = _oracle_query(f'SELECT COUNT(*) AS cnt FROM "{tname}" WHERE {where}', [f"%{q}%"], shard_id=s)
-                    total_rows = count_rows[0]["CNT"] if count_rows else 0
-                    rows = _oracle_query(
-                        f'SELECT * FROM (SELECT t.*, ROWNUM AS rn FROM '
-                        f'(SELECT * FROM "{tname}" WHERE {where} ORDER BY 1) t '
-                        f'WHERE ROWNUM <= :end) WHERE rn > :start',
-                        [f"%{q}%", skip + per_page, skip], shard_id=s
-                    )
-                else:
-                    rows = _oracle_query(
-                        f'SELECT * FROM (SELECT t.*, ROWNUM AS rn FROM '
-                        f'(SELECT * FROM "{tname}" ORDER BY 1) t '
-                        f'WHERE ROWNUM <= :end) WHERE rn > :start',
-                        [skip + per_page, skip], shard_id=s
-                    )
-                break
-            elif _is_heatwave(s):
-                if q:
-                    like_clauses = [f"`{c}` LIKE %s" for c in col_names]
-                    where = " OR ".join(like_clauses)
-                    params = [f"%{q}%"] * len(col_names)
-                    count_rows = _heatwave_query(f"SELECT COUNT(*) AS cnt FROM `{tname}` WHERE {where}", params)
-                    total_rows = count_rows[0]["cnt"] if count_rows else 0
-                    rows = _heatwave_query(f"SELECT * FROM `{tname}` WHERE {where} LIMIT %s OFFSET %s", params + [per_page, skip])
-                else:
-                    rows = _heatwave_query(f"SELECT * FROM `{tname}` LIMIT %s OFFSET %s", [per_page, skip])
-                break
-            elif _is_mongo(s):
-                col = _mongo(s)[tname]
-                if q:
-                    # Build simple OR regex across all fields (case-insensitive)
-                    or_clause = [{c: {"$regex": q, "$options": "i"}} for c in col_names]
-                    rows = list(col.find({"$or": or_clause}).skip(skip).limit(per_page))
-                else:
-                    rows = list(col.find().skip(skip).limit(per_page))
-                # total_rows already computed via collection_count earlier
-                break
-        except Exception as e:
-            print(f"[fallback] table_view shard {s} failed: {e}")
-            continue
+    s = shard_id
+    search_cols = _text_columns(fields)
+    try:
+        tq = _ident(tname)
+        if _is_oracle(s):
+            if q and search_cols:
+                like_clauses = [f'{_ora_ident(c)} LIKE :q' for c in search_cols]
+                where = " OR ".join(like_clauses)
+                count_rows = _oracle_query(
+                    f"SELECT COUNT(*) AS cnt FROM {_ora_ident(tq)} WHERE {where}",
+                    {"q": f"%{q}%"},
+                    shard_id=s,
+                )
+                total_rows = count_rows[0]["CNT"] if count_rows else 0
+                rows = _oracle_query(
+                    f"SELECT * FROM (SELECT t.*, ROWNUM AS rn FROM "
+                    f"(SELECT * FROM {_ora_ident(tq)} WHERE {where} ORDER BY 1) t "
+                    f"WHERE ROWNUM <= :end_row) WHERE rn > :start_row",
+                    {"q": f"%{q}%", "end_row": skip + per_page, "start_row": skip},
+                    shard_id=s,
+                )
+            else:
+                rows = _oracle_query(
+                    f"SELECT * FROM (SELECT t.*, ROWNUM AS rn FROM "
+                    f"(SELECT * FROM {_ora_ident(tq)} ORDER BY 1) t "
+                    f"WHERE ROWNUM <= :end_row) WHERE rn > :start_row",
+                    {"end_row": skip + per_page, "start_row": skip},
+                    shard_id=s,
+                )
+        elif _is_heatwave(s):
+            if q and search_cols:
+                like_clauses = [f"{_my_ident(c)} LIKE %s" for c in search_cols]
+                where = " OR ".join(like_clauses)
+                params = [f"%{q}%"] * len(search_cols)
+                count_rows = _heatwave_query(
+                    f"SELECT COUNT(*) AS cnt FROM {_my_ident(tq)} WHERE {where}", params
+                )
+                total_rows = count_rows[0]["cnt"] if count_rows else 0
+                rows = _heatwave_query(
+                    f"SELECT * FROM {_my_ident(tq)} WHERE {where} LIMIT %s OFFSET %s",
+                    params + [per_page, skip],
+                )
+            else:
+                rows = _heatwave_query(
+                    f"SELECT * FROM {_my_ident(tq)} LIMIT %s OFFSET %s",
+                    [per_page, skip],
+                )
+        elif _is_mongo(s):
+            col = _mongo(s)[tq]
+            if q and search_cols:
+                or_clause = [{c: {"$regex": q, "$options": "i"}} for c in search_cols]
+                rows = list(col.find({"$or": or_clause}).skip(skip).limit(per_page))
+            else:
+                rows = list(col.find().skip(skip).limit(per_page))
+    except Exception as e:
+        print(f"[db_admin] table_view {tname}: {e}")
 
     pages = max(1, (total_rows + per_page - 1) // per_page)
     return render_template(
         "table_view.html",
         tname=tname, col_names=col_names, fields=fields, rows=rows,
         page=page, per_page=per_page, pages=pages,
-        total_rows=total_rows, q=q,
+        total_rows=total_rows, q=q, pk_col=_pk_field(fields),
     )
 
 
@@ -616,35 +991,26 @@ def export_csv(tname):
     w = csv.writer(buf)
     shard_id = _get_shard_id()
     row_count = 0
-
-    order = [shard_id] + [s for s in get_available_shards() if s != shard_id]
-    for s in order:
-        try:
-            if _is_oracle(s):
-                w.writerow(col_names)
-                rows = _oracle_query(f'SELECT * FROM "{tname}"', shard_id=s)
-                for row in rows:
-                    w.writerow([display_value(row.get(c, ""), c) for c in col_names])
-                    row_count += 1
-                break
-            elif _is_heatwave(s):
-                w.writerow(col_names)
-                rows = _heatwave_query(f"SELECT * FROM `{tname}`")
-                for row in rows:
-                    w.writerow([display_value(row.get(c, ""), c) for c in col_names])
-                    row_count += 1
-                break
-            else:
-                # MongoDB export
-                w.writerow(col_names)
-                for doc in _mongo(s)[tname].find():
-                    flat = _flatten(doc)
-                    w.writerow([display_value(str(flat.get(c, "")), c) for c in col_names])
-                    row_count += 1
-                break
-        except Exception as e:
-            print(f"[fallback] export shard {s} failed: {e}")
-            continue
+    w.writerow(col_names)
+    try:
+        tq = _ident(tname)
+        if _is_oracle(shard_id):
+            rows = _oracle_query(f"SELECT * FROM {_ora_ident(tq)}", shard_id=shard_id)
+            for row in rows:
+                w.writerow([display_value(row.get(c, ""), c) for c in col_names])
+                row_count += 1
+        elif _is_heatwave(shard_id):
+            rows = _heatwave_query(f"SELECT * FROM {_my_ident(tq)}")
+            for row in rows:
+                w.writerow([display_value(row.get(c, ""), c) for c in col_names])
+                row_count += 1
+        else:
+            for doc in _mongo(shard_id)[tq].find():
+                flat = _flatten(doc)
+                w.writerow([display_value(str(flat.get(c, "")), c) for c in col_names])
+                row_count += 1
+    except Exception as e:
+        print(f"[db_admin] export {tname}: {e}")
 
     out = "\ufeff" + buf.getvalue()
     resp = Response(out, mimetype="text/csv")
@@ -691,7 +1057,7 @@ def users_delete_selected():
         return redirect(url_for("users_page"))
     total_deleted = 0
     cols_deleted = 0
-    order = [SHARD_ORACLE] + [s for s in get_available_shards() if s != SHARD_ORACLE]
+    order = [_get_shard_id()]
     for uid in uids:
         for coll_name in all_collections():
             fields = collection_fields(coll_name)
@@ -732,40 +1098,39 @@ def delete_rows(tname):
         return redirect(url_for("table_view", tname=tname))
     deleted = 0
     shard_id = _get_shard_id()
-    order = [shard_id] + [s for s in get_available_shards() if s != shard_id]
-    for s in order:
-        try:
-            if _is_oracle(s):
-                fields = collection_fields(tname)
-                pk = list(fields.keys())[0] if fields else "ROWID"
-                for rid in rowids:
-                    try:
-                        _oracle_query(f'DELETE FROM "{tname}" WHERE "{pk}" = :1', [rid], shard_id=s)
-                        deleted += 1
-                    except Exception as ex:
-                        print(f"[delete_rows] {tname} id={rid}: {ex}")
-                break
-            elif _is_heatwave(s):
-                fields = collection_fields(tname)
-                pk = list(fields.keys())[0] if fields else "id"
-                for rid in rowids:
-                    try:
-                        _heatwave_query(f"DELETE FROM `{tname}` WHERE `{pk}` = %s", [rid])
-                        deleted += 1
-                    except Exception as ex:
-                        print(f"[delete_rows] {tname} id={rid}: {ex}")
-                break
-            else:
-                fields = collection_fields(tname)
-                pk = list(fields.keys())[0] if fields else "_id"
-                col = _mongo(s)[tname]
-                for rid in rowids:
-                    result = col.delete_one({pk: rid})
-                    deleted += result.deleted_count
-                break
-        except Exception as e:
-            print(f"[fallback] delete_rows shard {s} failed: {e}")
-            continue
+    fields = collection_fields(tname)
+    pk = _pk_field(fields)
+    if not pk:
+        flash("No primary key column for this table.", "error")
+        return redirect(url_for("table_view", tname=tname))
+    s = shard_id
+    try:
+        tq = _ident(tname)
+        if _is_oracle(s):
+            for rid in rowids:
+                try:
+                    _oracle_query(
+                        f"DELETE FROM {_ora_ident(tq)} WHERE {_ora_ident(pk)} = :1",
+                        [rid], shard_id=s,
+                    )
+                    deleted += 1
+                except Exception as ex:
+                    print(f"[delete_rows] {tname} id={rid}: {ex}")
+        elif _is_heatwave(s):
+            for rid in rowids:
+                try:
+                    _heatwave_query(
+                        f"DELETE FROM {_my_ident(tq)} WHERE {_my_ident(pk)} = %s", [rid]
+                    )
+                    deleted += 1
+                except Exception as ex:
+                    print(f"[delete_rows] {tname} id={rid}: {ex}")
+        else:
+            col = _mongo(s)[tq]
+            for rid in rowids:
+                deleted += col.delete_one({pk: rid}).deleted_count
+    except Exception as e:
+        print(f"[db_admin] delete_rows {tname}: {e}")
     flash(f"Deleted {deleted} of {len(rowids)} selected row(s) from {tname}.", "success")
     return redirect(_local_next(url_for("table_view", tname=tname)))
 
@@ -777,36 +1142,32 @@ def delete_row(tname):
     rowid = request.form.get("rowid", "")
     if rowid:
         shard_id = _get_shard_id()
-        order = [shard_id] + [s for s in get_available_shards() if s != shard_id]
-        for s in order:
-            try:
-                if _is_oracle(s):
-                    fields = collection_fields(tname)
-                    pk = list(fields.keys())[0] if fields else "ROWID"
-                    _oracle_query(f'DELETE FROM "{tname}" WHERE "{pk}" = :1', [rowid], shard_id=s)
+        fields = collection_fields(tname)
+        pk = _pk_field(fields)
+        if not pk:
+            flash("No primary key column for this table.", "error")
+            return redirect(_local_next(url_for("table_view", tname=tname)))
+        try:
+            tq = _ident(tname)
+            if _is_oracle(shard_id):
+                _oracle_query(
+                    f"DELETE FROM {_ora_ident(tq)} WHERE {_ora_ident(pk)} = :1",
+                    [rowid], shard_id=shard_id,
+                )
+                flash(f"Deleted 1 row from {tname}.", "success")
+            elif _is_heatwave(shard_id):
+                _heatwave_query(
+                    f"DELETE FROM {_my_ident(tq)} WHERE {_my_ident(pk)} = %s", [rowid]
+                )
+                flash(f"Deleted 1 row from {tname}.", "success")
+            else:
+                result = _mongo(shard_id)[tq].delete_one({pk: rowid})
+                if result.deleted_count:
                     flash(f"Deleted 1 row from {tname}.", "success")
-                    return redirect(_local_next(url_for("table_view", tname=tname)))
-                elif _is_heatwave(s):
-                    fields = collection_fields(tname)
-                    pk = list(fields.keys())[0] if fields else "id"
-                    _heatwave_query(f"DELETE FROM `{tname}` WHERE `{pk}` = %s", [rowid])
-                    flash(f"Deleted 1 row from {tname}.", "success")
-                    return redirect(_local_next(url_for("table_view", tname=tname)))
                 else:
-                    # MongoDB deletion – use primary key field (first column)
-                    fields = collection_fields(tname)
-                    pk = list(fields.keys())[0] if fields else "_id"
-                    col = _mongo(s)[tname]
-                    result = col.delete_one({pk: rowid})
-                    if result.deleted_count:
-                        flash(f"Deleted 1 row from {tname}.", "success")
-                    else:
-                        flash(f"No matching row found in {tname}.", "error")
-                    return redirect(_local_next(url_for("table_view", tname=tname)))
-            except Exception as e:
-                print(f"[fallback] delete_row shard {s} failed: {e}")
-                continue
-        flash("Delete failed on all shards.", "error")
+                    flash(f"No matching row found in {tname}.", "error")
+        except Exception as e:
+            flash(f"Delete failed: {e}", "error")
     return redirect(_local_next(url_for("table_view", tname=tname)))
 
 
@@ -815,50 +1176,42 @@ def delete_all(tname):
     if not _known_table(tname):
         abort(404)
     shard_id = _get_shard_id()
-    order = [shard_id] + [s for s in get_available_shards() if s != shard_id]
-    for s in order:
-        try:
-            if _is_oracle(s):
-                _oracle_query(f'DELETE FROM "{tname}"', shard_id=s)
-                flash(f"Deleted rows from {tname}.", "success")
-                return redirect(url_for("table_view", tname=tname))
-            elif _is_heatwave(s):
-                _heatwave_query(f"DELETE FROM `{tname}`")
-                flash(f"Deleted rows from {tname}.", "success")
-                return redirect(url_for("table_view", tname=tname))
-            else:
-                # MongoDB delete all documents in collection
-                col = _mongo(s)[tname]
-                result = col.delete_many({})
-                flash(f"Deleted {result.deleted_count} rows from {tname}.", "success")
-                return redirect(url_for("table_view", tname=tname))
-        except Exception as e:
-            print(f"[fallback] delete_all shard {s} failed: {e}")
-            continue
-    flash("Delete failed on all shards.", "error")
+    try:
+        tq = _ident(tname)
+        if _is_oracle(shard_id):
+            _oracle_query(f"DELETE FROM {_ora_ident(tq)}", shard_id=shard_id)
+            flash(f"Deleted rows from {tname}.", "success")
+        elif _is_heatwave(shard_id):
+            _heatwave_query(f"DELETE FROM {_my_ident(tq)}")
+            flash(f"Deleted rows from {tname}.", "success")
+        else:
+            result = _mongo(shard_id)[tq].delete_many({})
+            flash(f"Deleted {result.deleted_count} rows from {tname}.", "success")
+    except Exception as e:
+        flash(f"Delete failed: {e}", "error")
     return redirect(url_for("table_view", tname=tname))
 
 
 def _drop_on_best_shard(tname):
-    """Drop tname on the first shard that can do it. None on success,
-    the last error otherwise."""
+    """Drop tname on the selected shard. None on success, error otherwise."""
     shard_id = _get_shard_id()
-    order = [shard_id] + [s for s in get_available_shards() if s != shard_id]
-    last_err = None
-    for s in order:
-        try:
-            if _is_oracle(s):
-                _oracle_query(f'DROP TABLE "{tname}"', shard_id=s)
-            elif _is_heatwave(s):
-                _heatwave_query(f"DROP TABLE `{tname}`")
-            else:
-                col = _mongo(s)[tname]
-                col.drop()
-            return None
-        except Exception as e:
-            last_err = e
-            print(f"[fallback] drop shard {s} failed: {e}")
-    return last_err or Exception("no shard could drop the table")
+    try:
+        tq = _ident(tname)
+        if _is_oracle(shard_id):
+            # CASCADE CONSTRAINTS drops FKs that point at this table
+            # (ORA-02449) as well as its own constraints.
+            _oracle_query(
+                f"DROP TABLE {_ora_ident(tq)} CASCADE CONSTRAINTS PURGE",
+                shard_id=shard_id,
+            )
+        elif _is_heatwave(shard_id):
+            _heatwave_query(f"DROP TABLE IF EXISTS {_my_ident(tq)}")
+        else:
+            _mongo(shard_id)[tq].drop()
+        return None
+    except Exception as e:
+        print(f"[db_admin] drop {tname}: {e}")
+        return e
 
 
 @app.route("/table/<tname>/drop", methods=["POST"])
@@ -906,7 +1259,7 @@ def drop_selected():
 def user_delete_all(uid):
     total_deleted = 0
     cols_deleted = 0
-    order = [SHARD_ORACLE] + [s for s in get_available_shards() if s != SHARD_ORACLE]
+    order = [_get_shard_id()]
     for coll_name in all_collections():
         fields = collection_fields(coll_name)
         id_field = _user_id_field(coll_name, fields)
@@ -963,7 +1316,7 @@ def user_detail(uid):
         shard_id = _get_shard_id()
         bots_fields = collection_fields(bots_tbl)
         bots_id_field = _user_id_field(bots_tbl, bots_fields)
-        bots_pk_field = list(bots_fields.keys())[0] if bots_fields else None
+        bots_pk_field = _pk_field(bots_fields)
         try:
             if _is_oracle(shard_id) and bots_id_field:
                 rows = _oracle_query(
@@ -985,6 +1338,29 @@ def user_detail(uid):
                         "edition": doc.get("EDITION", ""),
                         "running": doc.get("RUNNING", False),
                         "last_run": doc.get("LAST_RUN", ""),
+                        "tbl": bots_tbl,
+                        "pk": "" if pk_val is None else str(pk_val),
+                    })
+            elif _is_heatwave(shard_id) and bots_id_field:
+                rows = _heatwave_query(
+                    f"SELECT * FROM {_my_ident(bots_tbl)} WHERE {_my_ident(bots_id_field)} = %s",
+                    [uid],
+                )
+                for doc in rows:
+                    name = _iget(doc, "NAME") or _iget(doc, "name") or ""
+                    if _looks_encrypted(str(name)) and _decrypt:
+                        try:
+                            name = _decrypt(str(name))
+                        except Exception:
+                            pass
+                    pk_val = _iget(doc, bots_pk_field) if bots_pk_field else None
+                    bots.append({
+                        "name": name,
+                        "ip": _iget(doc, "SERVER_IP") or _iget(doc, "IP") or "",
+                        "port": _iget(doc, "SERVER_PORT") or _iget(doc, "PORT") or "",
+                        "edition": _iget(doc, "EDITION") or "",
+                        "running": _iget(doc, "RUNNING") or False,
+                        "last_run": _iget(doc, "LAST_RUN") or "",
                         "tbl": bots_tbl,
                         "pk": "" if pk_val is None else str(pk_val),
                     })
@@ -1096,28 +1472,58 @@ def api_query():
 
     t0 = time.time()
     shard_id = _get_shard_id()
-    order = [shard_id] + [s for s in get_available_shards() if s != shard_id]
-    last_err = None
-    for s in order:
-        try:
-            if _is_oracle(s):
-                result = _oracle_query(q, shard_id=s)
-            elif _is_heatwave(s):
-                result = _heatwave_query(q)
-            else:
-                continue
-            dt = (time.time() - t0) * 1000
-            if result:
-                columns = list(result[0].keys())
-                rows = [[safe_json(display_value(row.get(c, None), c)) for c in columns] for row in result]
-            else:
-                columns, rows = [], []
-            return jsonify({"columns": columns, "rows": rows, "ms": round(dt, 1)})
-        except Exception as e:
-            last_err = e
-            print(f"[fallback] query shard {s} failed: {e}")
-            continue
-    return jsonify({"error": str(last_err or "All shards failed")}), 400
+    try:
+        if _is_oracle(shard_id):
+            result = _oracle_query(q, shard_id=shard_id)
+        elif _is_heatwave(shard_id):
+            result = _heatwave_query(q)
+        else:
+            return jsonify({"error": "SQL query is not supported on this shard"}), 400
+        dt = (time.time() - t0) * 1000
+        if result:
+            columns = list(result[0].keys())
+            rows = [[safe_json(display_value(row.get(c, None), c)) for c in columns] for row in result]
+        else:
+            columns, rows = [], []
+        return jsonify({"columns": columns, "rows": rows, "ms": round(dt, 1)})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 400
+
+
+@app.get("/api/table/<tname>")
+def api_table(tname):
+    """Capped, masked preview of a table for the inline heat-map/list peek."""
+    if not _known_table(tname):
+        return jsonify({"error": "unknown table"}), 404
+    limit = 100
+    t0 = time.time()
+    s = _get_shard_id()
+    columns = list(collection_fields(tname).keys())
+    try:
+        tq = _ident(tname)
+        if _is_oracle(s):
+            result = _oracle_query(
+                f"SELECT * FROM {_ora_ident(tq)} WHERE ROWNUM <= :n",
+                {"n": limit}, shard_id=s,
+            )
+        elif _is_heatwave(s):
+            result = _heatwave_query(f"SELECT * FROM {_my_ident(tq)} LIMIT %s", [limit])
+        else:
+            result = list(_mongo(s)[tq].find().limit(limit))
+        if not columns and result:
+            columns = list(result[0].keys())
+        rows = [[safe_json(display_value(r.get(c), c)) for c in columns] for r in result]
+    except Exception as e:
+        return jsonify({"error": str(e)}), 400
+    return jsonify({
+        "name": tname,
+        "columns": columns,
+        "rows": rows,
+        "total": collection_count(tname),
+        "shown": len(rows),
+        "ms": round((time.time() - t0) * 1000, 1),
+        "href": "/table/" + quote(tname),
+    })
 
 
 # ─── template helpers ────────────────────────────────────────────────────────

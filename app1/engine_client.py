@@ -148,30 +148,30 @@ def health():
     return _call("GET", "/engine/health")
 
 
-def _bot_segment(bot_id):
-    """A bot id as exactly one URL path segment.
+def _bot_path(user_id, slot_index):
+    """The bots store's (uid, slot) identity as URL path segments.
 
-    bot_id arrives from the dashboard, so a value holding "/", "?" or "#" would
-    otherwise re-point the request at a different engine endpoint while still
-    carrying the internal token.
+    Both values arrive from the dashboard, so a value holding "/", "?" or "#"
+    would otherwise re-point the request at a different engine endpoint while
+    still carrying the internal token.
     """
-    return quote(str(bot_id), safe="")
+    return f"{quote(str(user_id), safe='')}/{int(slot_index)}"
 
 
-def start_bot(bot_id):
-    return _call("POST", f"/engine/bot/{_bot_segment(bot_id)}/start")
+def start_bot(user_id, slot_index):
+    return _call("POST", f"/engine/bot/{_bot_path(user_id, slot_index)}/start")
 
 
-def stop_bot(bot_id):
-    return _call("POST", f"/engine/bot/{_bot_segment(bot_id)}/stop")
+def stop_bot(user_id, slot_index):
+    return _call("POST", f"/engine/bot/{_bot_path(user_id, slot_index)}/stop")
 
 
-def generate(bot_id):
-    return _call("POST", f"/engine/bot/{_bot_segment(bot_id)}/generate", timeout=_SLOW_TIMEOUT)
+def generate(user_id, slot_index):
+    return _call("POST", f"/engine/bot/{_bot_path(user_id, slot_index)}/generate", timeout=_SLOW_TIMEOUT)
 
 
-def assets(bot_id):
-    return _call("POST", f"/engine/bot/{_bot_segment(bot_id)}/assets", timeout=_SLOW_TIMEOUT)
+def assets(user_id, slot_index):
+    return _call("POST", f"/engine/bot/{_bot_path(user_id, slot_index)}/assets", timeout=_SLOW_TIMEOUT)
 
 
 def preview(embed, server_ip, server_port, edition):

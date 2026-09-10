@@ -7,8 +7,8 @@
 <aside class="sidebar" id="sidebar">
   <div class="sidebar-head">
     <a class="brand" href="{{ url_for('index') }}">
-      <img class="brand-logo" src="{{ url_for('static', filename='logo-128.png') }}" alt="end host" width="40" height="40">
-      <span class="brand-lockup"><strong>end host</strong></span>
+      <img class="brand-logo" src="{{ url_for('static', filename='logo-128.png') }}" alt="ENDHOST" width="40" height="40">
+      <span class="brand-lockup"><strong>ENDHOST</strong></span>
     </a>
     <button class="icon-button sidebar-toggle" id="sidebar-toggle" type="button" aria-label="Collapse navigation" aria-controls="sidebar" aria-expanded="{{ 'false' if sb_collapsed else 'true' }}">
       <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 6h.01M12 12h.01M12 18h.01"/></svg>
@@ -27,21 +27,21 @@
     </a>
 
     <p class="nav-group-label">App Hosting</p>
-    <a class="nav-link{% if not panel_ok %} is-down{% endif %}"{% if not panel_ok %} aria-disabled="true" title="Hosting panel is offline"{% endif %} data-no-mask href="/panel/dashboard">
+    <a class="nav-link{% if not panel_ok %} is-down{% endif %}"{% if not panel_ok %} aria-disabled="true" tabindex="-1" title="Hosting panel is offline"{% else %} href="/panel/dashboard"{% endif %} data-no-mask>
       <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 5h16v5H4zM4 14h16v5H4zM7 7.5h.01M7 16.5h.01"/></svg>
       <span class="nav-label">Servers</span>
     </a>
-    <a class="nav-link{% if not panel_ok %} is-down{% endif %}"{% if not panel_ok %} aria-disabled="true" title="Hosting panel is offline"{% endif %} data-no-mask href="/panel/servers/new">
+    <a class="nav-link{% if not panel_ok %} is-down{% endif %}"{% if not panel_ok %} aria-disabled="true" tabindex="-1" title="Hosting panel is offline"{% else %} href="/panel/servers/new"{% endif %} data-no-mask>
       <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>
       <span class="nav-label">Deploy server</span>
     </a>
-    <a class="nav-link{% if not panel_ok %} is-down{% endif %}"{% if not panel_ok %} aria-disabled="true" title="Hosting panel is offline"{% endif %} data-no-mask href="/panel/activity">
+    <a class="nav-link{% if not panel_ok %} is-down{% endif %}"{% if not panel_ok %} aria-disabled="true" tabindex="-1" title="Hosting panel is offline"{% else %} href="/panel/activity"{% endif %} data-no-mask>
       <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 20a8 8 0 1 0 0-16 8 8 0 0 0 0 16zM12 8v4l3 2"/></svg>
       <span class="nav-label">Activity</span>
     </a>
 
     <p class="nav-group-label">Account</p>
-    <a class="nav-link{% if not panel_ok %} is-down{% endif %}"{% if not panel_ok %} aria-disabled="true" title="Hosting panel is offline"{% endif %} data-no-mask href="/panel/account">
+    <a class="nav-link{% if not panel_ok %} is-down{% endif %}"{% if not panel_ok %} aria-disabled="true" tabindex="-1" title="Hosting panel is offline"{% else %} href="/panel/account"{% endif %} data-no-mask>
       <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 12a4 4 0 1 0 0-8 4 4 0 0 0 0 8zM4 20c0-4 3.6-6 8-6s8 2 8 6"/></svg>
       <span class="nav-label">Account</span>
     </a>

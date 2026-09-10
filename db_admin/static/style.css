@@ -6,25 +6,25 @@
    ───────────────────────────────────────────────────────────── */
 
 :root {
-  --bg: #07080d;
-  --bg2: #0c0e16;
-  --panel: rgba(25, 27, 39, .78);
-  --panel-solid: #191b27;
-  --panel2: #0f1119;
-  --border: rgba(255, 255, 255, .075);
-  --border2: rgba(255, 255, 255, .13);
-  --text: #e8e9f2;
-  --muted: #9aa0b6;
-  --dim: #62677c;
-  --purple: #9b59b6;
-  --purple2: #7b46d6;
-  --violet: #b15fe0;
-  --cyan: #3ad1c4;
-  --blue: #4f9cf9;
-  --green: #43b581;
-  --red: #ed4245;
-  --yellow: #f0b429;
-  --grad: linear-gradient(135deg, #7b46d6, #b15fe0 55%, #3ad1c4);
+  --bg: #0b1016;
+  --bg2: #111821;
+  --panel: rgba(17, 24, 33, .88);
+  --panel-solid: #151c26;
+  --panel2: #0e141c;
+  --border: rgba(110, 208, 224, .08);
+  --border2: rgba(110, 208, 224, .16);
+  --text: #dce6ef;
+  --muted: #8ea0b3;
+  --dim: #5d6d7e;
+  --purple: #b877d9;
+  --purple2: #3274d9;
+  --violet: #6ed0e0;
+  --cyan: #6ed0e0;
+  --blue: #5794f2;
+  --green: #73bf69;
+  --red: #f2495c;
+  --yellow: #faad14;
+  --grad: linear-gradient(135deg, #3274d9, #6ed0e0 58%, #73bf69);
   --mono: Consolas, "Cascadia Mono", Menlo, monospace;
   --sans: "Segoe UI", system-ui, -apple-system, Roboto, Helvetica, Arial, sans-serif;
   --radius: 14px;
@@ -333,6 +333,22 @@ a:hover { color: #d9b8ee; }
 .panel .p-head .sub { color: var(--dim); font-weight: 400; font-size: 12px; font-family: var(--mono); }
 .panel .p-body { padding: 18px 20px; }
 .panel .p-body.flush { padding: 0; }
+
+/* inline peek: a table revealed below a heat cell / list row */
+.peek-panel {
+  margin-top: -8px;
+  border-color: color-mix(in srgb, var(--green) 45%, var(--border));
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--green) 20%, transparent), var(--shadow);
+  animation: peekIn .16s ease-out;
+}
+.peek-panel .p-head { background: linear-gradient(90deg, rgba(115, 191, 105, .12), transparent 60%); }
+.peek-panel .p-head span { color: var(--green); }
+.peek-panel .p-head .x {
+  cursor: pointer; color: var(--dim); font-size: 20px; line-height: 1;
+  background: none; border: none;
+}
+.peek-panel .p-head .x:hover { color: var(--text); }
+@keyframes peekIn { from { opacity: 0; transform: translateY(-6px); } to { opacity: 1; transform: none; } }
 
 /* stat cards */
 .stat-grid {
@@ -760,6 +776,100 @@ kbd {
 .sample-chips { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 12px; }
 .sample-chips .chip { cursor: pointer; transition: all .12s; }
 .sample-chips .chip:hover { border-color: var(--violet); color: var(--text); box-shadow: 0 0 12px rgba(123, 70, 214, .25); }
+
+/* ── result viewer ─────────────────────────────────────────── */
+.empty-hero { padding: 56px 24px; }
+.empty-ico {
+  width: 52px; height: 52px; margin: 0 auto 14px;
+  border-radius: 14px;
+  display: flex; align-items: center; justify-content: center;
+  font-family: var(--mono); font-size: 12px; font-weight: 800; letter-spacing: 1px;
+  color: #fff;
+  background: var(--grad);
+  box-shadow: 0 0 22px rgba(123, 70, 214, .35);
+}
+.result-toolbar {
+  display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--border);
+  background: rgba(255,255,255,.02);
+}
+.result-toolbar .seg {
+  display: inline-flex; padding: 3px; border-radius: 10px;
+  border: 1px solid var(--border2); background: rgba(0,0,0,.25);
+}
+.result-toolbar .seg button {
+  border: 0; background: transparent; color: var(--muted);
+  padding: 5px 11px; border-radius: 8px; cursor: pointer;
+  font-size: 12px; font-weight: 600; font-family: var(--sans);
+}
+.result-toolbar .seg button.on {
+  background: linear-gradient(135deg, var(--purple2), var(--violet));
+  color: #fff;
+}
+.result-json {
+  margin: 0; padding: 16px 20px;
+  font-family: var(--mono); font-size: 12.5px; line-height: 1.55;
+  white-space: pre-wrap; word-break: break-word;
+  max-height: 70vh; overflow: auto;
+  color: #d7d9e8;
+}
+.result-cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  gap: 12px; padding: 14px;
+}
+.result-card {
+  background: linear-gradient(160deg, rgba(255,255,255,.05), transparent 70%);
+  border: 1px solid var(--border);
+  border-radius: 12px; padding: 12px 14px;
+}
+.result-card .rc-i { font-size: 11px; color: var(--dim); font-family: var(--mono); margin-bottom: 8px; }
+.result-card .rc-row {
+  display: grid; grid-template-columns: 110px 1fr; gap: 8px;
+  padding: 5px 0; border-bottom: 1px dashed var(--border);
+  font-size: 12.5px;
+}
+.result-card .rc-row:last-child { border-bottom: 0; }
+.result-card .rc-k { color: var(--muted); font-family: var(--mono); font-size: 11px; word-break: break-all; }
+.result-card .rc-v { color: var(--text); font-family: var(--mono); word-break: break-word; }
+.cell-expand {
+  cursor: zoom-in; max-width: 280px;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  display: inline-block; vertical-align: bottom;
+}
+.cell-expand.open {
+  white-space: pre-wrap; overflow: visible; max-width: min(640px, 70vw);
+  cursor: zoom-out;
+}
+.tbl thead th[data-dir="asc"]::after { content: " ▲"; color: var(--violet); font-size: 9px; }
+.tbl thead th[data-dir="desc"]::after { content: " ▼"; color: var(--violet); font-size: 9px; }
+.results-panel .table-wrap { max-height: 70vh; }
+
+.heatgrid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(92px, 1fr));
+  gap: 8px;
+}
+.heatcell {
+  display: flex; flex-direction: column; justify-content: space-between;
+  min-height: 72px; padding: 8px 9px; border-radius: 10px;
+  border: 1px solid var(--border);
+  color: var(--text);
+  background: rgba(110, 208, 224, .04);
+  transition: transform .12s, border-color .12s;
+}
+.heatcell:hover { transform: translateY(-2px); border-color: var(--cyan); color: #fff; }
+.heatcell .hn { font-family: var(--mono); font-size: 10.5px; opacity: .85; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.heatcell .hv { font-family: var(--mono); font-size: 13px; font-weight: 700; }
+.heatcell.h0 { background: rgba(255,255,255,.03); }
+.heatcell.h1 { background: rgba(50, 116, 217, .22); }
+.heatcell.h2 { background: rgba(110, 208, 224, .22); }
+.heatcell.h3 { background: rgba(115, 191, 105, .28); }
+.heatcell.h4 { background: rgba(250, 173, 20, .32); }
+.heatcell.h5 { background: rgba(242, 73, 92, .38); }
+.spark { display: block; }
+body.iot .sidebar { background: linear-gradient(180deg, #101820, #0b1016); }
 
 @media (max-width: 900px) {
   .layout { flex-direction: column; }

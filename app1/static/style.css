@@ -638,17 +638,22 @@ a:hover{color:var(--accent)}
 .auth-wrap{
   min-height:calc(100dvh - var(--nav-height));
   display:flex;align-items:center;justify-content:center;padding:40px 24px;
+  position:relative;overflow:hidden;
+  background:var(--bg) url("auth-bg.svg") center center/cover no-repeat;
   animation:fadeIn .4s ease
 }
 .auth-split{
-  display:grid;grid-template-columns:minmax(0,440px) minmax(0,420px);
-  gap:56px;align-items:center;max-width:960px;width:100%
+  display:flex;justify-content:center;align-items:center;
+  width:100%;max-width:460px
 }
 .auth-card{
-  background:var(--card);border:1px solid var(--line);border-radius:var(--radius-xl);
-  padding:40px;width:100%;max-width:440px;justify-self:end;
-  box-shadow:var(--shadow-card);animation:scaleIn .35s ease;
-  position:relative;overflow:hidden
+  background:linear-gradient(180deg,rgba(35,45,64,.82),rgba(29,38,55,.82));
+  -webkit-backdrop-filter:blur(16px) saturate(140%);
+  backdrop-filter:blur(16px) saturate(140%);
+  border:1px solid rgba(var(--accent3-rgb),.14);border-radius:var(--radius-xl);
+  padding:40px;width:100%;max-width:440px;
+  box-shadow:var(--shadow-card),var(--shadow-glow);
+  animation:scaleIn .35s ease;position:relative;overflow:hidden
 }
 .auth-card::before{
   content:'';position:absolute;top:0;left:0;right:0;height:3px;
@@ -656,33 +661,6 @@ a:hover{color:var(--accent)}
 }
 .auth-card h1,.auth-card h2,.auth-card .auth-title{font-size:24px;margin-bottom:6px;font-weight:800}
 .auth-card .hint{color:var(--muted);font-size:14px;margin-bottom:24px;line-height:1.5}
-
-.auth-aside{animation:slideUp .5s ease .05s both}
-.auth-aside .eyebrow{
-  color:var(--accent3);font-weight:700;letter-spacing:3px;
-  text-transform:uppercase;font-size:12px;margin-bottom:14px
-}
-.auth-aside h1,.auth-aside h2,.auth-aside .auth-hero{
-  font-size:clamp(28px,3.2vw,38px);font-weight:900;line-height:1.1;
-  letter-spacing:-1.2px;margin-bottom:16px
-}
-.auth-aside h1 .grad,.auth-aside h2 .grad,.auth-aside .auth-hero .grad{
-  background:linear-gradient(135deg,var(--accent3) 0%,var(--accent) 55%,var(--green) 100%);
-  -webkit-background-clip:text;background-clip:text;color:transparent
-}
-.auth-aside .lede{color:var(--muted);font-size:16px;line-height:1.65;margin-bottom:26px}
-.auth-points{display:flex;flex-direction:column;gap:14px;list-style:none}
-.auth-points li{
-  display:flex;align-items:flex-start;gap:11px;
-  color:var(--txt);font-size:14.5px;line-height:1.5
-}
-.auth-points svg{color:var(--green);flex:none;margin-top:2px}
-.auth-points b{font-weight:650}
-.auth-aside .aside-note{
-  margin-top:28px;padding-top:22px;border-top:1px solid var(--line);
-  color:var(--muted);font-size:13.5px;line-height:1.6
-}
-.auth-aside .aside-note a{font-weight:600}
 
 .field{margin-bottom:18px}
 .field label{
@@ -917,9 +895,6 @@ a:hover{color:var(--accent)}
 .btn-block{width:100%;justify-content:center;min-height:46px}
 
 @media(max-width:900px){
-  .auth-split{grid-template-columns:minmax(0,440px);justify-content:center}
-  .auth-aside{display:none}
-  .auth-card{justify-self:center}
   .stats{grid-template-columns:1fr 1fr}
   .footer-grid{grid-template-columns:1fr 1fr;gap:28px 24px}
 }
@@ -2033,3 +2008,18 @@ img,video{height:auto}
   h1, h2, h3, h4 { page-break-after: avoid; }
   .blog-card, li, p, tr { page-break-inside: avoid; }
 }
+
+/* GitHub / OAuth alternative sign-in.
+   The form is a flex column so .auth-oauth can float to the top with order:-1
+   while staying LAST in the DOM — that keeps Enter mapped to the primary
+   email/password submit instead of the GitHub button. .field uses only
+   margin-bottom, so flex column reproduces the block spacing exactly. */
+.auth-form{display:flex;flex-direction:column}
+.auth-form .auth-oauth{order:-1}
+.auth-alt{display:flex;align-items:center;gap:12px;margin:18px 0 14px;color:var(--muted);font-size:13px}
+.auth-alt::before,.auth-alt::after{content:"";flex:1 1 auto;height:1px;background:var(--line)}
+.btn-oauth{display:inline-flex;align-items:center;justify-content:center;gap:9px}
+.btn-oauth .oauth-mark{flex:0 0 auto}
+.oauth-terms{font-size:12px;color:var(--muted2);text-align:center;margin:10px 0 0;line-height:1.4}
+.oauth-terms a{color:var(--accent)}
+.oauth-turnstile{display:flex;justify-content:center;margin-top:16px;min-height:65px}

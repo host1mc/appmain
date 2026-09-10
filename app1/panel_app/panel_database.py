@@ -33,17 +33,6 @@ CREATE TABLE IF NOT EXISTS servers (
 );
 
 CREATE INDEX IF NOT EXISTS idx_servers_user_id ON servers(user_id);
-
-CREATE TABLE IF NOT EXISTS activity (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-    server_id TEXT,
-    action TEXT NOT NULL,
-    detail TEXT,
-    created_at TEXT NOT NULL
-);
-
-CREATE INDEX IF NOT EXISTS idx_activity_user ON activity(user_id, created_at);
 """
 
 
@@ -77,8 +66,8 @@ class PanelDatabase:
             # untouched, so a local DB from before desired_state existed keeps the
             # old shape. Add the column in place — SQLite ALTER TABLE ADD COLUMN is
             # cheap and the NOT NULL DEFAULT fills existing rows with 0 (stopped).
-            # Oracle gets the same column from migrations/002; this is the SQLite
-            # smoke-test twin of that migration.
+            # This only ever heals the smoke-test's own panel.db; the deployed
+            # schema is the host app's consolidated servers table.
             columns = {
                 row["name"]
                 for row in connection.execute("PRAGMA table_info(servers)").fetchall()
@@ -89,8 +78,8 @@ class PanelDatabase:
                 )
             # Same story for the per-account container grant: nullable and with no
             # default, so every existing row reads NULL, which is what "no grant,
-            # use the fleet figure" is spelled as. Oracle gets this from
-            # ensure_schema's _ADDITIVE_COLUMNS.
+            # use the fleet figure" is spelled as. Oracle keeps it on the main
+            # users table (users.container_slots).
             user_columns = {
                 row["name"]
                 for row in connection.execute("PRAGMA table_info(users)").fetchall()
@@ -297,14 +286,6 @@ class PanelDatabase:
                 (delivery_config, server_id, owner),
             )
             return cursor.rowcount == 1
-
-    def log_activity(self, user_id: str, action: str, server_id=None, detail=None):
-        # Stub: activity logging is disabled by settings.activity_log in routes.py.
-        pass
-
-    def list_activity(self, user_id, limit=200):
-        # Stub: activity logging is disabled by settings.activity_log in routes.py.
-        return []
 
     def update_user_password(self, user_id: str, password_hash: str) -> bool:
         with self.connect() as connection:

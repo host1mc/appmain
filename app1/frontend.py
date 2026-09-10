@@ -42,6 +42,7 @@ from markupsafe import Markup, escape
 import ads_config
 import blog as blog_content
 import cf_edge
+import obs
 import embed_templates as embed_tpl
 import internal_auth
 import creds
@@ -82,6 +83,10 @@ BACKEND_EMAIL_READ_TIMEOUT = _env_positive_float(
 
 
 PANEL_PROXY_TIMEOUT = _env_positive_float("PANEL_PROXY_TIMEOUT", 8.0)
+# Runtime/image changes pull a Docker image on the node (up to ~120s). The
+# default 8s proxy timeout is what turned those into a 504 mid-change.
+PANEL_PROXY_SLOW_TIMEOUT = _env_positive_float("PANEL_PROXY_SLOW_TIMEOUT", 180.0)
+_PANEL_SLOW_PATH_MARKERS = ("/image", "/rebuild", "/reinstall")
 PANEL_PROXY_MAX_CONCURRENCY = _env_clamped_int(
     "PANEL_PROXY_MAX_CONCURRENCY", 6, 1, 8)
 _panel_proxy_slots = threading.BoundedSemaphore(PANEL_PROXY_MAX_CONCURRENCY)
@@ -103,6 +108,7 @@ BLOCKED_PROXY_PREFIXES = (
     "auth",
     "panel-store",
     "internal",
+    "fingerprint",
 )
 
 
@@ -465,16 +471,10 @@ def load_or_create_flask_secret(path):
         return validate(key_file.read())
 
 
-app.secret_key = creds.get("FLASK_SECRET_KEY")
-if not app.secret_key:
-    app.secret_key = os.environ.get("FLASK_SECRET_KEY")
-if not app.secret_key:
-
-
-    _fleet_secret = creds.get("ENCRYPTION_KEY") or os.environ.get("ENCRYPTION_KEY", "")
-    if _fleet_secret:
-        app.secret_key = hashlib.sha256(
-            b"endhost.flask.session.v1|" + _fleet_secret.encode("utf-8")).hexdigest()
+# The public frontend must never hold the master ENCRYPTION_KEY, so it does not
+# derive its session secret from it. Set FLASK_SECRET_KEY fleet-wide (systemd
+# cred or forwarded env) so both instances sign session cookies identically.
+app.secret_key = creds.get("FLASK_SECRET_KEY") or os.environ.get("FLASK_SECRET_KEY")
 if not app.secret_key:
     app.secret_key = load_or_create_flask_secret(_KEY_FILE)
 
@@ -622,6 +622,22 @@ def _inject_turnstile():
         turnstile_site_key=turnstile.site_key() if turnstile.enabled() else "")
 
 
+@app.context_processor
+def _inject_auth_methods():
+    # A callable, not a value: only the login/register pages that call it pay the
+    # one backend round-trip, cached per request on g. Fails closed (GitHub
+    # hidden) when the backend is unreachable or the toggle is off.
+    def auth_github_enabled():
+        cached = getattr(g, "_auth_github_enabled", None)
+        if cached is None:
+            resp = _api("GET", "/api/auth/methods")
+            cached = bool(isinstance(resp, dict) and resp.get("ok")
+                          and resp.get("github"))
+            g._auth_github_enabled = cached
+        return cached
+    return dict(auth_github_enabled=auth_github_enabled)
+
+
 CSRF_SESSION_KEY = "_csrf_token"
 CSRF_HEADER = "X-CSRF-Token"
 CSRF_FORM_FIELD = "csrf_token"
@@ -762,6 +778,9 @@ def _security_headers(response):
             response.headers["Access-Control-Max-Age"] = "3600"
     response.headers["X-Content-Type-Options"] = "nosniff"
     response.headers["X-Frame-Options"] = "DENY"
+    response.headers["Permissions-Policy"] = (
+        "geolocation=(), microphone=(), camera=(), payment=(), usb=(), interest-cohort=()"
+    )
 
 
     response.headers["Referrer-Policy"] = "no-referrer"
@@ -811,7 +830,7 @@ def _security_headers(response):
         "frame-ancestors 'none'; "
 
 
-        "form-action 'self'; "
+        "form-action 'self' https://github.com; "
 
 
         "connect-src 'self' https:;"
@@ -1226,6 +1245,10 @@ def panel_proxy(subpath=""):
             True,
             lambda: ec.err(ec.BACKEND_UNAVAILABLE, "Panel server busy", 503))
 
+    path_l = (request.path or "").lower()
+    proxy_timeout = PANEL_PROXY_TIMEOUT
+    if "/api/servers/" in path_l and any(m in path_l for m in _PANEL_SLOW_PATH_MARKERS):
+        proxy_timeout = PANEL_PROXY_SLOW_TIMEOUT
     try:
         resp = http_requests.request(
             method=request.method,
@@ -1233,7 +1256,7 @@ def panel_proxy(subpath=""):
             headers=headers,
             data=request.get_data(),
             params=request.args,
-            timeout=PANEL_PROXY_TIMEOUT,
+            timeout=proxy_timeout,
             allow_redirects=False,
         )
     except http_requests.ConnectionError:
@@ -1685,6 +1708,13 @@ _LOGIN_ERRORS = {
         "Please verify your email first. Check your inbox for the OTP code.",
     ec.RATE_LIMITED: "Too many attempts. Please wait a minute and try again.",
     ec.BACKEND_UNAVAILABLE: "Service temporarily unavailable. Please try again.",
+    ec.TURNSTILE_FAILED: "Please complete the verification check and try again.",
+    ec.GITHUB_DISABLED: "GitHub sign-in is currently unavailable.",
+    ec.GITHUB_AUTH_FAILED: "GitHub sign-in failed. Please try again.",
+    ec.GITHUB_EMAIL_UNVERIFIED:
+        "Your GitHub account has no verified email. Verify one on GitHub and try again.",
+    ec.GITHUB_ACCOUNT_TOO_NEW:
+        "Your GitHub account must be at least 3 months old to sign in.",
 }
 _LOGIN_ERROR_FALLBACK = "Invalid username or password"
 
@@ -1700,6 +1730,8 @@ _REGISTER_ERRORS = {
     ec.OTP_SEND_FAILED: "Failed to send OTP. Please try again later.",
     ec.RATE_LIMITED: "Too many attempts. Please wait a minute and try again.",
     ec.BACKEND_UNAVAILABLE: "Service temporarily unavailable. Please try again.",
+    ec.TURNSTILE_FAILED: "Please complete the verification check and try again.",
+    ec.REGISTRATION_CLOSED: "New sign-ups are currently closed.",
 }
 _REGISTER_ERROR_FALLBACK = "Registration failed"
 
@@ -1798,12 +1830,6 @@ def user_register():
                 return render_template("user_register.html", step="1")
 
 
-            if not turnstile.verify(request.form.get("cf-turnstile-response", ""),
-                                    _get_client_ip()):
-                flash("Please complete the verification check and try again.", "error")
-                return render_template("user_register.html", step="1")
-
-
             resp = _api("POST", "/api/auth/register", json_data={
                 "username": u,
                 "password": p,
@@ -1811,6 +1837,8 @@ def user_register():
                 "display_name": d,
                 "fingerprint": fp,
                 "fingerprint_detail": (request.form.get("fingerprint_detail", "") or "").strip(),
+                "cf-turnstile-response": request.form.get("cf-turnstile-response", "") or "",
+                "agree_terms": "1" if request.form.get("agree_terms") else "",
             }, read_timeout=BACKEND_EMAIL_READ_TIMEOUT)
             if not resp.get("ok"):
                 if resp.get("banned"):
@@ -1892,20 +1920,15 @@ def user_login():
         p = request.form.get("password", "")
 
 
-        if not turnstile.verify(request.form.get("cf-turnstile-response", ""),
-                                _get_client_ip()):
-            g._login_precheck_failed = True
-            flash("Please complete the verification check and try again.", "error")
-            return render_template("user_login.html")
         fp = (request.form.get("fingerprint", "") or "").strip()
         fp_detail = _capped_fp_detail(request.form.get("fingerprint_detail", ""))
-
 
         resp = _api("POST", "/api/auth/login", json_data={
             "username": u,
             "password": p,
             "fingerprint": fp,
             "fingerprint_detail": fp_detail,
+            "cf-turnstile-response": request.form.get("cf-turnstile-response", "") or "",
         })
         if resp.get("ok"):
             user = resp.get("user") or {}
@@ -1920,6 +1943,76 @@ def user_login():
             return render_template("banned.html", reason=resp.get("reason", "Your account has been banned.")), 403
         flash(_safe_error(resp, _LOGIN_ERRORS, _LOGIN_ERROR_FALLBACK), "error")
     return render_template("user_login.html")
+
+
+@app.route("/user/auth/github", methods=["POST"])
+@limiter.limit("10 per minute", methods=["POST"])
+def user_auth_github():
+    # The GitHub button submits the login/register form (formaction), so the
+    # fingerprint fields and CSRF token already ride along. Stash the fp and a
+    # fresh OAuth state, then bounce to GitHub; the secret and token exchange
+    # live entirely in the backend.
+    fp = (request.form.get("fingerprint", "") or "").strip()
+    fp_detail = _capped_fp_detail(request.form.get("fingerprint_detail", ""))
+    # Bounce failures back to whichever page the button was clicked from
+    # (login vs register) instead of always dropping the user on /user/login.
+    origin = "user_register" if request.form.get("origin") == "register" else "user_login"
+    # Reaching this route means the user clicked "Continue with GitHub", which
+    # carries an explicit "you agree to our Terms and Privacy Policy" notice next
+    # to it (clickwrap). GitHub is a self-contained path — it does not fill the
+    # email form, so the separate agree_terms checkbox does not apply here.
+    agreed = "1"
+    state = secrets.token_urlsafe(24)
+    resp = _api("POST", "/api/auth/github/start", json_data={
+        "state": state,
+        "cf-turnstile-response": request.form.get("cf-turnstile-response", "") or "",
+    })
+    if not resp.get("ok") or not resp.get("authorize_url"):
+        flash(_safe_error(resp, _LOGIN_ERRORS, "GitHub sign-in is currently unavailable."), "error")
+        return redirect(url_for(origin))
+    session["_gh_oauth"] = {"state": state, "fp": fp, "fp_detail": fp_detail, "agreed": agreed, "origin": origin}
+    return redirect(resp["authorize_url"])
+
+
+@app.route("/user/auth/github/callback", methods=["GET"])
+@limiter.limit("15 per minute")
+def user_auth_github_callback():
+    stashed = session.pop("_gh_oauth", None)
+    origin = (stashed or {}).get("origin")
+    if origin not in ("user_login", "user_register"):
+        origin = "user_login"
+    if request.args.get("error"):
+        flash("GitHub sign-in was cancelled.", "error")
+        return redirect(url_for(origin))
+    code = request.args.get("code", "")
+    state = request.args.get("state", "")
+    if not stashed or not code or not state \
+            or not secrets.compare_digest(state, stashed.get("state", "")):
+        flash("GitHub sign-in could not be verified. Please try again.", "error")
+        return redirect(url_for(origin))
+    fp = stashed.get("fp", "") or ""
+    resp = _api("POST", "/api/auth/github", json_data={
+        "code": code,
+        "fingerprint": fp,
+        "fingerprint_detail": stashed.get("fp_detail", "") or "",
+        "agreed": stashed.get("agreed", "") or "",
+    })
+    if resp.get("ok"):
+        user = resp.get("user") or {}
+        session.clear()
+        session["user_id"] = user.get("uid")
+        session["username"] = user.get("username")
+        session["_ip"] = _get_client_ip()
+        session["_fp"] = fp
+        _rotate_session()
+        return _masked_redirect("user_dashboard")
+    if resp.get("banned"):
+        return render_template("banned.html", reason=resp.get("reason", "Your account has been banned.")), 403
+    if resp.get("code") == "terms_required":
+        flash("Please agree to the Terms of Service and Privacy Policy, then continue with GitHub.", "error")
+        return redirect(url_for("user_register"))
+    flash(_safe_error(resp, _LOGIN_ERRORS, "GitHub sign-in failed. Please try again."), "error")
+    return redirect(url_for(origin))
 
 
 @app.route("/user/logout")
@@ -2279,7 +2372,7 @@ def _inject_ad_enabled():
             f'<script nonce="{nonce}" '
             f'src="{url_for("static", filename="ads.js")}"></script>\n'
             f'<script nonce="{nonce}" '
-            f'src="{url_for("guard_asset", token=_current_guard_token(), v="16")}" defer></script>\n'
+            f'src="{url_for("guard_asset", token=_current_guard_token(), v="18")}" defer></script>\n'
             f"{push_script}"
         )
 
@@ -2476,6 +2569,7 @@ def _inject_links():
 def init():
 
 
+    obs.init_sentry("frontend")
     internal_auth.get_internal_token()
 
 
@@ -2486,7 +2580,7 @@ def _waitress_tuning():
         port=FRONTEND_PORT,
         threads=8,
         connection_limit=200,
-        channel_timeout=30,
+        channel_timeout=200,
         max_request_body_size=app.config["MAX_CONTENT_LENGTH"],
         expose_tracebacks=False,
         ident="MCStatusFrontend",

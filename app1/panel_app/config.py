@@ -114,17 +114,11 @@ class PanelConfig:
     # "local":  authenticate against the panel's own SQLite users, so the whole
     #           UI can be smoke-tested on a laptop without touching live Oracle.
     auth_mode: str
-    # "oracle": keep panel_users / panel_servers / panel_activity in the shared
-    #           Oracle schema, so both load-balanced instances see the same rows.
+    # "oracle": keep the panel's rows (the consolidated servers table, read
+    #           through the main users table) in the shared Oracle schema, so
+    #           both load-balanced instances see the same rows.
     # "sqlite": per-instance SQLite file, for the laptop smoke test.
     store: str
-    # Whether the panel persists an audit trail of user actions (server create /
-    # power / upload / password change / …) into the store's activity table.
-    # Off by default: the rows live in the shared backend database and grow with
-    # every action, and operators who keep the panel user-facing usually do not
-    # want per-action history written there. The Activity page renders empty
-    # while this is off.
-    activity_enabled: bool = False
     # Whether /panel answers with Strict-Transport-Security. Deliberately its
     # own switch rather than a read of session_cookie_secure: frontend.py returns
     # early for the panel proxy, so /panel is the one user-facing path that gets
@@ -209,7 +203,6 @@ class PanelConfig:
             ),
             auth_mode=auth_mode,
             store=store,
-            activity_enabled=as_bool(env.get("PANEL_ACTIVITY_ENABLED", "false")),
             hsts=as_bool(env.get("PANEL_HSTS", "true"), default=True),
             main_site_url=(env.get("PANEL_MAIN_SITE_URL", "") or "").strip().rstrip("/"),
             backend_url=(

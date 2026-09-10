@@ -209,6 +209,15 @@ def parse_node_urls(value) -> list:
         raise ValueError("node URL must be an absolute HTTP(S) URL")
     if len(urls) > MAX_URL_CANDIDATES:
         raise ValueError(f"a node URL lists at most {MAX_URL_CANDIDATES} addresses")
+    # Loopback first: the public hostname of a co-located agent often black-holes
+    # from inside the host, and a 3s probe there made every catalog/create look
+    # like "all nodes down" even when 127.0.0.1 would have answered immediately.
+    def _prio(u):
+        host = (parse.urlsplit(u).hostname or "").lower()
+        if host in ("127.0.0.1", "localhost", "::1"):
+            return 0
+        return 1
+    urls.sort(key=_prio)
     return urls
 
 
@@ -494,14 +503,9 @@ class NodeClient:
                 # would be read as "not the agent" and the write repeated.
                 break
             except (error.URLError, TimeoutError, OSError, http_client.HTTPException) as exc:
-                err_msg = f"NodeClient: connection to {url} failed: {type(exc).__name__}: {exc}"
-                try:
-                    import reviews_db
-                    reviews_db.log_app_error("NodeClientConnectionFailed", err_msg, module="node_client", flagged=1)
-                    if reviews_db.is_console_debug_enabled():
-                        _log.warning(err_msg)
-                except Exception:
-                    pass
+                # Failover across listed addresses is expected; do not FLAG each
+                # refused/timed-out hop. The caller flags only if no address works.
+                _log.debug("NodeClient: %s failed: %s: %s", url, type(exc).__name__, exc)
                 self._mark_dead(base)
                 last_exc = exc
                 if _is_connect_failure(exc) or method == "GET":

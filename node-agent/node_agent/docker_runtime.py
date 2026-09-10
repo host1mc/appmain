@@ -71,42 +71,76 @@ class DockerRuntime:
         try:
             self.client.images.get(image)
         except Exception:
-            self.client.images.pull(image)
-        if "log_config" in spec:
             try:
-                return self.client.containers.create(**spec)
-            except Exception:
-                # Retry without the log driver, but against a copy. The caller
-                # keeps this spec to rebuild the container later, and deleting
-                # the key in place dropped the setting from every later create.
-                retry = {key: value for key, value in spec.items() if key != "log_config"}
-                return self.client.containers.create(**retry)
-        return self.client.containers.create(**spec)
+                self.client.images.pull(image)
+            except Exception as exc:
+                raise ValueError("this node could not pull the runtime image") from exc
+        try:
+            if "log_config" in spec:
+                try:
+                    return self.client.containers.create(**spec)
+                except Exception:
+                    # Retry without the log driver, but against a copy. The caller
+                    # keeps this spec to rebuild the container later, and deleting
+                    # the key in place dropped the setting from every later create.
+                    retry = {key: value for key, value in spec.items() if key != "log_config"}
+                    return self.client.containers.create(**retry)
+            return self.client.containers.create(**spec)
+        except ValueError:
+            raise
+        except Exception as exc:
+            raise ValueError("this node could not create the container") from exc
 
     def get(self, server_id):
-        matches = self.client.containers.list(
-            all=True,
-            filters={"label": f"dchost.server_id={server_id}"},
-        )
+        try:
+            matches = self.client.containers.list(
+                all=True,
+                filters={"label": f"dchost.server_id={server_id}"},
+            )
+        except Exception as exc:
+            raise ValueError("this node could not talk to its Docker daemon") from exc
         return matches[0] if matches else None
 
     def list(self):
+        try:
+            containers = self.client.containers.list(
+                all=True,
+                filters={"label": "dchost.managed=true"},
+            )
+        except Exception as exc:
+            raise ValueError("this node could not talk to its Docker daemon") from exc
         servers = []
-        for container in self.client.containers.list(
-            all=True,
-            filters={"label": "dchost.managed=true"},
-        ):
+        for container in containers:
+            labels = container.labels or {}
+            attrs = getattr(container, "attrs", None) or {}
             servers.append(
                 {
-                    "id": (container.labels or {}).get("dchost.server_id", ""),
-                    "name": (container.labels or {}).get("dchost.display_name", ""),
+                    "id": labels.get("dchost.server_id", ""),
+                    "name": labels.get("dchost.display_name", ""),
                     "status": getattr(container, "status", "unknown"),
+                    "runtime": labels.get("dchost.runtime", ""),
+                    "version": labels.get("dchost.version", ""),
+                    # The startup command and image live only on the container
+                    # (labels / docker config) — the panel lists them from here
+                    # instead of keeping its own copy.
+                    "startup": labels.get("dchost.startup", ""),
+                    "image": (attrs.get("Config") or {}).get("Image", ""),
+                    "memory_mb": labels.get("dchost.memory_mb"),
+                    "cpu_percent": labels.get("dchost.cpu_percent"),
+                    "desired_state": labels.get("dchost.desired_state", ""),
+                    "created_at": attrs.get("Created", ""),
                 }
             )
         return [server for server in servers if server["id"]]
 
     def remove(self, container, force=False):
-        container.remove(force=force, v=True)
+        try:
+            container.remove(force=force, v=True)
+        except Exception as exc:
+            message = str(exc).lower()
+            if "no such" in message or "not found" in message:
+                return
+            raise ValueError("this node could not remove the container") from exc
 
     def logs(self, container, tail=200):
         try:
@@ -147,11 +181,41 @@ class DockerRuntime:
         """
         decoder = codecs.getincrementaldecoder("utf-8")("replace")
         buffer = ""
+        # Docker/json-file and Python input() both hold a prompt until a newline.
+        # Waiting only on "\n" meant `input("Do you like Python? ")` never reached
+        # the panel. Idle-flush the partial line so the prompt shows while the
+        # process waits on stdin.
+        incoming = queue.Queue()
+        _END = object()
+
+        def _reader():
+            try:
+                for chunk in container.logs(
+                    stdout=True, stderr=True, follow=True, stream=True, since=since,
+                    tail=tail, timestamps=True
+                ):
+                    incoming.put(chunk)
+            except Exception as exc:
+                incoming.put(exc)
+            finally:
+                incoming.put(_END)
+
+        worker = threading.Thread(target=_reader, name="dchost-logs-follow", daemon=True)
+        worker.start()
         try:
-            for chunk in container.logs(
-                stdout=True, stderr=True, follow=True, stream=True, since=since,
-                tail=tail, timestamps=True
-            ):
+            while True:
+                try:
+                    item = incoming.get(timeout=0.12)
+                except queue.Empty:
+                    if buffer:
+                        yield visible_line(buffer)
+                        buffer = ""
+                    continue
+                if item is _END:
+                    break
+                if isinstance(item, Exception):
+                    raise item
+                chunk = item
                 if isinstance(chunk, bytes):
                     chunk = decoder.decode(chunk)
                 if not chunk:

@@ -48,7 +48,7 @@
             <input type="checkbox" name="uid" value="{{ u.id }}" style="width:14px;height:14px;margin-top:3px;flex:none;accent-color:#e74c3c;cursor:pointer">
             <span class="rank {{ 'medal' if loop.index == 1 else ('medal2' if loop.index == 2 else ('medal3' if loop.index == 3 else '')) }}">{{ loop.index }}</span>
           </div>
-          <div class="uid"><a href="/user/{{ u.id|urlencode }}" style="color:inherit;text-decoration:none">{{ u.id|shortid }}</a>{% if u.name %} <span class="badge purple">{{ u.name }}</span>{% endif %}</div>
+          <div class="uid"><a href="/user/{{ u.id|urlencode }}" style="color:inherit;text-decoration:none">{{ u.name or u.id|shortid }}</a></div>
           <div class="meta">{{ u.tables }} table(s) &middot; {{ u.rows|num }} rows</div>
           <div class="foot">
             <a class="btn sm" href="/user/{{ u.id|urlencode }}">All linked data</a>

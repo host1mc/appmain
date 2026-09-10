@@ -158,40 +158,63 @@ def api_admin_engine_health():
 
 
 # Start/stop write the bots.running flag (1 = on, 0 = off) straight to the
-# database instead of delegating to engine_client: every engine re-reads
-# list_running_bots() on each tick, so the flag is the single control surface —
-# a console running on a different host than the engine, or an engine that is
-# momentarily down, still applies. That is also what makes two deployments on
-# two VPSes share one control: both watch the same rows.
+# HeatWave bots store instead of delegating to engine_client: every engine
+# re-reads list_running_bots() on each tick, so the flag is the single control
+# surface — a console running on a different host than the engine, or an
+# engine that is momentarily down, still applies. That is also what makes two
+# deployments on two VPSes share one control: both watch the same rows.
+#
+# Bots are keyed by (uid, slot): there is no global bot id any more. URLs
+# carry both halves, and batch bodies send "uid:slot" strings.
+
+import reviews_db
+from crypto_util import mask
 
 
-def _set_bot_running_batch(ids, running):
-    """Apply the flag to each id. Returns {str(id): {"ok"|"error"}}."""
+def _parse_bot_ref(raw):
+    """A "uid:slot" pair, or None when the string is not one."""
+    text = str(raw or "").strip()
+    if ":" not in text:
+        return None
+    uid, _sep, slot_text = text.partition(":")
+    uid = uid.strip()
+    if not uid:
+        return None
+    try:
+        slot = int(slot_text)
+    except (TypeError, ValueError):
+        return None
+    return uid, slot
+
+
+def _set_bot_running_batch(refs, running):
+    """Apply the flag to each "uid:slot". Returns {ref: {"ok"|"error"}}."""
     results = {}
-    for raw in ids or []:
-        try:
-            bot_id = int(raw)
-        except (TypeError, ValueError):
-            results[str(raw)] = {"error": "invalid id"}
+    for raw in refs or []:
+        ref = _parse_bot_ref(raw)
+        key = str(raw)
+        if ref is None:
+            results[key] = {"error": "invalid id (expected uid:slot)"}
             continue
-        bot = db.get_bot(bot_id)
+        uid, slot = ref
+        bot = reviews_db.get_bot(uid, slot)
         if not bot:
-            results[str(bot_id)] = {"error": "not found"}
+            results[key] = {"error": "not found"}
             continue
-        if running and _trial_expired(bot.get("uid")):
-            results[str(bot_id)] = {"error": "trial expired"}
+        if running and _trial_expired(uid):
+            results[key] = {"error": "trial expired"}
             continue
         if running and (not bot.get("server_ip") or not bot.get("channel_id")):
-            results[str(bot_id)] = {"error": "missing server_ip or channel_id"}
+            results[key] = {"error": "missing server_ip or channel_id"}
             continue
-        db.set_bot_running(bot_id, running)
+        reviews_db.set_bot_running(uid, slot, running)
         if running:
-            _nudge_engine(bot_id)
-        results[str(bot_id)] = {"ok": True}
+            _nudge_engine(uid, slot)
+        results[key] = {"ok": True}
     return results
 
 
-def _nudge_engine(bot_id):
+def _nudge_engine(uid, slot):
     """Make a freshly started bot publish on the engine's very next tick.
 
     The flag alone is the source of truth and a down engine reconciles when it
@@ -202,36 +225,36 @@ def _nudge_engine(bot_id):
     engine is unreachable or rejects the bot.
     """
     try:
-        db.clear_bot_claim(bot_id)
+        reviews_db.clear_bot_claim(uid, slot)
     except Exception:
         pass
     try:
-        engine_client.start_bot(bot_id)
+        engine_client.start_bot(uid, slot)
     except Exception:
         pass
 
 
-@ops_bp.route("/api/admin/bots/<int:bot_id>/stop", methods=["POST"])
+@ops_bp.route("/api/admin/bots/<uid>/<int:slot>/stop", methods=["POST"])
 @auth.require_admin
-def api_admin_stop_bot(bot_id):
-    if not db.get_bot(bot_id):
+def api_admin_stop_bot(uid, slot):
+    if not reviews_db.get_bot(uid, slot):
         return jsonify({"ok": False, "error": "Bot not found"}), 404
-    db.set_bot_running(bot_id, False)
+    reviews_db.set_bot_running(uid, slot, False)
     return jsonify({"ok": True})
 
 
-@ops_bp.route("/api/admin/bots/<int:bot_id>/start", methods=["POST"])
+@ops_bp.route("/api/admin/bots/<uid>/<int:slot>/start", methods=["POST"])
 @auth.require_admin
-def api_admin_start_bot(bot_id):
-    bot_info = db.get_bot(bot_id)
+def api_admin_start_bot(uid, slot):
+    bot_info = reviews_db.get_bot(uid, slot)
     if not bot_info:
         return jsonify({"ok": False, "error": "Bot not found"}), 404
-    if _trial_expired(bot_info.get("uid")):
+    if _trial_expired(uid):
         return jsonify({"ok": False, "error": "Trial expired — cannot start bot"}), 403
     if not bot_info.get("server_ip") or not bot_info.get("channel_id"):
         return jsonify({"ok": False, "error": "Bot missing server_ip or channel_id"}), 400
-    db.set_bot_running(bot_id, True)
-    _nudge_engine(bot_id)
+    reviews_db.set_bot_running(uid, slot, True)
+    _nudge_engine(uid, slot)
     return jsonify({"ok": True})
 
 
@@ -251,13 +274,13 @@ def api_admin_batch_start_bots():
     return jsonify({"ok": True, "results": results})
 
 
-@ops_bp.route("/api/admin/bots/<int:bot_id>", methods=["DELETE"])
+@ops_bp.route("/api/admin/bots/<uid>/<int:slot>", methods=["DELETE"])
 @auth.require_admin
-def api_admin_delete_bot(bot_id):
+def api_admin_delete_bot(uid, slot):
     # Best-effort stop: a dead engine must not make bots undeletable.
-    engine_client.stop_bot(bot_id)
-    db.set_bot_running(bot_id, False)
-    db.delete_bot(bot_id)
+    engine_client.stop_bot(uid, slot)
+    reviews_db.set_bot_running(uid, slot, False)
+    reviews_db.delete_bot(uid, slot)
     return jsonify({"ok": True})
 
 
@@ -277,14 +300,17 @@ def api_admin_list_bots():
     # one owner commonly runs several bots — memoise per user_id, not per row.
     owners, expired = {}, {}
     bots = []
-    for row in db.list_all_bots():
+    for row in reviews_db.list_all_bots():
         user_id = row.get("uid")
         if user_id not in owners:
             owner = db.get_user(user_id)
             owners[user_id] = owner["username"] if owner else None
             expired[user_id] = _trial_expired(user_id)
         bots.append({
-            "id": row.get("id"),
+            # Bots are addressed by (uid, slot); "id" stays as the slot for
+            # display, and "ref" is what the mutating endpoints take.
+            "id": row.get("slot_index"),
+            "ref": f"{user_id}:{row.get('slot_index')}",
             "user_id": user_id,
             "username": owners[user_id],
             "trial_expired": expired[user_id],
@@ -299,24 +325,25 @@ def api_admin_list_bots():
             "running": bool(row.get("running")),
             # The row arrives with the decrypted token in it. Only the preview
             # crosses to the browser.
-            "token_masked": db.mask(row.get("token")),
+            "token_masked": mask(row.get("token")),
         })
     return jsonify({"ok": True, "bots": bots, "engine": engine_payload})
 
 
-@ops_bp.route("/api/admin/bots/<int:bot_id>/config", methods=["GET"])
+@ops_bp.route("/api/admin/bots/<uid>/<int:slot>/config", methods=["GET"])
 @auth.require_admin
-def api_admin_get_bot_config(bot_id):
-    bot = db.get_bot(bot_id)
+def api_admin_get_bot_config(uid, slot):
+    bot = reviews_db.get_bot(uid, slot)
     if not bot:
         return jsonify({"ok": False, "error": "Not found"}), 404
-    owner = db.get_user(bot.get("uid"))
+    owner = db.get_user(uid)
     # Whitelisted field by field rather than popping `token`/`token_enc` off the
-    # row: get_bot() returns SELECT *, so a column added to the bots table
-    # upstream must not become a new leak here by default.
+    # row: a column added to the bots store upstream must not become a new leak
+    # here by default.
     return jsonify({"ok": True, "bot": {
-        "id": bot.get("id"),
-        "user_id": bot.get("uid"),
+        "id": bot.get("slot_index"),
+        "ref": f"{uid}:{slot}",
+        "user_id": uid,
         "username": owner["username"] if owner else None,
         "name": bot.get("name"),
         "server_ip": bot.get("server_ip"),
@@ -333,10 +360,10 @@ def api_admin_get_bot_config(bot_id):
     }})
 
 
-@ops_bp.route("/api/admin/bots/<int:bot_id>/config", methods=["PUT"])
+@ops_bp.route("/api/admin/bots/<uid>/<int:slot>/config", methods=["PUT"])
 @auth.require_admin
-def api_admin_save_bot_config(bot_id):
-    bot = db.get_bot(bot_id)
+def api_admin_save_bot_config(uid, slot):
+    bot = reviews_db.get_bot(uid, slot)
     if not bot:
         return jsonify({"ok": False, "error": "Not found"}), 404
     data = request.get_json(force=True, silent=True)
@@ -385,7 +412,7 @@ def api_admin_save_bot_config(bot_id):
 
     if not fields:
         return jsonify({"ok": False, "error": "No fields to update"}), 400
-    db.save_bot_config(bot_id, **fields)
+    reviews_db.save_bot_config(uid, slot, **fields)
 
     # Field NAMES only. "token" says a new token was stored and nothing else.
     updated = sorted(fields)
@@ -407,3 +434,35 @@ def api_admin_set_auto_ban():
     enabled = bool(data.get("auto_ban_enabled", False))
     db.set_auto_ban_enabled(enabled)
     return jsonify({"ok": True, "auto_ban_enabled": enabled})
+
+
+# ── Sign-up toggles ──
+
+@ops_bp.route("/api/admin/signup-password", methods=["GET"])
+@auth.require_admin
+def api_admin_get_signup_password():
+    return jsonify({"ok": True, "signup_password_enabled": db.get_signup_password_enabled()})
+
+
+@ops_bp.route("/api/admin/signup-password", methods=["PUT"])
+@auth.require_admin
+def api_admin_set_signup_password():
+    data = request.get_json(force=True) or {}
+    enabled = bool(data.get("signup_password_enabled", False))
+    db.set_signup_password_enabled(enabled)
+    return jsonify({"ok": True, "signup_password_enabled": enabled})
+
+
+@ops_bp.route("/api/admin/signup-github", methods=["GET"])
+@auth.require_admin
+def api_admin_get_signup_github():
+    return jsonify({"ok": True, "signup_github_enabled": db.get_signup_github_enabled()})
+
+
+@ops_bp.route("/api/admin/signup-github", methods=["PUT"])
+@auth.require_admin
+def api_admin_set_signup_github():
+    data = request.get_json(force=True) or {}
+    enabled = bool(data.get("signup_github_enabled", False))
+    db.set_signup_github_enabled(enabled)
+    return jsonify({"ok": True, "signup_github_enabled": enabled})

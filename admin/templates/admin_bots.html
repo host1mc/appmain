@@ -79,13 +79,14 @@ function renderEngine(e){
 
 function fleetRow(b){
   const server = b.server_ip ? esc(b.server_ip) + ':' + esc(b.server_port == null ? '' : b.server_port) : '—';
-  // The id goes into JS handler arguments, so it is coerced to a number rather
-  // than escaped as text: nothing but a number can survive Number().
-  const id = Number(b.id);
+  // Bots are keyed by "uid:slot" now — ref is what every mutating endpoint
+  // takes, and it goes into JS handler arguments escaped as text.
+  const ref = String(b.ref || '');
+  const slot = b.id;
   return `<tr>
-    <td class="log-ip"><input type="checkbox" class="row-sel" data-id="${id}" onchange="updateSel()" aria-label="Select bot ${id}"></td>
+    <td class="log-ip"><input type="checkbox" class="row-sel" data-ref="${esc(ref)}" onchange="updateSel()" aria-label="Select bot ${esc(ref)}"></td>
     <td class="log-target">${b.user_id ? `<a href="/admin/user/${esc(b.user_id)}">@${esc(b.username || b.user_id)}</a>` : '—'}</td>
-    <td class="log-admin">${esc(b.name || ('#' + id))} <span class="log-ip">(${id})</span></td>
+    <td class="log-admin">${esc(b.name || ('#' + slot))} <span class="log-ip">(slot ${slot})</span></td>
     <td class="log-ip">${server} <span class="muted">${esc(b.edition || '')}</span></td>
     <td class="log-ip">${esc(b.channel_id || '—')}</td>
     <td class="log-ip">${esc(b.update_interval == null ? '—' : b.update_interval)}s</td>
@@ -95,10 +96,10 @@ function fleetRow(b){
     <td class="log-ip" title="${b.running && b.last_error ? esc(b.last_error) : ''}">
       ${b.running && b.last_error ? '<span class="badge warn">ERROR</span> <span class="muted">' + esc(String(b.last_error).slice(0, 60)) + '</span>' : esc(b.message_id || '—')}</td>
     <td>
-      <button class="btn btn-ghost btn-sm" onclick="editBot(${id})" aria-label="Edit bot ${id}">Edit</button>
-      <button class="btn btn-green btn-sm" onclick="botAction(${id}, 'start')" aria-label="Start bot ${id}">Start</button>
-      <button class="btn btn-ghost btn-sm" onclick="botAction(${id}, 'stop')" aria-label="Stop bot ${id}">Stop</button>
-      <button class="btn btn-red btn-sm" onclick="deleteBot(${id})" aria-label="Delete bot ${id}">Delete</button>
+      <button class="btn btn-ghost btn-sm" onclick="editBot('${esc(ref)}')" aria-label="Edit bot ${esc(ref)}">Edit</button>
+      <button class="btn btn-green btn-sm" onclick="botAction('${esc(ref)}', 'start')" aria-label="Start bot ${esc(ref)}">Start</button>
+      <button class="btn btn-ghost btn-sm" onclick="botAction('${esc(ref)}', 'stop')" aria-label="Stop bot ${esc(ref)}">Stop</button>
+      <button class="btn btn-red btn-sm" onclick="deleteBot('${esc(ref)}')" aria-label="Delete bot ${esc(ref)}">Delete</button>
     </td>
   </tr>`;
 }
@@ -138,14 +139,14 @@ async function loadFleet(){
   } catch(e) { el.innerHTML = '<div class="empty">Error loading fleet</div>'; }
 }
 
-function selectedIds(){
-  return Array.from(document.querySelectorAll('.row-sel:checked')).map(c => Number(c.dataset.id));
+function selectedRefs(){
+  return Array.from(document.querySelectorAll('.row-sel:checked')).map(c => c.dataset.ref);
 }
 
 function updateSel(){
   const boxes = document.querySelectorAll('.row-sel');
   const all = document.getElementById('sel-all');
-  const n = selectedIds().length;
+  const n = selectedRefs().length;
   const cnt = document.getElementById('sel-count');
   if(cnt) cnt.textContent = n + ' selected';
   document.getElementById('btn-start-selected').disabled = n === 0;
@@ -163,29 +164,37 @@ function toggleAll(){
 }
 
 async function batchAction(action){
-  const ids = selectedIds();
-  if(ids.length === 0) return;
-  if(action === 'stop' && !confirm('Stop ' + ids.length + ' bot' + (ids.length > 1 ? 's' : '') + '?')) return;
+  const refs = selectedRefs();
+  if(refs.length === 0) return;
+  if(action === 'stop' && !confirm('Stop ' + refs.length + ' bot' + (refs.length > 1 ? 's' : '') + '?')) return;
   try {
     const r = await fetch('/api/admin/bots/' + action, {
-      method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ids})
+      method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ids: refs})
     });
     const d = await r.json();
     if(d && d.ok){
       const res = d.results || {};
       const okN = Object.values(res).filter(v => v && v.ok).length;
       const skipped = Object.entries(res).filter(([, v]) => v && !v.ok)
-        .map(([id, v]) => '#' + id + ' (' + v.error + ')');
-      toast(okN + '/' + ids.length + ' ' + action + 'ed'
+        .map(([ref, v]) => ref + ' (' + v.error + ')');
+      toast(okN + '/' + refs.length + ' ' + action + 'ed'
         + (skipped.length ? ' — skipped: ' + skipped.join(', ') : ''));
     } else toast((d && d.error) || ('Could not ' + action + ' bots'), true);
   } catch(e) { toast('Request failed', true); }
   loadFleet();
 }
 
-async function botAction(botId, action){
+function botApiPath(ref){
+  // "uid:slot" -> /api/admin/bots/<uid>/<slot>, each half URL-encoded.
+  const i = String(ref).indexOf(':');
+  const uid = String(ref).slice(0, i);
+  const slot = String(ref).slice(i + 1);
+  return '/api/admin/bots/' + encodeURIComponent(uid) + '/' + encodeURIComponent(slot);
+}
+
+async function botAction(ref, action){
   try {
-    const r = await fetch('/api/admin/bots/' + botId + '/' + action, {
+    const r = await fetch(botApiPath(ref) + '/' + action, {
       method:'POST', headers:{'Content-Type':'application/json'}
     });
     const d = await r.json();
@@ -195,10 +204,10 @@ async function botAction(botId, action){
   loadFleet();
 }
 
-async function deleteBot(botId){
-  if(!confirm('Delete bot #' + botId + '? This removes its configuration and cannot be undone.')) return;
+async function deleteBot(ref){
+  if(!confirm('Delete bot ' + ref + '? This removes its configuration and cannot be undone.')) return;
   try {
-    const r = await fetch('/api/admin/bots/' + botId, {
+    const r = await fetch(botApiPath(ref), {
       method:'DELETE', headers:{'Content-Type':'application/json'}
     });
     const d = await r.json();
@@ -220,7 +229,7 @@ function closeEdit(){
 function editForm(b){
   const editions = ['java', 'bedrock'];
   return `<div class="card" style="margin-bottom:16px">
-    <h2>Edit bot #${esc(b.id)} <span class="pill">${esc(b.username || b.user_id || '')}</span></h2>
+    <h2>Edit bot ${esc(b.ref || ('#' + b.id))} <span class="pill">${esc(b.username || b.user_id || '')}</span></h2>
     <form id="bot-form" autocomplete="off">
       <div class="field"><label for="f-name">Name</label>
         <input type="text" id="f-name" value="${esc(b.name || '')}"></div>
@@ -253,12 +262,12 @@ function editForm(b){
   </div>`;
 }
 
-async function editBot(botId){
+async function editBot(ref){
   const p = $('#edit-panel'); if(!p) return;
   p.hidden = false;
   p.innerHTML = '<div class="empty">Loading configuration…</div>';
   try {
-    const r = await fetch('/api/admin/bots/' + botId + '/config', {headers:{'Content-Type':'application/json'}});
+    const r = await fetch(botApiPath(ref) + '/config', {headers:{'Content-Type':'application/json'}});
     const d = await r.json();
     if(!d || !d.ok || !d.bot){
       p.innerHTML = '<div class="empty">' + esc((d && d.error) || 'Could not load configuration') + '</div>';
@@ -269,14 +278,14 @@ async function editBot(botId){
     // Assigned as a value, never interpolated into the markup above: the embed
     // is user-authored text.
     $('#f-embed').value = EMBED_ORIGINAL;
-    $('#bot-form').addEventListener('submit', ev => saveBot(ev, d.bot.id));
+    $('#bot-form').addEventListener('submit', ev => saveBot(ev, d.bot.ref));
     $('#f-name').focus();
   } catch(e) {
     p.innerHTML = '<div class="empty">Request failed</div>';
   }
 }
 
-async function saveBot(ev, botId){
+async function saveBot(ev, ref){
   ev.preventDefault();
   const res = $('#edit-result');
   const body = {
@@ -303,7 +312,7 @@ async function saveBot(ev, botId){
   }
   if(res) res.textContent = 'Saving…';
   try {
-    const r = await fetch('/api/admin/bots/' + botId + '/config', {
+    const r = await fetch(botApiPath(ref) + '/config', {
       method:'PUT', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body)
     });
     const d = await r.json();

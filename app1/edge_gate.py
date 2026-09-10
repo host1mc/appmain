@@ -734,6 +734,8 @@ class Gate:
             ("Retry-After", retry),
             ("Cache-Control", "no-store"),
             ("X-Robots-Tag", "noindex"),
+            ("X-Content-Type-Options", "nosniff"),
+            ("X-Frame-Options", "DENY"),
         ])
         return [b""] if head else [body]
 
@@ -778,8 +780,9 @@ few seconds and happens once.</p>
              f"style-src 'nonce-{nonce}'; "
              "frame-src https://challenges.cloudflare.com; "
              "connect-src https://challenges.cloudflare.com; "
-             "form-action 'self'; base-uri 'none'"),
+             "form-action 'self'; base-uri 'none'; frame-ancestors 'none'"),
             ("Cache-Control", "no-store"),
+            ("X-Content-Type-Options", "nosniff"),
             # Without this a crawler that reaches the challenge can index the
             # interstitial as the page's content.
             ("X-Robots-Tag", "noindex"),

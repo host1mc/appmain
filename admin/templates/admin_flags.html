@@ -44,6 +44,34 @@
       </div>
     </div>
 
+    <div class="card" id="signup-password-card">
+      <div style="display:flex;justify-content:space-between;align-items:center;gap:14px;flex-wrap:wrap">
+        <div style="flex:1;min-width:240px">
+          <h2 style="font-size:15px;margin:0">Email / Password Sign-up</h2>
+          <p class="note page-sub" style="margin:4px 0 0">When enabled, visitors can register a new account with an email and password. Turn off to close self-service sign-ups for the whole fleet. On by default.</p>
+        </div>
+        <label class="toggle-wrap" style="flex-shrink:0">
+          <input type="checkbox" id="signup-password-toggle" onchange="toggleSignupPassword(this.checked)" aria-label="Toggle email/password sign-up">
+          <span class="toggle-slider"></span>
+          <span class="toggle-knob"></span>
+        </label>
+      </div>
+    </div>
+
+    <div class="card" id="signup-github-card">
+      <div style="display:flex;justify-content:space-between;align-items:center;gap:14px;flex-wrap:wrap">
+        <div style="flex:1;min-width:240px">
+          <h2 style="font-size:15px;margin:0">GitHub Sign-up</h2>
+          <p class="note page-sub" style="margin:4px 0 0">When enabled, visitors can sign up with GitHub. Off by default; the GitHub flow must be configured before this has any effect. Turning both sign-up options off means no new accounts can be created.</p>
+        </div>
+        <label class="toggle-wrap" style="flex-shrink:0">
+          <input type="checkbox" id="signup-github-toggle" onchange="toggleSignupGithub(this.checked)" aria-label="Toggle GitHub sign-up">
+          <span class="toggle-slider"></span>
+          <span class="toggle-knob"></span>
+        </label>
+      </div>
+    </div>
+
     <div class="toolbar">
       <input id="q" type="search" class="filter-input" aria-label="Filter the flags loaded on this page"
              placeholder="Filter this page by account, IP, fingerprint or event…" oninput="queueRender()">
@@ -525,6 +553,7 @@ async function openInfo(flagId){
       ['Display name', esc(u.display_name||'—')],
       ['Email', esc(u.email||'—')],
       ['Email verified', yn(u.email_verified)],
+      ['Verified via', u.email_verified ? (u.github_verified ? 'GitHub' : 'Email code') : '—'],
       ['Account type', `<span class="badge ${u.account_type==='paid'?'on':'off'}">${esc(u.account_type||'trial').toUpperCase()}</span>`],
       ['Bot slots', esc(u.slots)],
       ['Status', u.is_banned ? `<span class="badge bad">BANNED</span> ${esc(u.banned_reason||'')}` : '<span class="badge on">ACTIVE</span>'],
@@ -653,11 +682,47 @@ async function toggleAutoBan(enabled){
   loadAutoBan();
 }
 
+async function loadSignupPassword(){
+  const r = await api('/api/admin/signup-password');
+  if(r && r.ok){
+    const toggle = $('#signup-password-toggle');
+    if(toggle) toggle.checked = r.signup_password_enabled;
+  }
+}
+
+async function toggleSignupPassword(enabled){
+  busy('#signup-password-toggle', true);
+  const r = await api('/api/admin/signup-password', {method:'PUT', body:JSON.stringify({signup_password_enabled:enabled})});
+  busy('#signup-password-toggle', false);
+  if(r && r.ok){ toast('Email/password sign-up ' + (enabled ? 'enabled' : 'disabled')); }
+  else { toast((r&&r.error)||'Error', true); }
+  loadSignupPassword();
+}
+
+async function loadSignupGithub(){
+  const r = await api('/api/admin/signup-github');
+  if(r && r.ok){
+    const toggle = $('#signup-github-toggle');
+    if(toggle) toggle.checked = r.signup_github_enabled;
+  }
+}
+
+async function toggleSignupGithub(enabled){
+  busy('#signup-github-toggle', true);
+  const r = await api('/api/admin/signup-github', {method:'PUT', body:JSON.stringify({signup_github_enabled:enabled})});
+  busy('#signup-github-toggle', false);
+  if(r && r.ok){ toast('GitHub sign-up ' + (enabled ? 'enabled' : 'disabled')); }
+  else { toast((r&&r.error)||'Error', true); }
+  loadSignupGithub();
+}
+
 // /admin/flags?q=<user> — the ⚑ badge on the admin panel links straight in
 const q0 = new URLSearchParams(location.search).get('q');
 if(q0 && $('#q')) $('#q').value = q0;
 load();
 loadAutoBan();
+loadSignupPassword();
+loadSignupGithub();
 </script>
 </body>
 </html>

@@ -8,10 +8,11 @@ That made the panel un-runnable without the whole ``app`` package on ``sys.path`
 
 This module gives the panel the same three symbols from its own engine, pointed
 at the *same* Oracle database (same wallet, same ``.env``), so nothing about the
-live connection changes — only which file owns it. ``init_db`` here imports the
-panel's own :mod:`.oracle_models` and never the app's ``User``/``Item``/``Todo``,
-so a panel-only process creates ``panel_users`` / ``panel_servers`` /
-``panel_activity`` and nothing else.
+live connection changes — only which file owns it. The panel issues no DDL of
+its own any more: the consolidated ``servers`` table and the ``users`` table it
+reads are created and migrated by the host app's ``database.init_db()``. The
+model in :mod:`.oracle_models` exists so queries run against a checked column
+set, not to create anything.
 
 The engine is built at import, exactly as the app's was, so importing this module
 requires ORACLE_USER / ORACLE_PASSWORD / ORACLE_DSN in the environment. That is
@@ -63,7 +64,16 @@ def _connect_args() -> dict:
     import oracledb
 
     oracledb.defaults.connect_timeout = 10
-    args = {"dsn": environ["ORACLE_DSN"]}
+    dsn = (environ.get("ORACLE_DSN") or "").strip()
+    # Try later DSNs if the primary is missing; live failover is in
+    # create_engine below via pool_pre_ping + recreate.
+    if not dsn:
+        for idx in range(1, 8):
+            extra = (environ.get(f"ORACLE_DSN_{idx}") or "").strip()
+            if extra:
+                dsn = extra
+                break
+    args = {"dsn": dsn}
     wallet_dir = Path(environ.get("ORACLE_WALLET_DIR", "./Wallet_ATP")).resolve()
     if wallet_dir.is_dir() and any(
         (wallet_dir / name).is_file()
@@ -151,212 +161,33 @@ def _init_db_allowed() -> bool:
     """Whether this process may run the explicit :func:`init_db`.
 
     The token set asgi_panel spelled while PANEL_INIT_DB gated the panel's only
-    DDL. It no longer gates the schema repair — :func:`ensure_schema` runs on
-    every start, because a panel whose table is missing a column it selects is
-    broken for every visitor until the DDL runs, and nothing else was running it.
+    DDL. The panel issues no DDL any more — the schema is owned by the host
+    app — so the flag only guards the (empty) init_db entry point.
     """
     return environ.get("PANEL_INIT_DB", "").strip().lower() in ("1", "true", "yes", "on")
 
 
-# The DDL that adds a model column to an already-existing panel table, keyed by
-# Oracle-uppercase table then column. ``create_all`` is check-first at *table*
-# level, so a table created before a column was added to the model never gains it
-# — which is why a schema predating the desired-state feature answered
-# ORA-00904 "PANEL_SERVERS"."DESIRED_STATE" to every panel page that lists
-# servers: all of them select that column. The DDL here is what
-# migrations/002_panel_servers_desired_state.sql issues by hand;
-# :func:`ensure_schema` issues it at startup instead, so a deploy needs no
-# hand-run migration step and cannot be started without one.
-#
-# An entry is needed per column because ensure_schema will not invent DDL for a
-# live shared table: a NOT NULL with no default would fail on a table with rows,
-# and a foreign key or unique constraint is a lock and a backfill decision, not a
-# spelling. A model column with no entry here is reported at startup instead.
-_ADDITIVE_COLUMNS = {
-    "PANEL_USERS": {
-        # Nullable and with no default, which is the one shape of ADD that is
-        # always metadata-only on a populated table: every existing account reads
-        # NULL, meaning "no per-account grant — use the fleet figure", which is
-        # exactly the behaviour they had before this column existed. NUMBER(4)
-        # rather than a bare NUMBER because the value is clamped to 1000 on both
-        # write and read, and a precision Oracle can hold in two bytes is smaller
-        # in every row than the unconstrained NUMBER a Column(Integer) would emit.
-        "CONTAINER_SLOTS": "NUMBER(4) NULL",
-    },
-    "PANEL_SERVERS": {
-        # NUMBER rather than INTEGER: NUMBER is what SQLAlchemy's Oracle dialect
-        # emits for Column(Integer), so a table built by create_all and a table
-        # repaired here end up the same shape. On ATP an ADD of a NOT NULL column
-        # carrying a DEFAULT is metadata-only — existing rows read 0 ("stopped",
-        # which is the safe reading of intent) with no table rewrite.
-        "DESIRED_STATE": "NUMBER DEFAULT 0 NOT NULL",
-        "NODE_ID": "NUMBER NULL",
-        # Nullable, no default: every existing row reads NULL, which means "no
-        # delivery configured" — the same shape as CONTAINER_SLOTS above, so the
-        # ADD is metadata-only even on a populated table. 2048 CHAR holds the
-        # JSON wrapper plus two Fernet ciphertexts (a 512-char webhook URL
-        # encrypts to ~760 bytes of base64).
-        "DELIVERY_CONFIG": "VARCHAR2(2048 CHAR) NULL",
-    },
-}
-
-# Oracle errors meaning "another process already did exactly this". Four panel
-# processes (two workers on each of two load-balanced instances) start at once and
-# every one of them runs ensure_schema, so losing the race is the ordinary case
-# rather than an error: ORA-00955 is a table the winner created, ORA-01430 a
-# column. Either way the state this call wanted is the state the schema is in.
-_ALREADY_THERE = ("ORA-00955", "ORA-01430")
-
-# Oracle errors meaning "another session holds the lock this DDL needs". Oracle
-# commits DDL itself, so the winner is done in milliseconds and a loser that waits
-# gets its turn.
-_LOCKED = ("ORA-00054", "ORA-04021", "ORA-04020")
-
-# Attempts per statement before giving up on the lock.
-_DDL_TRIES = 8
-
-
-async def _ddl(sql, *, describe):
-    """Run one DDL statement, tolerating the four-process startup race.
-
-    Each attempt takes its own connection: a failed statement leaves a
-    SQLAlchemy transaction that has to be rolled back before the same connection
-    accepts anything else, and the whole point here is to keep going after the
-    failures that mean "already done".
-    """
-    from sqlalchemy import text
-
-    for _ in range(_DDL_TRIES):
-        try:
-            async with engine.begin() as conn:
-                await conn.execute(text(sql))
-            print(f"[panel] schema: {describe}")
-            return
-        except Exception as exc:
-            msg = str(exc)
-            if any(tag in msg for tag in _ALREADY_THERE):
-                return
-            if not any(tag in msg for tag in _LOCKED):
-                raise
-            await asyncio.sleep(1.0)
-    raise RuntimeError(f"could not lock the table to {describe} after {_DDL_TRIES} tries")
-
-
-async def _create_missing_tables():
-    from . import oracle_models  # noqa: F401  (import registers the tables)
-
-    for _ in range(_DDL_TRIES):
-        try:
-            async with engine.begin() as conn:
-                await conn.run_sync(Base.metadata.create_all)
-            return
-        except Exception as exc:
-            msg = str(exc)
-            # create_all does its own has_table check per table, so this is the
-            # window between that check and the CREATE, not a repeat of it.
-            if any(tag in msg for tag in _ALREADY_THERE):
-                return
-            if not any(tag in msg for tag in _LOCKED):
-                raise
-            await asyncio.sleep(1.0)
-    raise RuntimeError(f"could not create the panel tables after {_DDL_TRIES} tries")
-
-
-async def _rows(sql, **params):
-    from sqlalchemy import text
-
-    async with engine.connect() as conn:
-        result = await conn.execute(text(sql), params)
-        return [row[0].upper() for row in result]
-
-
 async def ensure_schema():
-    """Bring the panel's three tables up to what the models expect.
+    """No-op kept as the heal hook OracleStore calls on ORA-00904.
 
-    Three things, all additive, all safe on every start:
-
-    * a panel table this schema does not have at all is created by
-      ``create_all`` — the "if it does not exist, create it" half;
-    * a table that *is* there but predates a column the model has gained is
-      ALTERed to add that column, from the DDL in :data:`_ADDITIVE_COLUMNS`.
-      ``create_all`` checks at table level only, so it can never do this, and
-      until now the only thing that did was a hand-run SQL migration — one that a
-      deploy could, and did, start without;
-    * a model column that is missing and has no DDL here is printed as a warning
-      naming the column, so the next drift of this kind is a line in the startup
-      log rather than an ORA-00904 a visitor finds.
-
-    Runs on every Oracle-path start rather than behind PANEL_INIT_DB. What it
-    issues is a CREATE for a table that is missing and an ADD for a column that
-    is missing, so on the normal path — schema already matching the models — it
-    issues no DDL at all and costs one catalog SELECT per panel table plus one.
-    When something *is* missing, every process that notices converges on the same
-    state (see _ALREADY_THERE), and the alternative was a panel that starts clean
-    and then answers ORA-00904 to every page listing servers.
+    The panel's tables are owned by the host app's ``database.init_db()``:
+    ``users`` and the consolidated ``servers`` table are created and migrated
+    there, including the consolidation of the old panel tables. This tier only
+    reads and writes rows, so there is nothing left for it to repair — and a
+    panel process racing its siblings over DDL against the shared schema is
+    exactly what this module used to guard against.
     """
-    from . import oracle_models  # noqa: F401  (import registers the tables)
-
-    wanted = {name.upper() for name in Base.metadata.tables}
-    present = set(await _rows("SELECT table_name FROM user_tables")) & wanted
-    missing = wanted - present
-    if missing:
-        print(f"[panel] schema: creating {', '.join(sorted(t.lower() for t in missing))}")
-        await _create_missing_tables()
-
-    for name, table in Base.metadata.tables.items():
-        # A table create_all just built already carries every column its model
-        # declares — and so does one the winner of that race built.
-        if name.upper() not in present:
-            continue
-        have = set(
-            await _rows(
-                "SELECT column_name FROM user_tab_columns WHERE table_name = :t",
-                t=name.upper(),
-            )
-        )
-        known = _ADDITIVE_COLUMNS.get(name.upper(), {})
-        # Compared against the model rather than against the spec, so a column
-        # added to a model with no matching entry below is reported here instead of
-        # being discovered by a visitor as ORA-00904.
-        for column in table.columns:
-            if column.name.upper() in have:
-                continue
-            column_type = known.get(column.name.upper())
-            if not column_type:
-                print(
-                    f"[panel] WARNING: {name}.{column.name} is in the model but not in "
-                    f"the database, and _ADDITIVE_COLUMNS in panel_app/database.py has "
-                    f"no DDL for it. Every query selecting it will fail with ORA-00904 "
-                    f"until the column is added (declared type: {column.type}).",
-                    file=stderr,
-                )
-                continue
-            if not _IDENTIFIER_RE.fullmatch(name.upper()) or not _IDENTIFIER_RE.fullmatch(column.name.upper()):
-                raise ValueError(f"invalid SQL identifier in DDL: {name!r}.{column.name!r}")
-            await _ddl(
-                f"ALTER TABLE {name.upper()} ADD ({column.name.upper()} {column_type})",
-                describe=f"added {name}.{column.name}",
-            )
+    return None
 
 
 async def init_db():
-    """Create the panel's tables — and only the panel's tables.
-
-    The explicit, gated entry point, kept because ``migrations/README.md`` and
-    both migration scripts tell an operator to start the panel once with
-    PANEL_INIT_DB=1 to build a fresh schema. It is no longer the only way the
-    panel's tables come into being: :func:`ensure_schema` runs on every start and
-    creates a missing table itself, so this adds nothing on a normal boot.
-
-    Importing :mod:`.oracle_models` registers ``PanelUser`` / ``PanelServer`` /
-    ``PanelActivity`` on ``Base.metadata``; ``create_all`` is check-first, so a
-    restart with them already present is a no-op.
-    """
+    """Kept for the PANEL_INIT_DB entry point; the schema work moved to the
+    host app's ``database.init_db()``, so there is no DDL left to gate."""
     if not _init_db_allowed():
         raise RuntimeError(
-            "refusing to run panel DDL: PANEL_INIT_DB is not set. create_all here "
-            "is DDL against the shared production schema and four processes (two "
-            "workers on each of two instances) would race it."
+            "refusing to run panel DDL: PANEL_INIT_DB is not set. The panel "
+            "no longer issues DDL of its own — database.init_db() owns the "
+            "schema — so starting with the flag set changes nothing."
         )
     await ensure_schema()
 

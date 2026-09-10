@@ -53,6 +53,8 @@
   let lastNetworkAt = 0;
   let currentPath = '';
   let logsCleared = false;
+  let consoleSince = 0;
+  let streamEpoch = 0;
   let lastState = null;
   const commandHistory = [];
   let historyIndex = -1;
@@ -453,7 +455,6 @@
         method: 'POST',
         body: JSON.stringify({ command }),
       });
-      logsCleared = false;
       appendConsole(`\n$ ${command}`);
       input.value = '';
     } catch (error) {
@@ -491,7 +492,14 @@
 
   document.getElementById('clear-console')?.addEventListener('click', () => {
     logsCleared = true;
+    consoleSince = Date.now() / 1000;
+    streamEpoch += 1;
     output.textContent = '';
+    const stale = ws;
+    ws = null;
+    wsConnected = false;
+    try { stale?.close(); } catch (_) {}
+    if (wsShouldConnect) connectWs();
   });
 
   document.getElementById('download-console')?.addEventListener('click', () => {
@@ -548,23 +556,30 @@
     const select = document.getElementById('runtime-select');
     const input = document.getElementById('startup-input');
     const warning = document.getElementById('runtime-change-warning');
-    const applyBtn = document.getElementById('apply-runtime-change');
-    const cancelBtn = document.getElementById('cancel-runtime-change');
-    const statusEl = document.getElementById('runtime-apply-status');
+    const applyRuntimeBtn = document.getElementById('apply-runtime-change');
+    const cancelRuntimeBtn = document.getElementById('cancel-runtime-change');
+    const runtimeStatus = document.getElementById('runtime-apply-status');
+    const applyStartupBtn = document.getElementById('apply-startup-change');
+    const cancelStartupBtn = document.getElementById('cancel-startup-change');
+    const startupStatus = document.getElementById('startup-apply-status');
     if (!card || !select || !input || !warning) return;
-    const currentRuntime = card.dataset.currentRuntime || '';
-    const currentVersion = card.dataset.currentVersion || '';
-    const currentStartup = card.dataset.currentStartup || '';
-    const currentRuntimeKey = select.dataset.currentRuntime || '';
-    const currentVersionKey = select.dataset.currentVersion || '';
+    let savedStartup = card.dataset.currentStartup || '';
+    let savedRuntimeKey = select.dataset.currentRuntime || '';
+    let savedVersionKey = select.dataset.currentVersion || '';
+    let lastRuntimeKey = savedRuntimeKey;
 
-    const stateIsClean = () => select.value === `${currentRuntimeKey}|${currentVersionKey}` && input.value === currentStartup;
+    const runtimeDirty = () => select.value !== `${savedRuntimeKey}|${savedVersionKey}`;
+    const startupDirty = () => input.value !== savedStartup;
 
-    const applyState = (dirty) => {
-      warning.hidden = !dirty;
-      cancelBtn.hidden = !dirty;
-      applyBtn.disabled = !dirty;
-      if (dirty) {
+    const syncDirtyUi = () => {
+      const rtDirty = runtimeDirty();
+      const stDirty = startupDirty();
+      warning.hidden = !(rtDirty || stDirty);
+      if (cancelRuntimeBtn) cancelRuntimeBtn.hidden = !rtDirty;
+      if (applyRuntimeBtn) applyRuntimeBtn.disabled = !rtDirty;
+      if (cancelStartupBtn) cancelStartupBtn.hidden = !stDirty;
+      if (applyStartupBtn) applyStartupBtn.disabled = !stDirty;
+      if (rtDirty || stDirty) {
         document.querySelectorAll('[data-power]').forEach((btn) => { btn.disabled = true; });
       } else {
         const installing = lastState?.server?.install_status === 'running';
@@ -573,46 +588,36 @@
         });
         setConsoleEnabled(!installing && lastState?.server?.status === 'running');
       }
-      if (statusEl) statusEl.textContent = '';
     };
 
-    const onInputChange = () => {
-      applyState(!stateIsClean());
-    };
+    select.addEventListener('change', () => {
+      const option = select.selectedOptions[0];
+      const nextRuntime = (option && option.dataset.runtime) || '';
+      if (nextRuntime && nextRuntime !== lastRuntimeKey) {
+        const next = (option && option.dataset.defaultStartup) || '';
+        if (next) input.value = next;
+        lastRuntimeKey = nextRuntime;
+      }
+      syncDirtyUi();
+    });
+    input.addEventListener('input', syncDirtyUi);
 
-    select.addEventListener('change', onInputChange);
-    input.addEventListener('input', onInputChange);
-
-    applyBtn?.addEventListener('click', async () => {
-      const [runtime, version] = select.value.split('|');
-      const startup = input.value;
-      applyBtn.disabled = true;
-      cancelBtn.disabled = true;
-      // Changing the runtime can pull a new image, which can take a few
-      // minutes. A plain "Applying…" reads as a hang, so show elapsed time.
+    const applyWithTimer = async (button, cancel, statusEl, path, body, okMessage) => {
+      if (button) button.disabled = true;
+      if (cancel) cancel.disabled = true;
       const startedAt = Date.now();
       const tick = () => {
         if (!statusEl) return;
         const s = Math.floor((Date.now() - startedAt) / 1000);
-        statusEl.textContent = `Applying… ${s}s (pulling the new image can take a few minutes)`;
+        statusEl.textContent = `Applying… ${s}s (rebuilding the container can take a few minutes)`;
       };
       tick();
       const timer = setInterval(tick, 1000);
       try {
-        const resp = await fetch(PANEL_BASE + `/api/servers/${serverId}/rebuild`, {
-          method: 'POST',
-          credentials: 'same-origin',
-          headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': csrf },
-          body: JSON.stringify({ runtime, version, startup }),
-        });
-        let data;
-        try { data = await resp.json(); } catch (_) {
-          data = { ok: false, error: `Request failed (${resp.status})` };
-        }
-        if (!resp.ok || data.ok === false) throw new Error(data.error || `Request failed (${resp.status})`);
+        const data = await api(path, { method: 'POST', body: JSON.stringify(body) });
         if (data.warning && statusEl) statusEl.textContent = data.warning;
-        window.showToast?.('Rebuild started — server will restart shortly.');
-        await new Promise((r) => setTimeout(r, 1500));
+        window.showToast?.(okMessage);
+        await new Promise((r) => setTimeout(r, 800));
         window.location.reload();
       } catch (error) {
         const msg = /timed?\s*out/i.test(error.message)
@@ -622,26 +627,45 @@
         window.showToast?.(msg, 'error');
       } finally {
         clearInterval(timer);
-        applyBtn.disabled = false;
-        cancelBtn.disabled = false;
+        if (button) button.disabled = false;
+        if (cancel) cancel.disabled = false;
+        syncDirtyUi();
       }
+    };
+
+    applyRuntimeBtn?.addEventListener('click', () => {
+      const [runtime, version] = select.value.split('|');
+      applyWithTimer(
+        applyRuntimeBtn, cancelRuntimeBtn, runtimeStatus,
+        `/api/servers/${serverId}/image`,
+        { runtime, version },
+        'Runtime saved — start the server when the rebuild finishes.',
+      );
     });
 
-    cancelBtn?.addEventListener('click', () => {
-      const restore = document.createElement('option');
-      restore.value = `${currentRuntimeKey}|${currentVersionKey}`;
-      restore.dataset.runtime = currentRuntimeKey;
-      restore.dataset.version = currentVersionKey;
-      restore.selected = true;
-      restore.textContent = `Reset to ${currentRuntimeKey} ${currentVersionKey}`;
-      select.add(restore);
-      select.value = `${currentRuntimeKey}|${currentVersionKey}`;
-      select.remove(restore);
-      input.value = currentStartup;
-      applyState(false);
+    applyStartupBtn?.addEventListener('click', () => {
+      applyWithTimer(
+        applyStartupBtn, cancelStartupBtn, startupStatus,
+        `/api/servers/${serverId}/startup`,
+        { startup: input.value },
+        'Startup saved — start the server when the rebuild finishes.',
+      );
     });
 
-    applyState(!stateIsClean());
+    cancelRuntimeBtn?.addEventListener('click', () => {
+      select.value = `${savedRuntimeKey}|${savedVersionKey}`;
+      lastRuntimeKey = savedRuntimeKey;
+      if (runtimeStatus) runtimeStatus.textContent = '';
+      syncDirtyUi();
+    });
+
+    cancelStartupBtn?.addEventListener('click', () => {
+      input.value = savedStartup;
+      if (startupStatus) startupStatus.textContent = '';
+      syncDirtyUi();
+    });
+
+    syncDirtyUi();
   })();
 
   document.getElementById('reinstall-server')?.addEventListener('click', async () => {
@@ -1182,16 +1206,20 @@
 
   function wsUrl() {
     const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
-    return `${proto}//${location.host}${PANEL_BASE}/ws/console/${serverId}`;
+    let url = `${proto}//${location.host}${PANEL_BASE}/ws/console/${serverId}`;
+    if (consoleSince > 0) url += `?since=${encodeURIComponent(consoleSince.toFixed(3))}`;
+    return url;
   }
 
   function connectWs() {
     if (ws || !wsShouldConnect) return;
+    const epoch = streamEpoch;
     try {
       ws = new WebSocket(wsUrl());
     } catch (_) { scheduleWsReconnect(); return; }
 
     ws.onopen = () => {
+      if (epoch !== streamEpoch) return;
       wsConnected = true;
       wsRetryDelay = WS_BASE_INTERVAL;
       if (!logsCleared) {
@@ -1200,6 +1228,7 @@
     };
 
     ws.onmessage = (event) => {
+      if (epoch !== streamEpoch) return;
       try {
         const msg = JSON.parse(event.data);
         if (msg.type === 'connected') {
@@ -1207,18 +1236,15 @@
             output.textContent = '';
           }
         } else if (msg.type === 'log') {
-          if (!logsCleared) {
-            appendConsole(msg.data);
-          }
+          appendConsole(msg.data);
         } else if (msg.type === 'error') {
-          if (!logsCleared) {
-            appendConsole(`\n[ws error] ${msg.message}\n`);
-          }
+          appendConsole(`\n[ws error] ${msg.message}\n`);
         }
       } catch (_) {}
     };
 
     ws.onclose = () => {
+      if (epoch !== streamEpoch) return;
       wsConnected = false;
       ws = null;
       if (wsShouldConnect) scheduleWsReconnect();
@@ -1265,8 +1291,12 @@
       pollDelay = BASE_INTERVAL;
     } catch (error) {
       setStatus('unavailable');
+      if (containerId) containerId.textContent = error.message || 'Node unavailable';
+      if (output && !logsCleared && (output.textContent || '').includes('Connecting to node')) {
+        output.textContent = 'Hosting node is offline. You can still open other pages or delete this server — that frees your slot and queues the container for an admin.';
+      }
       setPowerEnabled(true, lastState?.server?.install_status !== 'running');
-      setConsoleEnabled(true);
+      setConsoleEnabled(false);
       pollDelay = Math.min(MAX_INTERVAL, Math.round(pollDelay * 1.8));
     } finally {
       polling = false;

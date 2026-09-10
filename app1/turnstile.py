@@ -126,27 +126,38 @@ def _flag(name: str, default: str) -> bool:
         "1", "true", "yes", "on")
 
 
-# Cloudflare official testing keys (always pass interactive challenge)
+# Cloudflare official testing keys (always pass). Never used unless
+# TURNSTILE_TEST=1 — falling back to them in production made every login
+# "protected" by a CAPTCHA that Cloudflare documents as always succeeding.
 TEST_SITE_KEY = "1x00000000000000000000AA"
 TEST_SECRET_KEY = "1x0000000000000000000000000000000AA"
 
 
+def _test_mode() -> bool:
+    return _flag("TURNSTILE_TEST", "0")
+
+
 def site_key() -> str:
     """The public key the widget is rendered with. Safe to put in HTML."""
-    return _setting("TURNSTILE_SITE_KEY") or TEST_SITE_KEY
+    configured = _setting("TURNSTILE_SITE_KEY")
+    if configured:
+        return configured
+    return TEST_SITE_KEY if _test_mode() else ""
 
 
 def secret_key() -> str:
     """The private key siteverify is called with. Never leaves this process."""
-    return _setting("TURNSTILE_SECRET_KEY") or TEST_SECRET_KEY
+    configured = _setting("TURNSTILE_SECRET_KEY")
+    if configured:
+        return configured
+    return TEST_SECRET_KEY if _test_mode() else ""
 
 
 def enabled() -> bool:
     """Whether Turnstile is configured well enough to be used at all.
 
-    Both keys are required. A half-configured deployment — a site key with no
-    secret — would render a widget whose answer nothing can check, which is
-    worse than no widget: it looks protected and is not.
+    Both real keys are required. Dummy Cloudflare test keys do not count
+    unless TURNSTILE_TEST=1 (local smoke tests only).
     """
     if not _flag("TURNSTILE_ENABLED", "1"):
         return False

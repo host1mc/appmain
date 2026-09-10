@@ -7,9 +7,13 @@ view, sequence and standalone procedure/function/trigger the schema owns, then
 the recycle bin. The schema is left completely empty.
 
 The schema is rebuilt EMPTY on the next tier startup: database.py's init_db()
-guards each CREATE TABLE with an existence check (database.py:267-268), and
-panel_app/database.py's ensure_schema() recreates the panel_* tables. So the
-table DEFINITIONS come back automatically; the ROWS are gone forever.
+guards each CREATE TABLE with an existence check and recreates users, servers,
+fingerprints and the rest. So the table DEFINITIONS come back automatically;
+the ROWS are gone forever.
+
+This only touches the Oracle schema. The bots table and the reviews live in
+HeatWave (MySQL) and are NOT wiped here — clear those stores separately if the
+wipe is meant to be total.
 
 Deliberately self-contained: it does NOT import database.py, because importing
 that module runs _load_config() and _ensure_oracle_cols() at module scope
@@ -219,7 +223,8 @@ def main():
 
         print("\n" + "!" * 72)
         print(f"About to DROP {total} objects and DESTROY {grand} rows in {user}.")
-        print("This includes live user accounts, bots, hosting servers and backups.")
+        print("This includes live user accounts, servers, fingerprints and sessions.")
+        print("Note: the HeatWave stores (bots, reviews) are NOT touched by this tool.")
         print("THERE IS NO UNDO.")
         print("!" * 72)
 

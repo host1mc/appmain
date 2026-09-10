@@ -71,29 +71,25 @@ GCM_CONTEXT = ""
 # check below and upgraded by database._migrate_at_rest_encryption() instead.
 TARGETS = (
     ("settings", "key", ("value",)),
-    ("bots", "id", ("name", "server_ip", "token_enc", "guild_id",
-                    "channel_id", "embed_json", "ip_reply_json",
-                    "webhook_url")),
     ("fingerprints", "id", ("fingerprint_hash", "device_info_enc",
                             "ip_address")),
     ("device_events", "id", ("username", "fingerprint_enc",
                              "device_info_enc", "ip_address", "details")),
     ("sessions", "id", ("data", "ip_address", "user_agent")),
     ("otp_codes", "id", ("email", "code")),
-    ("users", "id", ("username", "display_name", "email", "banned_reason")),
-    # record_fingerprint_history() encrypts all three of these on every login
-    # (database.py:2088-2091). Leaving the table out did not merely skip it:
-    # --retire-old re-runs this scan to decide whether the old key is still
-    # needed, so an unscanned table reported clean and the key that could read
-    # it was then cleared, making the device-history audit trail permanently
-    # unrecoverable.
-    ("fingerprint_history", "id", ("fingerprint_hash", "device_info_enc",
-                                   "ip_address")),
-    # A hosted server's name, start command and source (database.py:3147-3148),
-    # plus every retained backup payload (database.py:3263).
-    ("hosting_servers", "id", ("name", "start_command", "code")),
-    ("hosting_backups", "id", ("payload",)),
+    # users."uid" is a quoted lowercase identifier (Oracle's UID is a
+    # pseudocolumn, so the bare word cannot be used); the quotes travel with it.
+    ("users", '"uid"', ("username", "display_name", "email", "banned_reason")),
 )
+
+# The bots table moved to HeatWave, and its ciphertext moves with it: the same
+# encrypt() columns, keyed by (uid, slot_index) instead of an Oracle row id.
+# process_heatwave_bots() walks them with the same primary/older-key logic, and
+# a HeatWave this process cannot reach fails the run — an unscanned store must
+# never report clean to --retire-old.
+HEATWAVE_BOTS_COLUMNS = ("name", "server_ip", "token_enc", "guild_id",
+                         "channel_id", "embed_json", "ip_reply_json",
+                         "webhook_url")
 
 # Keyed lookup-hash index columns, as (table, pk, ((ciphertext column, index
 # column, casefold), ...)).
@@ -108,13 +104,10 @@ TARGETS = (
 # database.py only backfills these WHERE the column IS NULL (database.py:850,
 # 906, 955), so a stale non-null hash has no other repair path. This file is it.
 LOOKUP_INDEXES = (
-    ("users", "id", (("username", "username_lookup_hash", False),
+    ("users", '"uid"', (("username", "username_lookup_hash", False),
                      ("username", "username_ci_lookup_hash", True),
                      ("email", "email_lookup_hash", False))),
     ("fingerprints", "id", (("ip_address", "ip_lookup_hash", False),)),
-    # database.py:2282 writes this on every login and database.py:2286 compares
-    # it to decide whether the device is already known.
-    ("fingerprint_history", "id", (("ip_address", "ip_lookup_hash", False),)),
     # database.py:1542; database.py:1537/1561 select pending codes by it.
     ("otp_codes", "id", (("email", "email_lookup_hash", False),)),
 )
@@ -126,7 +119,6 @@ LOOKUP_INDEXES = (
 # "nobody has classified this yet".
 UNKEYED_LOOKUP_COLUMNS = (
     ("fingerprints", "lookup_hash"),
-    ("fingerprint_history", "lookup_hash"),
     ("device_events", "lookup_hash"),
 )
 
@@ -223,6 +215,14 @@ _IDENTIFIER_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]{0,127}$")
 
 
 def _validate_id(name):
+    # The users table's primary key is a quoted lowercase identifier
+    # ("uid" — the bare word is Oracle's UID pseudocolumn), so one quoted
+    # form is accepted alongside plain ones.
+    if name.startswith('"') and name.endswith('"'):
+        inner = name[1:-1]
+        if inner and not any(ch in inner for ch in '"\''):
+            return name
+        raise ValueError(f"invalid SQL identifier: {name!r}")
     if not _IDENTIFIER_RE.fullmatch(name):
         raise ValueError(f"invalid SQL identifier: {name!r}")
     return name
@@ -536,6 +536,93 @@ def process_table(conn, table, pk, columns, primary, older, gcm_keys, apply,
     return seen, ok, fixable, unreadable, stale_index, written
 
 
+def process_heatwave_bots(primary, older, gcm_keys, apply):
+    """Rekey the bots table in HeatWave, where it lives now.
+
+    Same contract as process_table(): scan every encrypted column, rewrite the
+    values that are not under the primary key (or are in the stale format),
+    never touch a value no available key can read. Returns None when HeatWave
+    is unreachable — the caller must fail the run, because an unscanned store
+    reporting clean is exactly how --retire-old drops a still-needed key.
+    """
+    try:
+        import reviews_db
+    except Exception as exc:
+        print(f"[rekey] could not import reviews_db: {exc}")
+        return None
+    conn = reviews_db._conn()
+    if conn is None:
+        print("[rekey] HeatWave is not configured or not reachable — the bots "
+              "table cannot be scanned")
+        return None
+    columns = HEATWAVE_BOTS_COLUMNS
+    try:
+        try:
+            cur = conn.cursor()
+            cur.execute("SHOW COLUMNS FROM bots")
+            present = {str(row[0]).lower() for row in cur.fetchall()}
+        except Exception as exc:
+            print(f"[rekey] could not read the HeatWave bots schema: {exc}")
+            return None
+        columns = tuple(c for c in columns if c.lower() in present)
+        if not columns:
+            print("[rekey] HeatWave bots table has none of the expected "
+                  "encrypted columns")
+            return None
+        select_cols = ", ".join(columns)
+        cur.execute(f"SELECT uid, slot_index, {select_cols} FROM bots")
+        seen = ok = fixable = unreadable = written = 0
+        pending = 0
+        while True:
+            rows = cur.fetchmany(BATCH_ROWS)
+            if not rows:
+                break
+            for row in rows:
+                seen += 1
+                uid, slot = row[0], row[1]
+                sets = {}
+                for i, col in enumerate(columns, start=2):
+                    val = row[i]
+                    if not isinstance(val, str) or not val.startswith(ENCRYPTED_PREFIXES):
+                        continue
+                    recovered, from_primary = _decrypt_any(val, primary, older,
+                                                           gcm_keys)
+                    if recovered is None:
+                        unreadable += 1
+                        print(f"    ! bots.{col} [uid={uid} slot={slot}] no "
+                              f"key decrypts this value")
+                        continue
+                    if from_primary and not _stale_format(val):
+                        ok += 1
+                        continue
+                    fixable += 1
+                    sets[col] = _encrypt_primary(recovered, primary, gcm_keys[0])
+                if not sets or not apply:
+                    continue
+                params = list(sets.values()) + [uid, slot]
+                assignments = ", ".join(f"{c}=%s" for c in sets.keys())
+                cur.execute(
+                    f"UPDATE bots SET {assignments} WHERE uid=%s AND slot_index=%s",
+                    params)
+                written += 1
+                pending += 1
+            if apply and pending:
+                conn.commit()
+                pending = 0
+        if apply and pending:
+            conn.commit()
+        return {"seen": seen, "ok": ok, "fixable": fixable,
+                "unreadable": unreadable, "stale_index": 0, "written": written}
+    except Exception as exc:
+        print(f"[rekey] HeatWave bots scan failed: {exc}")
+        return None
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+
 def _self_check():
     """Static consistency between the two tables above.
 
@@ -616,6 +703,26 @@ def main():
                         + [("ciphertext", t, c) for t, c in _unclassified_enc_columns(cur)])
     finally:
         conn.close()
+
+    # The bots table's ciphertext lives in HeatWave now; it gets the same
+    # walk, and a store this run cannot scan fails the whole rekey.
+    hw = process_heatwave_bots(primary, older, gcm_keys, args.apply)
+    if hw is None:
+        print("[rekey] the bots table lives in HeatWave and could not be "
+              "scanned, so this run cannot vouch for every ciphertext. "
+              "Restore the HeatWave connection (or the key that wrote the "
+              "rows) and re-run before retiring anything.")
+        return 1
+    for key in totals:
+        totals[key] += hw[key]
+    note = ""
+    if hw["written"]:
+        note = "  -> rewritten"
+    elif hw["fixable"]:
+        note = "  -> run with --apply"
+    print(f"  {'bots (heatwave)':15s} rows={hw['seen']:<6d} ok={hw['ok']:<5d} "
+          f"rewrite={hw['fixable']:<5d} stale_idx={hw['stale_index']:<5d} "
+          f"unreadable={hw['unreadable']}{note}")
 
     print(f"\n[rekey] readable={totals['ok']}  rewrite={totals['fixable']}  "
           f"stale_index={totals['stale_index']}  "

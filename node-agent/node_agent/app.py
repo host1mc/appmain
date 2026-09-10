@@ -403,8 +403,15 @@ def create_app(config=None, *, runtime=None):
 
         container = manager._container(server_id)
         since = request.args.get("since", type=float)
-        tail = request.args.get("tail", 200, type=int)
-        tail = max(1, min(tail, 1000))
+        # tail=0 is a live-only follow (Clear view). Do not coerce it to 1 or
+        # Docker will replay at least one historical line into an empty console.
+        if "tail" in request.args:
+            tail = request.args.get("tail", type=int)
+            if tail is None:
+                tail = 200
+        else:
+            tail = 200
+        tail = max(0, min(tail, 1000))
         def generate():
             try:
                 for chunk in manager.runtime.logs_follow(container, since=since, tail=tail):

@@ -522,12 +522,39 @@ def api_admin_node_servers(node_id):
 @nodes_bp.route("/api/admin/nodes/<int:node_id>", methods=["DELETE"])
 @auth.require_admin
 def api_admin_delete_node(node_id):
+    snap_name = ""
+    snap_url = ""
+    snap_token_enc = ""
+    try:
+        for node in node_registry.list_nodes():
+            if node.get("id") == int(node_id):
+                snap_name = str(node.get("name") or "")
+                snap_url = str(node.get("url") or "")
+                break
+    except Exception:
+        pass
+    try:
+        creds = node_registry.get_node_credentials(node_id)
+        if creds:
+            snap_url = str(creds.get("url") or snap_url)
+            from crypto_util import encrypt
+            token = creds.get("token") or ""
+            if token:
+                snap_token_enc = encrypt(token)
+    except Exception:
+        pass
     try:
         removed = node_registry.delete_node(node_id)
     except Exception as exc:
         return _reject(str(exc))
     if not removed:
         return _err("Node not found", 404)
+    try:
+        reviews_db.stamp_pending_node_identity(node_id, snap_name, snap_url)
+        if snap_url or snap_token_enc or snap_name:
+            reviews_db.retire_node(node_id, snap_name, snap_url, snap_token_enc)
+    except Exception:
+        pass
     return jsonify({"ok": True})
 
 
@@ -578,14 +605,10 @@ def api_admin_delete_server(server_id):
 # ── pending container deletions (node offline at delete time) ──────────────
 
 def _pending_node_info(row):
-    """Resolve a tombstone's node label into registry name/url when possible.
-
-    The label is whatever the panel had at delete time — usually the registry
-    id, sometimes blank (an account-level delete has no node column). It is
-    display-only: the delete action re-reads live credentials by id, so a
-    stale or missing label never sends a delete to the wrong host.
-    """
-    info = {"node_name": None, "node_url": None}
+    """Name and URL for a tombstone: stored HeatWave values first, then registry."""
+    stored_name = str(row.get("node_name") or "").strip() or None
+    stored_ip = str(row.get("node_ip") or "").strip() or None
+    info = {"node_name": stored_name, "node_url": stored_ip}
     try:
         numeric = int(str(row.get("node_id") or "").strip())
     except (TypeError, ValueError):
@@ -593,12 +616,56 @@ def _pending_node_info(row):
     try:
         for node in node_registry.list_nodes():
             if node.get("id") == numeric:
-                info["node_name"] = node.get("name")
-                info["node_url"] = node.get("url")
-                break
+                info["node_name"] = node.get("name") or stored_name
+                info["node_url"] = node.get("url") or stored_ip
+                return info
     except Exception:
         pass
+    try:
+        retired = reviews_db.get_retired_node(numeric)
+    except Exception:
+        retired = None
+    if retired:
+        info["node_name"] = info["node_name"] or (retired.get("name") or None)
+        info["node_url"] = info["node_url"] or (retired.get("url") or None)
     return info
+
+
+def _credentials_for_pending(row):
+    """Live registry first; retired HeatWave row if the Oracle node is gone."""
+    try:
+        node_id = int(str(row.get("node_id") or "").strip())
+    except (TypeError, ValueError):
+        return None, "This entry carries no node id, so its node cannot be contacted."
+    try:
+        credentials = node_registry.get_node_credentials(node_id)
+    except Exception:
+        credentials = None
+    if credentials:
+        return credentials, None
+    retired = None
+    try:
+        retired = reviews_db.get_retired_node(node_id)
+    except Exception:
+        retired = None
+    url = (retired or {}).get("url") or str(row.get("node_ip") or "").strip()
+    token = ""
+    if retired and retired.get("token_enc"):
+        try:
+            from crypto_util import decrypt_strict, looks_encrypted
+            enc = retired["token_enc"]
+            token = decrypt_strict(enc) if looks_encrypted(enc) else enc
+        except Exception:
+            token = ""
+    if url and token:
+        return {"url": url, "token": token}, None
+    if url and not token:
+        return None, (
+            "The node was removed from the registry and no agent token was "
+            "kept. Re-register the node or clear this entry after deleting "
+            "the container by hand."
+        )
+    return None, "The node for this entry is not registered any more"
 
 
 @nodes_bp.route("/api/admin/pending-deletions", methods=["GET"])
@@ -644,19 +711,14 @@ def api_admin_pending_delete_now(server_id):
     if row is None:
         return _err("That container is not in the pending-deletion queue", 404)
 
+    credentials, cred_err = _credentials_for_pending(row)
+    if not credentials:
+        return _err(cred_err or "The node for this entry is not registered any more", 404)
+
     try:
         node_id = int(str(row.get("node_id") or "").strip())
     except (TypeError, ValueError):
-        return _err(
-            "This entry carries no node id, so its node cannot be contacted. "
-            "Remove the entry once the container is gone.", 400)
-
-    try:
-        credentials = node_registry.get_node_credentials(node_id)
-    except Exception:
-        credentials = None
-    if not credentials:
-        return _err("The node for this entry is not registered any more", 404)
+        node_id = 0
 
     purge = "true" if row.get("purge") else "false"
     payload, problem = _agent_delete(
@@ -666,6 +728,7 @@ def api_admin_pending_delete_now(server_id):
             problem.get("message", "The node agent could not delete the container."),
             problem.get("status", 502))
 
+    # Only drop HeatWave after the agent confirmed delete or already-gone.
     removed = reviews_db.clear_container_deletions([server_id])
     result = {"ok": True, "server_id": server_id, "cleared": bool(removed)}
     if payload and payload.get("already_gone"):

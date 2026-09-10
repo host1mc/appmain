@@ -59,7 +59,7 @@
                 </div>
               </td>
               <td class="num">
-                <a class="btn sm" href="/table/{{ t.name }}">Open</a>
+                <a class="btn sm" href="/table/{{ t.name }}" data-peek="/api/table/{{ t.name|urlencode }}" data-peek-name="{{ t.name }}">Open</a>
                 <a class="btn sm ghost" href="/table/{{ t.name }}/export.csv">CSV</a>
                 <button class="btn sm danger ghost" type="button" data-post="/table/{{ t.name|urlencode }}/drop" data-confirm="Drop table {{ t.name }}? This cannot be undone." title="Drop table">
                   <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2m3 0v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/></svg>

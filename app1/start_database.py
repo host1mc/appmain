@@ -36,11 +36,10 @@ _TASKS = (
     ("used OTPs", "cleanup_used_otps"),
     ("trial bots", "expire_trial_bots"),
     ("inactivity policy", "inactivity_sweep"),
+    ("expired ban appeals", "purge_expired_ban_appeals"),
     ("fingerprint history", "cleanup_fingerprint_history"),
     ("reviewed device events", "cleanup_reviewed_device_events"),
-    ("panel activity", "cleanup_panel_activity"),
-    ("old backups", "cleanup_old_backups"),
-    ("orphaned panel data", "cleanup_orphaned_panel_data"),
+    ("orphaned server rows", "cleanup_orphaned_panel_data"),
 )
 
 

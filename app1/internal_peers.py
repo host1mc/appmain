@@ -114,20 +114,27 @@ def _warn_open_once() -> None:
     else:
         reason = f"{ENV_VAR} is not set"
     _debug_print(
-        f"[peers] allowing internal requests from every source address: {reason}. "
-        f"Anything that can reach this port with a valid internal token is accepted. "
-        f"Set {ENV_VAR} to our own tiers' addresses to restrict it.",
+        f"[peers] {ENV_VAR} is not pinning callers ({reason}). "
+        f"Internal requests are accepted only from private, loopback or "
+        f"link-local peers until {ENV_VAR} lists the fleet explicitly.",
         file=sys.stderr, flush=True,
     )
 
 
 def peer_allowed(environ) -> bool:
     allowed = networks()
-    if not allowed:
-        _warn_open_once()
-        return True
     peer = socket_peer(environ)
     address = _address(peer)
+    if not allowed:
+        # Unconfigured allowlist must not mean "the whole internet". Backend
+        # is supposed to bind loopback/VCN; only those peers may present the
+        # internal token until INTERNAL_PEERS is set.
+        _warn_open_once()
+        if address is None:
+            return False
+        return bool(
+            address.is_private or address.is_loopback or address.is_link_local
+        )
     if address is None:
         _warn_refused_once(peer or "<no address>")
         return False
