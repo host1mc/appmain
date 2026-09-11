@@ -35,7 +35,6 @@
 
     <nav class="side-nav">
       <div class="nav-label">Observe</div>
-      <a href="/" class="{{ 'active' if request.path == '/' else '' }}"><span class="ic">⌂</span>Overview</a>
       <a href="/analytics" class="{{ 'active' if request.path.startswith('/analytics') else '' }}"><span class="ic">◈</span>Analytics</a>
       <div class="nav-label">Catalog</div>
       <a href="/tables" class="{{ 'active' if request.path.startswith('/table') else '' }}"><span class="ic">▤</span>Sensors / tables</a>
@@ -53,7 +52,7 @@
   <main class="main">
     <header class="topbar">
       <div>
-        <h1>{% block h1 %}Overview{% endblock %}</h1>
+        <h1>{% block h1 %}Analytics{% endblock %}</h1>
         <div class="crumb">{% block crumb %}fleet / live{% endblock %}</div>
       </div>
       <div class="chips">

@@ -63,6 +63,33 @@
     };
     const statusUrl = new URL(form.action, window.location.href);
     statusUrl.pathname = statusUrl.pathname.replace(/\/servers\/?$/, '/api/servers/status');
+    // Plain-language help per status for error replies that carry no usable
+    // body (a proxy 502 page, an empty response). Anything the server actually
+    // says — JSON ``error`` or short text — is shown instead of these.
+    const statusHelp = {
+      400: 'The request was invalid — check the form and try again.',
+      401: 'Your session has expired — sign in again, then retry.',
+      403: 'This action is not allowed right now.',
+      409: 'Something changed underneath — reload and try again.',
+      413: 'The upload is too large — upload files one at a time.',
+      429: 'Too many requests — wait a moment and try again.',
+      500: 'The panel hit an internal error — try again in a bit.',
+      502: 'Hosting node is offline right now — your data is safe. Try again in a bit.',
+      503: 'No container space or node busy right now — try again in a bit.',
+    };
+    const readServerMessage = async (response) => {
+      try {
+        const text = await response.text();
+        if (!text || text.length > 500) return null;
+        if (/<\s*!?doctype|<\s*html/i.test(text)) return null;
+        try {
+          const data = JSON.parse(text);
+          if (data && typeof data.error === 'string' && data.error.trim()) return data.error.trim();
+        } catch (_) { /* not JSON — treat the text itself as the message */ }
+        const clean = text.trim();
+        return clean || null;
+      } catch (_) { return null; }
+    };
     const poll = async (serverId, serverUrl) => {
       const again = (delay) => { timer = setTimeout(() => poll(serverId, serverUrl), delay); };
       try {
@@ -137,7 +164,10 @@
         const serverUrl = response.url;
         const match = serverUrl.match(/\/servers\/([^/?#]+)\/?(?:[?#]|$)/);
         if (!response.ok) {
-          setState('error', 'Server could not be created', 'Server returned HTTP error ' + response.status, 'Please try again.');
+          const serverMsg = await readServerMessage(response);
+          setState('error', 'Server could not be created',
+            serverMsg || ('Server returned HTTP error ' + response.status + ' — ' + (statusHelp[response.status] || 'Please try again.')),
+            'Nothing was created — safe to try again.');
           return;
         }
         if (!match) {

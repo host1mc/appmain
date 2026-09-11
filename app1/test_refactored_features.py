@@ -134,8 +134,6 @@ def test_atp_user_schema_and_encryption():
             unban_reason VARCHAR(1000),
             embed_slots INTEGER DEFAULT 1,
             container_slots INTEGER DEFAULT 1,
-            discord_bot_token TEXT,
-            webhook_token TEXT,
             fingerprint_ip TEXT
         )
     """)
@@ -193,11 +191,6 @@ def test_atp_user_schema_and_encryption():
     assert user is not None, "get_user returned None"
     assert user["id"] == user["user_id"], f"id ({user['id']}) != user_id ({user['user_id']})"
 
-    # Test token update
-    bot_token = "bot_token_secret_123"
-    webhook = "https://discord.com/api/webhooks/123/xyz"
-    db.update_user_atp_tokens(user_id, discord_bot_token=bot_token, webhook_token=webhook)
-
     # Test fingerprint_ip update
     fp_ip = "hash_fp_123_192.168.1.1"
     db.update_user_atp_fingerprint_ip(user_id, fp_ip)
@@ -207,18 +200,14 @@ def test_atp_user_schema_and_encryption():
 
     # Retrieve user and verify decrypted values
     updated_user = db.get_user(user_id)
-    assert updated_user["discord_bot_token"] == bot_token, f"Decrypted bot_token mismatch: {updated_user.get('discord_bot_token')}"
-    assert updated_user["webhook_token"] == webhook, f"Decrypted webhook mismatch: {updated_user.get('webhook_token')}"
     assert updated_user["fingerprint_ip"] == fp_ip, f"Decrypted fingerprint_ip mismatch: {updated_user.get('fingerprint_ip')}"
     assert updated_user["embed_slots"] == 5
     assert updated_user["container_slots"] == 3
 
     # Check raw ciphertext in database
-    cur.execute("SELECT discord_bot_token, webhook_token, fingerprint_ip FROM users WHERE id = ?", (user_id,))
+    cur.execute("SELECT fingerprint_ip FROM users WHERE id = ?", (user_id,))
     row = cur.fetchone()
-    assert row[0] != bot_token, "bot_token is stored in plaintext!"
-    assert row[1] != webhook, "webhook_token is stored in plaintext!"
-    assert row[2] != fp_ip, "fingerprint_ip is stored in plaintext!"
+    assert row[0] != fp_ip, "fingerprint_ip is stored in plaintext!"
 
     # Clean up user
     try:
@@ -596,8 +585,8 @@ def test_engine_webhook_interval_scheduling():
     cur = sqlite_conn.cursor()
     cur.execute("""
         CREATE TABLE bots (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            user_id VARCHAR(36),
+            uid VARCHAR(255),
+            slot_index INTEGER,
             name VARCHAR(255),
             server_ip VARCHAR(255),
             server_port INTEGER DEFAULT 25565,
@@ -614,7 +603,8 @@ def test_engine_webhook_interval_scheduling():
             last_run VARCHAR(64),
             last_status VARCHAR(4000),
             last_error VARCHAR(4000),
-            updated_at VARCHAR(64)
+            updated_at VARCHAR(64),
+            PRIMARY KEY (uid, slot_index)
         )
     """)
     sqlite_conn.commit()
@@ -624,33 +614,34 @@ def test_engine_webhook_interval_scheduling():
     # Insert a test bot with webhook URL and update_interval = 30s
     webhook_url = "https://discord.com/api/webhooks/123456/test_token"
     cur.execute("""
-        INSERT INTO bots(user_id, server_ip, webhook_url, update_interval, running)
-        VALUES('u-test', 'play.example.com', ?, 30, 0)
+        INSERT INTO bots(uid, slot_index, server_ip, webhook_url, update_interval, running)
+        VALUES('u-test', 0, 'play.example.com', ?, 30, 0)
     """, (db.encrypt(webhook_url),))
     sqlite_conn.commit()
-    bot_id = cur.lastrowid
+    bot_uid = 'u-test'
+    bot_slot = 0
 
     # Test initial claim when last_run is NULL
-    ok_first_claim = db.claim_bot_tick(bot_id, 30)
+    ok_first_claim = db.claim_bot_tick(bot_uid, bot_slot, 30)
     assert ok_first_claim, "Initial claim_bot_tick failed for new bot"
 
     # Immediately subsequent claim_bot_tick should be refused (interval not elapsed)
-    ok_immediate_claim = db.claim_bot_tick(bot_id, 30)
+    ok_immediate_claim = db.claim_bot_tick(bot_uid, bot_slot, 30)
     assert not ok_immediate_claim, "claim_bot_tick should refuse immediate re-claim before interval"
 
     # Verify that when interval (30s) elapses, claim_bot_tick succeeds
     now_dt = db._shared_utcnow()
     past_dt = now_dt - timedelta(seconds=35)
-    cur.execute("UPDATE bots SET last_run=? WHERE id=?", (past_dt.isoformat(), bot_id))
+    cur.execute("UPDATE bots SET last_run=? WHERE uid=? AND slot_index=?", (past_dt.isoformat(), bot_uid, bot_slot))
     sqlite_conn.commit()
 
-    ok_elapsed_claim = db.claim_bot_tick(bot_id, 30)
+    ok_elapsed_claim = db.claim_bot_tick(bot_uid, bot_slot, 30)
     assert ok_elapsed_claim, "claim_bot_tick failed after interval elapsed"
 
     # Verify set_bot_running works and list_running_bots returns active bot
-    db.set_bot_running(bot_id, True)
+    db.set_bot_running(bot_uid, bot_slot, True)
     running_bots = db.list_running_bots()
-    assert any(b["id"] == bot_id for b in running_bots), "Bot was not returned in list_running_bots when running=1"
+    assert any(b["uid"] == bot_uid and b["slot_index"] == bot_slot for b in running_bots), "Bot was not returned in list_running_bots when running=1"
 
     sqlite_conn.close()
     print("  ✓ Engine Webhook & Recurring Interval Scheduling verified!")

@@ -9,7 +9,7 @@ reaches us too, so every request here:
 2. resolves it through the backend tier's internal ``GET /api/session/<sid>``
    (shared-bearer ``X-Internal-Token``), which returns the session dict verbatim,
 3. mirrors the identity into ``panel_users`` keyed by *the site's own user id*,
-   so ``panel_servers`` / ``panel_activity`` FK to a value the site already owns.
+   so ``panel_servers`` FK to a value the site already owns.
 
 The mirror is still a row that holds an identity, not a credential: its
 ``password_hash`` is the unusable ``external:oracle`` placeholder, and the main

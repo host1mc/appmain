@@ -59,8 +59,6 @@ _SERVER_STARTUP = "/api/panel-store/server/startup"
 _SERVER_NAME = "/api/panel-store/server/name"
 _SERVER_VERSION = "/api/panel-store/server/version"
 _SERVER_STATE = "/api/panel-store/server/state"
-_ACTIVITY_LOG = "/api/panel-store/activity/log"
-_ACTIVITY_LIST = "/api/panel-store/activity/list"
 
 
 def _value_error(exc):
@@ -319,12 +317,3 @@ class BackendStore:
             {"server_id": server_id, "user_id": user_id, "running": running},
         )
         return _changed(payload, _SERVER_STATE)
-
-    async def log_activity(self, user_id, action, server_id=None, detail=None):
-        # BackendStore proxies to the backend's activity endpoints; this stub
-        # mirrors the other stores since settings.activity_log gates the callers.
-        pass
-
-    async def list_activity(self, user_id, limit=200):
-        # Stub: activity logging is disabled by settings.activity_log in routes.py.
-        return []

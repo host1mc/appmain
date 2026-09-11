@@ -15,6 +15,21 @@ from starlette.responses import JSONResponse, PlainTextResponse
 from .auth import _is_static, client_ip
 
 
+def _fetch_wants_json(request) -> bool:
+    """Whether an error for this request must be JSON.
+
+    Mirrors ``__init__._wants_json``: ``/api/`` routes always do, and so does
+    any ``fetch()`` caller (q3.js posts the deploy form with
+    ``X-Requested-With: fetch`` to a non-API route).
+    """
+    try:
+        if "/api/" in request.url.path:
+            return True
+        return request.headers.get("x-requested-with", "").lower() == "fetch"
+    except Exception:
+        return False
+
+
 CSP = (
     "default-src 'self'; "
     "script-src 'self' https://challenges.cloudflare.com; "
@@ -139,7 +154,7 @@ class MaxBodySizeMiddleware(BaseHTTPMiddleware):
                 too_big = declared < 0 or declared > self.max_bytes
         if too_big:
             limit_mb = max(1, self.max_bytes // (1024 * 1024))
-            if "/api/" in request.url.path:
+            if _fetch_wants_json(request):
                 return JSONResponse(
                     {"ok": False, "error": f"upload exceeds the {limit_mb} MB panel limit — upload files one at a time"},
                     status_code=413,
@@ -209,7 +224,7 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
 
     def _refuse(self, request):
         retry_after = str(self.window_seconds)
-        if "/api/" in request.url.path:
+        if _fetch_wants_json(request):
             return JSONResponse(
                 {"ok": False, "error": "too many requests — slow down"},
                 status_code=429,

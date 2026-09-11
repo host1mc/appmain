@@ -41,10 +41,6 @@
         <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>
         <span class="nav-label">Deploy server</span>
       </a>
-      <a class="nav-link {% if request.endpoint == 'activity_page' %}active{% endif %}"{% if request.endpoint == 'activity_page' %} aria-current="page"{% endif %} href="{{ url_for('activity_page') }}">
-        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 20a8 8 0 1 0 0-16 8 8 0 0 0 0 16zM12 8v4l3 2"/></svg>
-        <span class="nav-label">Activity</span>
-      </a>
 
       <p class="nav-group-label">Account</p>
       <a class="nav-link {% if request.endpoint == 'account_page' %}active{% endif %}"{% if request.endpoint == 'account_page' %} aria-current="page"{% endif %} href="{{ url_for('account_page') }}">
@@ -55,7 +51,7 @@
 
     {# The sidebar's own slot, and the one promo that is on every page including the
        dashboard: it lives in a different region from the closing strip below, so the
-       two never stack. Last in the nav column, after all six links and before the
+       two never stack. Last in the nav column, after all five links and before the
        user chip, so a keyboard user reaches every real destination before this one.
        Same house_ads gate as the strip — the console switch kills both. #}
     {% if house_ads %}

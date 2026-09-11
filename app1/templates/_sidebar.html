@@ -35,10 +35,6 @@
       <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>
       <span class="nav-label">Deploy server</span>
     </a>
-    <a class="nav-link{% if not panel_ok %} is-down{% endif %}"{% if not panel_ok %} aria-disabled="true" tabindex="-1" title="Hosting panel is offline"{% else %} href="/panel/activity"{% endif %} data-no-mask>
-      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 20a8 8 0 1 0 0-16 8 8 0 0 0 0 16zM12 8v4l3 2"/></svg>
-      <span class="nav-label">Activity</span>
-    </a>
 
     <p class="nav-group-label">Account</p>
     <a class="nav-link{% if not panel_ok %} is-down{% endif %}"{% if not panel_ok %} aria-disabled="true" tabindex="-1" title="Hosting panel is offline"{% else %} href="/panel/account"{% endif %} data-no-mask>

@@ -375,12 +375,20 @@ def _ensure_schema(conn):
                 node_ip VARCHAR(255) NOT NULL DEFAULT '',
                 `purge` TINYINT NOT NULL DEFAULT 1,
                 requested_at VARCHAR(50) NOT NULL,
+                user_id VARCHAR(36) NOT NULL DEFAULT '',
+                username VARCHAR(255) NOT NULL DEFAULT '',
+                server_name VARCHAR(255) NOT NULL DEFAULT '',
+                reason VARCHAR(32) NOT NULL DEFAULT 'user_delete',
                 KEY pcd_node (node_id)
             ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
         """)
         for col, ddl in (
             ("node_ip", "ADD COLUMN node_ip VARCHAR(255) NOT NULL DEFAULT '' AFTER node_id"),
             ("node_name", "ADD COLUMN node_name VARCHAR(100) NOT NULL DEFAULT '' AFTER node_id"),
+            ("user_id", "ADD COLUMN user_id VARCHAR(36) NOT NULL DEFAULT '' AFTER requested_at"),
+            ("username", "ADD COLUMN username VARCHAR(255) NOT NULL DEFAULT '' AFTER user_id"),
+            ("server_name", "ADD COLUMN server_name VARCHAR(255) NOT NULL DEFAULT '' AFTER username"),
+            ("reason", "ADD COLUMN reason VARCHAR(32) NOT NULL DEFAULT 'user_delete' AFTER server_name"),
         ):
             try:
                 cur.execute(f"SHOW COLUMNS FROM pending_container_deletions LIKE '{col}'")
@@ -395,6 +403,47 @@ def _ensure_schema(conn):
                 url VARCHAR(255) NOT NULL DEFAULT '',
                 token_enc VARCHAR(2000) NOT NULL DEFAULT '',
                 retired_at VARCHAR(50) NOT NULL
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+        """)
+        # Discord status bots. Moved off the ATP: no PII, and one atomic tick
+        # lease per bot is the only correctness requirement, which the
+        # lexicographic last_run compare in claim_bot_tick keeps.
+        #
+        # Identity is (uid, slot_index) — no surrogate id. slot_index is the
+        # 0-based position in the owner's slot array, seeded contiguously and
+        # only top-trimmed, so the pair is stable and cannot be guessed across
+        # owners the way a global integer id could.
+        #
+        # The eight encrypted columns are LONGTEXT, not a sized VARCHAR, on
+        # purpose: MySQL's non-strict sql_mode SILENTLY truncates an over-long
+        # value, and a truncated Fernet token is unrecoverable. database.py
+        # hands these in already encrypted and this module stores them verbatim.
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS bots (
+                uid VARCHAR(10) NOT NULL,
+                slot_index INT NOT NULL,
+                name LONGTEXT,
+                server_ip LONGTEXT,
+                server_port INT NOT NULL DEFAULT 25565,
+                edition VARCHAR(20) NOT NULL DEFAULT 'java',
+                token_enc LONGTEXT,
+                message_id VARCHAR(100),
+                guild_id LONGTEXT,
+                channel_id LONGTEXT,
+                webhook_url LONGTEXT,
+                update_interval INT NOT NULL DEFAULT 60,
+                embed_json LONGTEXT,
+                ip_reply_json LONGTEXT,
+                running TINYINT NOT NULL DEFAULT 0,
+                use_token TINYINT NOT NULL DEFAULT 0,
+                use_webhook TINYINT NOT NULL DEFAULT 0,
+                last_run VARCHAR(50),
+                last_status LONGTEXT,
+                last_error VARCHAR(500),
+                created_at VARCHAR(50) NOT NULL,
+                updated_at VARCHAR(50),
+                PRIMARY KEY (uid, slot_index),
+                KEY bots_running (running)
             ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
         """)
         conn.commit()
@@ -744,12 +793,15 @@ def delete_review(review_id):
 
 # ── HeatWave Pending Container Deletions ─────────────────────────
 
-def enqueue_container_deletion(server_id, node_id="", node_ip="", node_name="", purge=True):
+def enqueue_container_deletion(server_id, node_id="", node_ip="", node_name="", purge=True,
+                               user_id="", username="", server_name="", reason="user_delete"):
     """Record a container whose node delete was not confirmed (node offline).
 
     ``node_ip`` / ``node_name`` are the registry values at delete time, kept so
     the admin panel can still name the host and reach it after the Oracle node
-    row is gone.
+    row is gone. ``user_id`` / ``username`` / ``server_name`` / ``reason`` are
+    the owner + context snapshot so the admin queue shows who owned it and why
+    it was queued (``user_delete`` | ``banned`` | ``retention`` | ``admin_delete``).
 
     Best-effort: a HeatWave outage must never block the delete, so this
     degrades to a no-op like every other function here. Idempotent on
@@ -762,14 +814,21 @@ def enqueue_container_deletion(server_id, node_id="", node_ip="", node_name="", 
         cur = conn.cursor()
         cur.execute(
             "INSERT INTO pending_container_deletions"
-            "(server_id, node_id, node_name, node_ip, `purge`, requested_at) "
-            "VALUES(%(s)s, %(n)s, %(nm)s, %(ip)s, %(p)s, %(now)s) "
+            "(server_id, node_id, node_name, node_ip, `purge`, requested_at, "
+            "user_id, username, server_name, reason) "
+            "VALUES(%(s)s, %(n)s, %(nm)s, %(ip)s, %(p)s, %(now)s, "
+            "%(u)s, %(un)s, %(sn)s, %(r)s) "
             "ON DUPLICATE KEY UPDATE node_id=%(n)s, node_name=%(nm)s, "
-            "node_ip=%(ip)s, `purge`=%(p)s, requested_at=%(now)s",
+            "node_ip=%(ip)s, `purge`=%(p)s, requested_at=%(now)s, "
+            "user_id=%(u)s, username=%(un)s, server_name=%(sn)s, reason=%(r)s",
             {
                 "s": str(server_id), "n": str(node_id or ""),
                 "nm": str(node_name or "")[:100],
                 "ip": str(node_ip or "")[:255], "p": 1 if purge else 0, "now": _now(),
+                "u": str(user_id or "")[:36],
+                "un": str(username or "")[:255],
+                "sn": str(server_name or "")[:255],
+                "r": str(reason or "user_delete")[:32] or "user_delete",
             },
         )
         conn.commit()
@@ -793,7 +852,8 @@ def list_container_deletions():
     try:
         cur = conn.cursor(dictionary=True)
         cur.execute(
-            "SELECT server_id, node_id, node_name, node_ip, `purge`, requested_at "
+            "SELECT server_id, node_id, node_name, node_ip, `purge`, requested_at, "
+            "user_id, username, server_name, reason "
             "FROM pending_container_deletions ORDER BY requested_at"
         )
         rows = cur.fetchall() or []
@@ -806,6 +866,10 @@ def list_container_deletions():
                 "node_ip": str(row.get("node_ip") or ""),
                 "purge": bool(row.get("purge")),
                 "requested_at": str(row.get("requested_at") or ""),
+                "user_id": str(row.get("user_id") or ""),
+                "username": str(row.get("username") or ""),
+                "server_name": str(row.get("server_name") or ""),
+                "reason": str(row.get("reason") or "user_delete"),
             })
         return out
     except Exception as ex:
@@ -994,38 +1058,304 @@ def set_app_config(key, value):
         _close_quietly(conn)
 
 
-def _bot_flag_key(bot_id, name):
-    return f"bot:{int(bot_id)}:{name}"
+# ── HeatWave Bots Store ──────────────────────────────────────────
+# database.py stays the only crypto owner and the only public bot API: it
+# encrypts every sensitive column before calling in and decrypts on the way
+# out, so this module imports no crypto and stores whatever bytes it is handed.
+# The trust boundary this file owns is _BOT_WRITABLE_COLUMNS — the only column
+# names allowed into a written statement. Values are always bound, never
+# interpolated; a name that fails the allow-list is a caller bug and raises.
+
+_BOT_WRITABLE_COLUMNS = frozenset({
+    "name", "server_ip", "server_port", "edition", "token_enc", "message_id",
+    "guild_id", "channel_id", "webhook_url", "update_interval", "embed_json",
+    "ip_reply_json", "running", "use_token", "use_webhook", "last_run",
+    "last_status", "last_error", "updated_at",
+})
 
 
-def get_bot_delivery(bot_id):
-    """The bot's delivery switches as {"use_token": 0|1, "use_webhook": 0|1}.
+def get_bot(uid, slot_index):
+    """One raw bot row (encrypted columns as stored) or None. Degrade-safe."""
+    conn = _conn()
+    if conn is None:
+        return None
+    try:
+        cur = conn.cursor(dictionary=True)
+        cur.execute("SELECT * FROM bots WHERE uid=%(u)s AND slot_index=%(s)s",
+                    {"u": str(uid), "s": int(slot_index)})
+        return cur.fetchone()
+    except Exception as ex:
+        _debug_print(f"[reviews_db] get_bot failed for {uid}/{slot_index}: {ex}")
+        return None
+    finally:
+        _close_quietly(conn)
 
-    Stored in app_config rather than the ATP's `bots` row: these are two
-    operator switches with no PII, and HeatWave being down must not stop a bot
-    from posting — an unreadable pair reads as (0, 0), which every caller treats
-    as "no explicit choice, keep the historical precedence".
+
+def get_user_bots(uid):
+    """A user's bot rows ordered by slot_index; [] on outage."""
+    conn = _conn()
+    if conn is None:
+        return []
+    try:
+        cur = conn.cursor(dictionary=True)
+        cur.execute("SELECT * FROM bots WHERE uid=%(u)s ORDER BY slot_index",
+                    {"u": str(uid)})
+        return list(cur.fetchall())
+    except Exception as ex:
+        _debug_print(f"[reviews_db] get_user_bots failed for {uid}: {ex}")
+        return []
+    finally:
+        _close_quietly(conn)
+
+
+def list_running_bots():
+    conn = _conn()
+    if conn is None:
+        return []
+    try:
+        cur = conn.cursor(dictionary=True)
+        cur.execute("SELECT * FROM bots WHERE running=1")
+        return list(cur.fetchall())
+    except Exception as ex:
+        _debug_print(f"[reviews_db] list_running_bots failed: {ex}")
+        return []
+    finally:
+        _close_quietly(conn)
+
+
+def list_all_bots():
+    conn = _conn()
+    if conn is None:
+        return []
+    try:
+        cur = conn.cursor(dictionary=True)
+        cur.execute("SELECT * FROM bots ORDER BY uid, slot_index")
+        return list(cur.fetchall())
+    except Exception as ex:
+        _debug_print(f"[reviews_db] list_all_bots failed: {ex}")
+        return []
+    finally:
+        _close_quietly(conn)
+
+
+def bot_slot_count(uid):
+    """How many slots this user already has; 0 on outage (ensure retries later)."""
+    conn = _conn()
+    if conn is None:
+        return 0
+    try:
+        cur = conn.cursor()
+        cur.execute("SELECT COUNT(*) FROM bots WHERE uid=%(u)s", {"u": str(uid)})
+        row = cur.fetchone()
+        return int(row[0]) if row else 0
+    except Exception as ex:
+        _debug_print(f"[reviews_db] bot_slot_count failed for {uid}: {ex}")
+        return 0
+    finally:
+        _close_quietly(conn)
+
+
+def bot_counts_by_user():
+    """{uid: (total, running)} for the user/admin lists; {} on outage."""
+    conn = _conn()
+    if conn is None:
+        return {}
+    try:
+        cur = conn.cursor()
+        cur.execute("SELECT uid, COUNT(*), SUM(CASE WHEN running=1 THEN 1 ELSE 0 END) "
+                    "FROM bots GROUP BY uid")
+        return {uid: (int(total or 0), int(running or 0))
+                for uid, total, running in cur.fetchall()}
+    except Exception as ex:
+        _debug_print(f"[reviews_db] bot_counts_by_user failed: {ex}")
+        return {}
+    finally:
+        _close_quietly(conn)
+
+
+def ensure_bot_slot(uid, slot_index, *, name=None, embed_json=None, created_at=None):
+    """Seed one slot if absent. name/embed_json arrive already encrypted.
+
+    INSERT IGNORE, so an existing slot or a concurrent seeder is a no-op and the
+    other columns fall to their schema defaults. Returns False only on outage.
     """
-    try:
-        bot_id = int(bot_id)
-    except (TypeError, ValueError):
-        return {"use_token": 0, "use_webhook": 0}
-    out = {}
-    for name in ("use_token", "use_webhook"):
-        raw = get_app_config(_bot_flag_key(bot_id, name), "0")
-        out[name] = 1 if str(raw).strip() == "1" else 0
-    return out
-
-
-def set_bot_delivery(bot_id, use_token, use_webhook):
-    """Store the two switches. True only when both writes land."""
-    try:
-        bot_id = int(bot_id)
-    except (TypeError, ValueError):
+    conn = _conn()
+    if conn is None:
         return False
-    ok_token = set_app_config(_bot_flag_key(bot_id, "use_token"), "1" if use_token else "0")
-    ok_hook = set_app_config(_bot_flag_key(bot_id, "use_webhook"), "1" if use_webhook else "0")
-    return bool(ok_token and ok_hook)
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            "INSERT IGNORE INTO bots(uid, slot_index, name, embed_json, created_at) "
+            "VALUES(%(u)s, %(s)s, %(n)s, %(e)s, %(c)s)",
+            {"u": str(uid), "s": int(slot_index), "n": name,
+             "e": embed_json, "c": created_at or _now()})
+        conn.commit()
+        return True
+    except Exception as ex:
+        _debug_print(f"[reviews_db] ensure_bot_slot failed for {uid}/{slot_index}: {ex}")
+        return False
+    finally:
+        _close_quietly(conn)
+
+
+def update_bot(uid, slot_index, fields):
+    """Write an allow-listed column set for one slot; returns rows changed (0 on outage).
+
+    Column names are checked against _BOT_WRITABLE_COLUMNS and the identifier
+    regex before reaching the SQL text; values are always bound. last_error is
+    clipped to its column width — every other value is written verbatim, because
+    a silently truncated ciphertext column is unreadable.
+    """
+    if not fields:
+        return 0
+    sets = []
+    params = {"u": str(uid), "s": int(slot_index)}
+    for col, val in fields.items():
+        if col not in _BOT_WRITABLE_COLUMNS or not _SQL_IDENTIFIER_RE.match(col):
+            raise ValueError(f"bots column not writable: {col!r}")
+        if col == "last_error" and val is not None:
+            val = str(val)[:500]
+        sets.append(f"{col}=%({col}_v)s")
+        params[f"{col}_v"] = val
+    conn = _conn()
+    if conn is None:
+        return 0
+    try:
+        cur = conn.cursor()
+        cur.execute(f"UPDATE bots SET {', '.join(sets)} "
+                    f"WHERE uid=%(u)s AND slot_index=%(s)s", params)
+        conn.commit()
+        return cur.rowcount
+    except Exception as ex:
+        _debug_print(f"[reviews_db] update_bot failed for {uid}/{slot_index}: {ex}")
+        return 0
+    finally:
+        _close_quietly(conn)
+
+
+def claim_bot_tick(uid, slot_index, now_iso, cutoff_iso):
+    """Atomically claim the tick for (uid, slot_index). FAIL-CLOSED.
+
+    Returns True only for the caller that won the lease. On a HeatWave outage
+    (_conn() is None) or any error it returns False, never True, so a tier that
+    cannot reach the store skips the tick rather than risk a double-post another
+    engine also believes it owns. now_iso/cutoff_iso are ISO-8601 strings from
+    database.py's shared Oracle clock; the compare is lexicographic, which is
+    why the lease clock stays store-independent (see database.py:claim_bot_tick).
+    """
+    conn = _conn()
+    if conn is None:
+        return False
+    try:
+        cur = conn.cursor()
+        cur.execute("UPDATE bots SET last_run=%(now)s "
+                    "WHERE uid=%(u)s AND slot_index=%(s)s "
+                    "AND (last_run IS NULL OR last_run <= %(cut)s)",
+                    {"now": now_iso, "u": str(uid), "s": int(slot_index),
+                     "cut": cutoff_iso})
+        conn.commit()
+        return cur.rowcount == 1
+    except Exception as ex:
+        _debug_print(f"[reviews_db] claim_bot_tick failed for {uid}/{slot_index}: {ex}")
+        return False
+    finally:
+        _close_quietly(conn)
+
+
+def delete_bot(uid, slot_index):
+    """Delete one slot. True on success, False on outage/error."""
+    conn = _conn()
+    if conn is None:
+        return False
+    try:
+        cur = conn.cursor()
+        cur.execute("DELETE FROM bots WHERE uid=%(u)s AND slot_index=%(s)s",
+                    {"u": str(uid), "s": int(slot_index)})
+        conn.commit()
+        return True
+    except Exception as ex:
+        _debug_print(f"[reviews_db] delete_bot failed for {uid}/{slot_index}: {ex}")
+        return False
+    finally:
+        _close_quietly(conn)
+
+
+# Bulk lifecycle helpers. Each returns the rows affected, or -1 on an outage or
+# error, so database.py can log the orphaned-encrypted-token hazard loudly
+# instead of silently under-erasing a deleted or banned account.
+
+def delete_bots_for_user(uid):
+    conn = _conn()
+    if conn is None:
+        return -1
+    try:
+        cur = conn.cursor()
+        cur.execute("DELETE FROM bots WHERE uid=%(u)s", {"u": str(uid)})
+        conn.commit()
+        return cur.rowcount
+    except Exception as ex:
+        _debug_print(f"[reviews_db] delete_bots_for_user failed for {uid}: {ex}")
+        return -1
+    finally:
+        _close_quietly(conn)
+
+
+def trim_bot_slots(uid, keep):
+    """Delete slots at or above `keep` (all of them when keep<=0)."""
+    conn = _conn()
+    if conn is None:
+        return -1
+    try:
+        cur = conn.cursor()
+        if int(keep) <= 0:
+            cur.execute("DELETE FROM bots WHERE uid=%(u)s", {"u": str(uid)})
+        else:
+            cur.execute("DELETE FROM bots WHERE uid=%(u)s AND slot_index >= %(k)s",
+                        {"u": str(uid), "k": int(keep)})
+        conn.commit()
+        return cur.rowcount
+    except Exception as ex:
+        _debug_print(f"[reviews_db] trim_bot_slots failed for {uid}: {ex}")
+        return -1
+    finally:
+        _close_quietly(conn)
+
+
+def stop_bots_for_user(uid, reason):
+    conn = _conn()
+    if conn is None:
+        return -1
+    try:
+        cur = conn.cursor()
+        cur.execute("UPDATE bots SET running=0, last_error=%(r)s "
+                    "WHERE uid=%(u)s AND running=1",
+                    {"r": (str(reason)[:500] if reason is not None else None),
+                     "u": str(uid)})
+        conn.commit()
+        return cur.rowcount
+    except Exception as ex:
+        _debug_print(f"[reviews_db] stop_bots_for_user failed for {uid}: {ex}")
+        return -1
+    finally:
+        _close_quietly(conn)
+
+
+def restart_stopped_bots_for_user(uid, match_error):
+    conn = _conn()
+    if conn is None:
+        return -1
+    try:
+        cur = conn.cursor()
+        cur.execute("UPDATE bots SET running=1, last_error=NULL "
+                    "WHERE uid=%(u)s AND running=0 AND last_error=%(m)s",
+                    {"u": str(uid), "m": str(match_error)[:500]})
+        conn.commit()
+        return cur.rowcount
+    except Exception as ex:
+        _debug_print(f"[reviews_db] restart_stopped_bots_for_user failed for {uid}: {ex}")
+        return -1
+    finally:
+        _close_quietly(conn)
 
 
 # Never read this flag from HeatWave on the hot path: every _debug_print used
@@ -1183,7 +1513,9 @@ def get_app_errors(limit=200, offset=0, only_flagged=False, category=None):
            "FROM app_errors")
     if where:
         sql += " WHERE " + " AND ".join(where)
-    sql += " ORDER BY created_at DESC LIMIT %(lim)s OFFSET %(off)s"
+    # Most-faced errors first: log_app_error dedups repeats into `occurrences`,
+    # so the error hitting hardest stays at the top instead of sinking by date.
+    sql += " ORDER BY occurrences DESC, created_at DESC LIMIT %(lim)s OFFSET %(off)s"
     try:
         cur = conn.cursor(dictionary=True)
         cur.execute(sql, params)

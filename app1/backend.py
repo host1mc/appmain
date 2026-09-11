@@ -50,6 +50,7 @@ import internal_peers
 import creds
 import error_codes as ec
 import turnstile
+import github_policy
 
 from urllib.parse import urlsplit as _urlsplit  # used by _load_cors_origins
 import urllib.request
@@ -997,12 +998,11 @@ def _owns(user_id):
     return g.get("current_user_id") == user_id
 
 
-def _own_bot(bot_id):
-    """Fetch a bot only if the session's user owns it, else None."""
-    bot = db.get_bot(bot_id)
-    if not bot or bot.get("uid") != g.current_user_id:
-        return None
-    return bot
+def _own_bot(slot_index):
+    """Fetch the session user's bot in this slot, else None. Owner-scoped by the
+    (uid, slot_index) key — uid always comes from the session, never the URL, so
+    a client cannot address another account's bot by guessing an id."""
+    return db.get_bot(g.current_user_id, slot_index)
 
 
 @app.route("/api/internal/probe", methods=["GET"])
@@ -1229,6 +1229,38 @@ def api_auth_register():
                               reason="This device is associated with a banned account.")
             return ec.err(ec.DEVICE_BLOCKED, dev_err, 400)
 
+    # Same verified email -> same account (linking mode B). A password signup
+    # with an address that already exists does not create a second row;
+    # proving the OTP in complete-registration signs into — and re-passwords —
+    # the existing account, whether it was created by OTP or by GitHub.
+    link_target = db.get_user_by_email(email)
+    if link_target is not None:
+        name_clash = db.get_user_by_username(username)
+        if name_clash and str(name_clash.get("uid")) != str(link_target.get("uid")):
+            return ec.err(ec.USERNAME_TAKEN, "Username already registered — use 'Log in' instead.", 400)
+        banned, ban_reason = db.is_user_banned(link_target["uid"])
+        if banned:
+            return ec.err(ec.BANNED, "BANNED", 403, banned=True, reason=ban_reason)
+        if not _db_truthy(link_target.get("is_active", 1)):
+            return ec.err(ec.ACCOUNT_DISABLED, "Account disabled", 401)
+        if fp:
+            db.log_device_event(
+                "repeat_registration", user_id=link_target["uid"], username=username,
+                fingerprint_hash=fp, device_info=fp_detail, ip_address=client_ip,
+                blocked=False,
+                details={"attempted_email": email, "outcome": "link_existing",
+                         "reason": dev_info.get("reason")},
+            )
+        try:
+            code = db.generate_otp(email)
+            db.send_otp_email(email, code)
+        except Exception as ex:
+            reviews_db.log_app_error("RegisterLinkOtpFailed", f"register link OTP failed for {email}: {ex}", module="backend", flagged=1)
+            _debug_print(f"[backend] register link OTP failed: {ex}", file=sys.stderr)
+            return ec.err(ec.OTP_SEND_FAILED, "Failed to send OTP. Please try again later.", 500)
+        return jsonify({"ok": True, "user_id": link_target["uid"], "email": email,
+                        "link_existing": True})
+
     ok, res = db.create_user(
         username=username,
         password=password,
@@ -1303,6 +1335,7 @@ def api_complete_registration():
     uid = _text_field(data, "user_id")
     email = _text_field(data, "email").lower()
     code = _text_field(data, "otp_code")
+    new_password = _raw_field(data, "new_password")
     fp, fp_anomaly = _clean_fingerprint(_text_field(data, "fingerprint"))
     fp_detail, fp_parsed, detail_anomaly = _clean_fp_detail(_text_field(data, "fingerprint_detail"))
     client_ip = _get_client_ip()
@@ -1336,6 +1369,25 @@ def api_complete_registration():
     if not db.verify_otp(email, code):
         return ec.err(ec.OTP_INVALID, "Invalid or expired OTP", 400)
 
+    # Linking mode B claim: the OTP just proved control of this email, so a
+    # freshly chosen password supplied with it takes effect on the same
+    # account — this is what lets a password signup adopt a GitHub-created
+    # address (and doubles as an email-OTP password reset). Sessions are
+    # dropped so no previous holder keeps access.
+    linked = False
+    if new_password:
+        if len(new_password) < 8:
+            return ec.err(ec.PASSWORD_TOO_SHORT, "Password must be at least 8 characters", 400)
+        if len(new_password) > PASSWORD_MAX_LEN:
+            return ec.err(ec.PASSWORD_TOO_LONG,
+                          f"Password must be at most {PASSWORD_MAX_LEN} characters", 400)
+        ok_pw, _ = db.admin_set_user_password(uid, new_password)
+        if not ok_pw:
+            return ec.err(ec.REGISTRATION_FAILED,
+                          "Registration failed. Please try again later.", 400)
+        db.delete_user_sessions(uid)
+        linked = True
+
     # Same observational flag as at signup, now that the account this payload
     # belongs to is known. It does not gate the binding below.
     _log_tamper_signals(_tamper_signals(fp_parsed, fp_anomaly, detail_anomaly),
@@ -1343,6 +1395,8 @@ def api_complete_registration():
                         ip_address=client_ip)
 
     db.verify_user_email(uid)
+    if linked:
+        user = db.get_user(uid) or user
     if fp:
         for alt in db.accounts_on_device(fp):
             if str(alt.get("uid")) == str(uid):
@@ -1356,7 +1410,15 @@ def api_complete_registration():
                 db.delete_user(uid)
                 return ec.err(ec.BANNED, "BANNED", 403, banned=True,
                               reason="This device is associated with a banned account.")
+        # Idempotent: same mail + same fp binds once only (refresh-if-changed);
+        # a changed fp for this mail demotes the old binding into history.
         db.bind_fingerprint(uid, fp, fp_detail, ip_address=client_ip)
+        # A different mail stacking a same-type account on this device/IP gets
+        # flagged to the admin through HeatWave (deduped per person).
+        try:
+            db.flag_registration_reuse(uid, fp, client_ip)
+        except Exception:
+            pass
 
     # Off the request path deliberately. By this line the OTP is consumed and
     # email_verified is committed, so the account is already active — but the
@@ -1372,7 +1434,7 @@ def api_complete_registration():
     ).start()
 
     user.pop("password", None)
-    return jsonify({"ok": True, "user": user})
+    return jsonify({"ok": True, "user": user, "linked": linked})
 
 
 @app.route("/api/auth/discard-registration", methods=["POST"])
@@ -1471,7 +1533,9 @@ def api_auth_login():
 # signup_github_enabled admin toggle and runs the same device/IP fingerprint
 # policy as password login and registration.
 
-GITHUB_MIN_ACCOUNT_AGE_DAYS = 90  # reject throwaway accounts made to dodge a ban
+# Tunables live in github_policy.py (edit that file, restart the backend).
+# Kept here under the old name so existing references keep working.
+GITHUB_MIN_ACCOUNT_AGE_DAYS = github_policy.MIN_ACCOUNT_AGE_DAYS
 _GITHUB_SCOPE = "read:user user:email"
 _GITHUB_MAX_RESPONSE_BYTES = 64 * 1024
 
@@ -1516,7 +1580,9 @@ def _github_http(url, token=None, form=None):
 
 
 def _github_pick_email(emails):
-    """The primary verified email, else any verified one, else None."""
+    """The primary verified email, else any verified one, else None.
+    github_policy.REQUIRE_PRIMARY_EMAIL narrows this to the primary address
+    only; the default accepts any address GitHub marks verified."""
     if not isinstance(emails, list):
         return None
     verified = [e for e in emails if isinstance(e, dict) and e.get("verified")
@@ -1524,21 +1590,25 @@ def _github_pick_email(emails):
     if not verified:
         return None
     primary = next((e for e in verified if e.get("primary")), None)
+    if github_policy.REQUIRE_PRIMARY_EMAIL:
+        return ((primary or {}).get("email") or "").strip().lower() or None
     return ((primary or verified[0]).get("email") or "").strip().lower() or None
 
 
 def _github_account_too_new(created_at):
-    """True when the GitHub account is younger than the minimum age — or when the
-    created_at is missing or unparseable (fail closed: a real account has one)."""
+    """True when the GitHub account is younger than github_policy's minimum
+    age. A missing/unparseable age follows FAIL_CLOSED_ON_MISSING_CREATED_AT
+    (reject by default: a real account always has one)."""
+    fail_closed = bool(github_policy.FAIL_CLOSED_ON_MISSING_CREATED_AT)
     if not created_at:
-        return True
+        return fail_closed
     try:
         created = datetime.strptime(created_at, "%Y-%m-%dT%H:%M:%SZ").replace(
             tzinfo=timezone.utc)
     except (TypeError, ValueError):
-        return True
+        return fail_closed
     return (datetime.now(timezone.utc) - created) < timedelta(
-        days=GITHUB_MIN_ACCOUNT_AGE_DAYS)
+        days=github_policy.MIN_ACCOUNT_AGE_DAYS)
 
 
 def _github_unique_username(base):
@@ -1634,15 +1704,24 @@ def api_auth_github():
     email = _github_pick_email(
         _github_http("https://api.github.com/user/emails", token=access_token))
     if not email:
+        # github_policy.REQUIRE_VERIFIED_EMAIL: without a GitHub-verified
+        # address there is nothing to identify the account by.
         return ec.err(ec.GITHUB_EMAIL_UNVERIFIED,
                       "Your GitHub account has no verified email. Verify one on GitHub and try again.", 400)
 
-    # 3. account-age gate — a fresh GitHub account is the cheap way around a ban
+    # 3. domain gate (github_policy.ALLOWED_EMAIL_DOMAINS) — GitHub addresses
+    # may only come from the same domains password registration accepts, so
+    # both methods always resolve to the same account for the same address.
+    if not github_policy.email_allowed(email):
+        return ec.err(ec.EMAIL_INVALID,
+                      f"Only {github_policy.allowed_domains_label()} emails allowed", 400)
+
+    # 4. account-age gate — a fresh GitHub account is the cheap way around a ban
     if _github_account_too_new(profile.get("created_at")):
         return ec.err(ec.GITHUB_ACCOUNT_TOO_NEW,
-                      "Your GitHub account must be at least 3 months old to sign in.", 403)
+                      f"Your GitHub account must be at least {github_policy.MIN_ACCOUNT_AGE_DAYS} days old to sign in.", 403)
 
-    # 4. persistent email block list (a ban that has followed the address)
+    # 5. persistent email block list (a ban that has followed the address)
     if db.is_email_banned(email):
         return ec.err(ec.BANNED, "BANNED", 403, banned=True,
                       reason="This account has been banned.")
@@ -1668,7 +1747,11 @@ def api_auth_github():
             db.admin_set_user_password(existing["uid"], secrets.token_urlsafe(32))
             db.delete_user_sessions(existing["uid"])
             db.verify_user_email(existing["uid"])
-            db.set_github_verified(existing["uid"])
+        # GitHub just proved control of this email, so the account is GitHub-
+        # verified however it was created — including a password account the
+        # owner now signs into with GitHub. Same verified email -> same
+        # account, usable from either login method.
+        db.set_github_verified(existing["uid"])
         dev_ok, dev_err = db.check_device_login(existing["uid"], fp, fp_detail, client_ip)
         if not dev_ok and dev_err == "BANNED" and db.get_auto_ban_enabled():
             return ec.err(ec.BANNED, "BANNED", 403, banned=True,
@@ -1677,7 +1760,7 @@ def api_auth_github():
         user.pop("password", None)
         return jsonify({"ok": True, "user": user})
 
-    # 5. New account. A new GitHub account is still a new account, so Terms must
+    # 6. New account. A new GitHub account is still a new account, so Terms must
     #    be accepted first — the register page collects the checkbox and forwards
     #    it as `agreed`.
     if not agreed:
@@ -1712,6 +1795,10 @@ def api_auth_github():
     db.set_github_verified(res)
     if fp:
         db.bind_fingerprint(res, fp, fp_detail, ip_address=client_ip)
+        try:
+            db.flag_registration_reuse(res, fp, client_ip)
+        except Exception:
+            pass
     if banned_device:
         db.ban_user(res, "Banned device (GitHub sign-up)")
         return ec.err(ec.BANNED, "BANNED", 403, banned=True,
@@ -1870,16 +1957,6 @@ def api_change_password(user_id):
     return jsonify({"ok": True, "message": msg})
 
 
-@app.route("/api/user/<user_id>/active", methods=["POST"])
-@api_user_required
-def api_mark_active(user_id):
-    """Record the account's last activity timestamp."""
-    if not _owns(user_id):
-        return ec.err(ec.NOT_AUTHORIZED, "Not authorized", 403)
-    db.mark_user_active(user_id)
-    return jsonify({"ok": True})
-
-
 @app.route("/api/user/<user_id>/renew", methods=["POST"])
 @api_user_required
 @limiter.limit("1 per day", key_func=lambda: str(g.get("current_user_id") or ""))
@@ -1899,10 +1976,10 @@ def api_renew(user_id):
 
 # ── Bot API ──
 
-@app.route("/api/bot/<int:bot_id>", methods=["GET"])
+@app.route("/api/bot/<int:slot_index>", methods=["GET"])
 @api_user_required
-def api_get_bot(bot_id):
-    bot = _own_bot(bot_id)
+def api_get_bot(slot_index):
+    bot = _own_bot(slot_index)
     if not bot:
         return ec.err(ec.BOT_NOT_FOUND, "Bot not found", 404)
     bot.pop("token", None)
@@ -2099,11 +2176,11 @@ def api_user_list_bots():
     return jsonify({"ok": True, "bots": bots})
 
 
-@app.route("/api/user/bot/<int:bot_id>/config", methods=["GET"])
+@app.route("/api/user/bot/<int:slot_index>/config", methods=["GET"])
 @api_user_required
-def api_get_bot_config(bot_id):
+def api_get_bot_config(slot_index):
     try:
-        bot = _own_bot(bot_id)
+        bot = _own_bot(slot_index)
         if not bot:
             return ec.err(ec.BOT_NOT_FOUND, "Bot not found", 404)
         # The webhook URL is a bearer credential, same as the token: the UI
@@ -2111,25 +2188,27 @@ def api_get_bot_config(bot_id):
         bot.pop("token", None)
         bot.pop("token_enc", None)
         bot.pop("webhook_url", None)
-        # Which credential the engine posts through. HeatWave being down reads as
-        # (0, 0), which the page renders as "no explicit choice".
-        bot["delivery"] = reviews_db.get_bot_delivery(bot_id)
+        # Which credential the engine posts through. The two switches ride on the
+        # bot row now, so no extra store round-trip; a missing column reads as 0,
+        # which the page renders as "no explicit choice".
+        bot["delivery"] = {"use_token": int(bot.get("use_token") or 0),
+                           "use_webhook": int(bot.get("use_webhook") or 0)}
         return jsonify({"ok": True, "bot": bot})
     except db.OraclePoolExhausted:
         raise
     except Exception as e:
-        reviews_db.log_app_error("GetBotConfigFailed", f"get_bot_config failed for bot {bot_id}: {e}", module="backend", flagged=1)
-        _debug_print(f"[backend] get_bot_config failed for bot {bot_id}: {e}", file=sys.stderr)
+        reviews_db.log_app_error("GetBotConfigFailed", f"get_bot_config failed for slot {slot_index}: {e}", module="backend", flagged=1)
+        _debug_print(f"[backend] get_bot_config failed for slot {slot_index}: {e}", file=sys.stderr)
         return ec.err(ec.INTERNAL_ERROR, "Could not load bot configuration", 500)
 
 
-@app.route("/api/user/bot/<int:bot_id>/config", methods=["POST"])
+@app.route("/api/user/bot/<int:slot_index>/config", methods=["POST"])
 @api_user_required
 @limiter.limit("30 per minute; 600 per hour",
                key_func=lambda: str(g.get("current_user_id") or ""))
-def api_save_bot_config(bot_id):
+def api_save_bot_config(slot_index):
     try:
-        if not _own_bot(bot_id):
+        if not _own_bot(slot_index):
             return ec.err(ec.BOT_NOT_FOUND, "Bot not found", 404)
         data = request.get_json(force=True)
         if not isinstance(data, dict):
@@ -2141,8 +2220,8 @@ def api_save_bot_config(bot_id):
         if ip_reply is not None:
             ip_reply = _clean_ip_reply(ip_reply)
         db.save_bot_config(
-            bot_id,
-            user_id=g.current_user_id,
+            g.current_user_id,
+            slot_index,
             name=data.get("name"),
             server_ip=data.get("server_ip"),
             server_port=data.get("server_port"),
@@ -2165,23 +2244,23 @@ def api_save_bot_config(bot_id):
         # let the registered error handlers render it.
         raise
     except Exception as e:
-        reviews_db.log_app_error("SaveBotConfigFailed", f"save_bot_config failed for bot {bot_id}: {e}", module="backend", flagged=1)
-        _debug_print(f"[backend] save_bot_config failed for bot {bot_id}: {e}", file=sys.stderr)
+        reviews_db.log_app_error("SaveBotConfigFailed", f"save_bot_config failed for slot {slot_index}: {e}", module="backend", flagged=1)
+        _debug_print(f"[backend] save_bot_config failed for slot {slot_index}: {e}", file=sys.stderr)
         return ec.err(ec.BOT_SAVE_FAILED, "Save failed. Please try again.", 500)
 
 
-@app.route("/api/user/bot/<int:bot_id>/delivery", methods=["POST"])
+@app.route("/api/user/bot/<int:slot_index>/delivery", methods=["POST"])
 @api_user_required
 @limiter.limit("30 per minute; 300 per hour",
                key_func=lambda: str(g.get("current_user_id") or ""))
-def api_set_bot_delivery(bot_id):
+def api_set_bot_delivery(slot_index):
     """Which stored credential the engine posts through: the bot token or the
     webhook URL. Exactly one may be on — "both" and "neither" are the same
     instruction to the engine (keep the historical webhook-wins precedence), so
     the pair is rejected here rather than silently resolved.
     """
     try:
-        bot = _own_bot(bot_id)
+        bot = _own_bot(slot_index)
         if not bot:
             return ec.err(ec.BOT_NOT_FOUND, "Bot not found", 404)
         data = _json_object()
@@ -2194,8 +2273,9 @@ def api_set_bot_delivery(bot_id):
         if mode == "token" and not bot.get("token_masked"):
             return ec.err(ec.BAD_REQUEST,
                           "Save a bot token before switching to bot-token mode.", 400)
-        saved = reviews_db.set_bot_delivery(
-            bot_id, use_token=(mode == "token"), use_webhook=(mode == "webhook"))
+        saved = db.set_bot_delivery(
+            g.current_user_id, slot_index,
+            use_token=(mode == "token"), use_webhook=(mode == "webhook"))
         if not saved:
             # HeatWave unconfigured or unreachable. Nothing is lost — the engine
             # falls back to webhook-wins — but the owner must not be told their
@@ -2208,8 +2288,8 @@ def api_set_bot_delivery(bot_id):
     except HTTPException:
         raise
     except Exception as e:
-        reviews_db.log_app_error("SetBotDeliveryFailed", f"set_bot_delivery failed for bot {bot_id}: {e}", module="backend", flagged=1)
-        _debug_print(f"[backend] set_bot_delivery failed for bot {bot_id}: {e}", file=sys.stderr)
+        reviews_db.log_app_error("SetBotDeliveryFailed", f"set_bot_delivery failed for slot {slot_index}: {e}", module="backend", flagged=1)
+        _debug_print(f"[backend] set_bot_delivery failed for slot {slot_index}: {e}", file=sys.stderr)
         return ec.err(ec.INTERNAL_ERROR, "Could not save the delivery choice", 500)
 
 
@@ -2233,42 +2313,42 @@ def api_preview():
     return jsonify(payload), code
 
 
-@app.route("/api/user/bot/<int:bot_id>/start", methods=["POST"])
+@app.route("/api/user/bot/<int:slot_index>/start", methods=["POST"])
 @api_user_required
-def api_user_start_bot(bot_id):
-    if not _own_bot(bot_id):
+def api_user_start_bot(slot_index):
+    if not _own_bot(slot_index):
         return ec.err(ec.BOT_NOT_FOUND, "Bot not found", 404)
     if db.is_trial_expired(g.current_user_id):
         return ec.err(ec.TRIAL_EXPIRED, "Trial expired — cannot start bot. Contact support.", 403)
-    payload, code = engine_client.start_bot(bot_id)
+    payload, code = engine_client.start_bot(g.current_user_id, slot_index)
     return jsonify(payload), code
 
 
-@app.route("/api/user/bot/<int:bot_id>/stop", methods=["POST"])
+@app.route("/api/user/bot/<int:slot_index>/stop", methods=["POST"])
 @api_user_required
-def api_user_stop_bot(bot_id):
-    if not _own_bot(bot_id):
+def api_user_stop_bot(slot_index):
+    if not _own_bot(slot_index):
         return ec.err(ec.BOT_NOT_FOUND, "Bot not found", 404)
-    payload, code = engine_client.stop_bot(bot_id)
+    payload, code = engine_client.stop_bot(g.current_user_id, slot_index)
     return jsonify(payload), code
 
 
-@app.route("/api/user/bot/<int:bot_id>/generate", methods=["POST"])
+@app.route("/api/user/bot/<int:slot_index>/generate", methods=["POST"])
 @api_user_required
 @limiter.limit("10 per minute")
-def api_user_generate(bot_id):
-    if not _own_bot(bot_id):
+def api_user_generate(slot_index):
+    if not _own_bot(slot_index):
         return ec.err(ec.BOT_NOT_FOUND, "Bot not found", 404)
-    payload, code = engine_client.generate(bot_id)
+    payload, code = engine_client.generate(g.current_user_id, slot_index)
     return jsonify(payload), code
 
 
-@app.route("/api/user/bot/<int:bot_id>/status", methods=["GET"])
+@app.route("/api/user/bot/<int:slot_index>/status", methods=["GET"])
 @api_user_required
 @limiter.limit("60 per minute")
-def api_user_bot_status(bot_id):
+def api_user_bot_status(slot_index):
     try:
-        bot = _own_bot(bot_id)
+        bot = _own_bot(slot_index)
         if not bot:
             return ec.err(ec.BOT_NOT_FOUND, "Bot not found", 404)
         return jsonify({
@@ -2280,18 +2360,18 @@ def api_user_bot_status(bot_id):
     except db.OraclePoolExhausted:
         raise
     except Exception as e:
-        reviews_db.log_app_error("BotStatusFailed", f"bot status failed for bot {bot_id}: {e}", module="backend", flagged=1)
-        _debug_print(f"[backend] bot status failed for bot {bot_id}: {e}", file=sys.stderr)
+        reviews_db.log_app_error("BotStatusFailed", f"bot status failed for slot {slot_index}: {e}", module="backend", flagged=1)
+        _debug_print(f"[backend] bot status failed for slot {slot_index}: {e}", file=sys.stderr)
         return ec.err(ec.INTERNAL_ERROR, "Could not load bot status", 500)
 
 
-@app.route("/api/user/bot/<int:bot_id>/discord/assets", methods=["GET"])
+@app.route("/api/user/bot/<int:slot_index>/discord/assets", methods=["GET"])
 @api_user_required
 @limiter.limit("10 per minute")
-def api_user_discord_assets(bot_id):
-    if not _own_bot(bot_id):
+def api_user_discord_assets(slot_index):
+    if not _own_bot(slot_index):
         return ec.err(ec.BOT_NOT_FOUND, "Bot not found", 404)
-    payload, code = engine_client.assets(bot_id)
+    payload, code = engine_client.assets(g.current_user_id, slot_index)
     return jsonify(payload), code
 
 
@@ -2561,35 +2641,6 @@ def api_panel_store_server_state():
         _db_truthy(data.get("running")),
     )
     return jsonify({"ok": True, "changed": bool(changed)})
-
-
-@app.route("/api/panel-store/activity/log", methods=["POST"])
-@api_internal_required
-@limiter.limit("20000 per minute")
-@_panel_store_errors
-def api_panel_store_activity_log():
-    data = _json_object()
-    panel_data.log_activity(
-        _panel_text_field(data, "user_id"),
-        _panel_text_field(data, "action"),
-        _panel_text_field(data, "server_id") or None,
-        _panel_text_field(data, "detail") or None,
-    )
-    return jsonify({"ok": True})
-
-
-@app.route("/api/panel-store/activity/list", methods=["POST"])
-@api_internal_required
-@limiter.limit("20000 per minute")
-@_panel_store_errors
-def api_panel_store_activity_list():
-    data = _json_object()
-    try:
-        limit = int(data.get("limit") or 200)
-    except (TypeError, ValueError):
-        limit = 200
-    activity = panel_data.list_activity(_panel_text_field(data, "user_id"), limit)
-    return jsonify({"ok": True, "activity": activity})
 
 
 def _panel_store_settings():

@@ -10,8 +10,8 @@ This module gives the panel the same three symbols from its own engine, pointed
 at the *same* Oracle database (same wallet, same ``.env``), so nothing about the
 live connection changes — only which file owns it. ``init_db`` here imports the
 panel's own :mod:`.oracle_models` and never the app's ``User``/``Item``/``Todo``,
-so a panel-only process creates ``panel_users`` / ``panel_servers`` /
-``panel_activity`` and nothing else.
+so a panel-only process creates ``panel_users`` / ``panel_servers`` and
+nothing else.
 
 The engine is built at import, exactly as the app's was, so importing this module
 requires ORACLE_USER / ORACLE_PASSWORD / ORACLE_DSN in the environment. That is
@@ -280,7 +280,7 @@ async def _rows(sql, **params):
 
 
 async def ensure_schema():
-    """Bring the panel's three tables up to what the models expect.
+    """Bring the panel's two tables up to what the models expect.
 
     Three things, all additive, all safe on every start:
 
@@ -357,8 +357,8 @@ async def init_db():
     panel's tables come into being: :func:`ensure_schema` runs on every start and
     creates a missing table itself, so this adds nothing on a normal boot.
 
-    Importing :mod:`.oracle_models` registers ``PanelUser`` / ``PanelServer`` /
-    ``PanelActivity`` on ``Base.metadata``; ``create_all`` is check-first, so a
+    Importing :mod:`.oracle_models` registers ``PanelUser`` / ``PanelServer``
+    on ``Base.metadata``; ``create_all`` is check-first, so a
     restart with them already present is a no-op.
     """
     if not _init_db_allowed():

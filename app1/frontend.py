@@ -1714,7 +1714,9 @@ _LOGIN_ERRORS = {
     ec.GITHUB_EMAIL_UNVERIFIED:
         "Your GitHub account has no verified email. Verify one on GitHub and try again.",
     ec.GITHUB_ACCOUNT_TOO_NEW:
-        "Your GitHub account must be at least 3 months old to sign in.",
+        "Your GitHub account is too new to sign in.",
+    ec.EMAIL_INVALID:
+        "Only @gmail.com or @outlook.com emails are allowed",
 }
 _LOGIN_ERROR_FALLBACK = "Invalid username or password"
 
@@ -1756,13 +1758,19 @@ def _discard_pending_registration():
 
 
     old_uid = session.get("pending_user_id")
+    link_existing = session.get("pending_link_existing")
     if not old_uid:
+        session.pop("pending_link_existing", None)
         return
     session.pop("pending_user_id", None)
-    _api("POST", "/api/auth/discard-registration", json_data={"user_id": old_uid})
+    # A link claim points at a real account, never at a fresh unverified row —
+    # abandoning it must not touch the account itself.
+    if not link_existing:
+        _api("POST", "/api/auth/discard-registration", json_data={"user_id": old_uid})
     session.pop("pending_email", None)
     session.pop("pending_fingerprint", None)
     session.pop("pending_fingerprint_detail", None)
+    session.pop("pending_link_existing", None)
 
 
 def _rotate_session():
@@ -1855,18 +1863,37 @@ def user_register():
             if len(fp_detail.encode("utf-8", "replace")) > FP_DETAIL_MAX_BYTES:
                 fp_detail = ""
             session["pending_fingerprint_detail"] = fp_detail
+            if resp.get("link_existing"):
+                session["pending_link_existing"] = "1"
+                flash("This email already has an account — enter the code we sent "
+                      "to sign in to the same account and set your new password.",
+                      "info")
+                return render_template("user_register.html", step="2", email=e,
+                                       link_existing=True)
+            session.pop("pending_link_existing", None)
             return render_template("user_register.html", step="2", email=e)
         elif step == "2":
             uid = session.get("pending_user_id")
             email = session.get("pending_email")
             code = (request.form.get("otp") or "").strip()
+            link_existing = session.get("pending_link_existing")
             if not uid or not email or not code:
                 flash("Session expired. Please register again.", "error")
                 return redirect(url_for("user_register"))
+            new_password = ""
+            if link_existing:
+                # Same-email claim: the code proves the address, the password
+                # re-entered here becomes the account password.
+                new_password = request.form.get("password", "") or ""
+                if len(new_password) < 8:
+                    flash("Pick a password of at least 8 characters.", "error")
+                    return render_template("user_register.html", step="2", email=email,
+                                           link_existing=True)
             resp = _api("POST", "/api/auth/complete-registration", json_data={
                 "user_id": uid,
                 "email": email,
                 "otp_code": code,
+                "new_password": new_password,
                 "fingerprint": session.get("pending_fingerprint") or "",
                 "fingerprint_detail": session.get("pending_fingerprint_detail") or "",
             }, read_timeout=BACKEND_EMAIL_READ_TIMEOUT)
@@ -1880,12 +1907,18 @@ def user_register():
                     session.pop("pending_email", None)
                     session.pop("pending_fingerprint", None)
                     session.pop("pending_fingerprint_detail", None)
+                    session.pop("pending_link_existing", None)
                     flash("We could not confirm that code in time. Your account may "
                           "already be active — try logging in, and register again "
                           "only if that fails.", "info")
                     return redirect(url_for("user_login"))
-                flash("Invalid or expired OTP. Try again or register again.", "error")
-                return render_template("user_register.html", step="2", email=email)
+                if resp.get("code") in (ec.PASSWORD_TOO_SHORT, ec.PASSWORD_TOO_LONG):
+                    flash(_safe_error(resp, _REGISTER_ERRORS,
+                                      _REGISTER_ERROR_FALLBACK), "error")
+                else:
+                    flash("Invalid or expired OTP. Try again or register again.", "error")
+                return render_template("user_register.html", step="2", email=email,
+                                       link_existing=bool(link_existing))
             user = resp.get("user") or {}
             registration_fp = session.get("pending_fingerprint") or ""
             session.clear()
@@ -2078,12 +2111,12 @@ def user_dashboard():
     return render_template("slots.html", user=user, bots=bots)
 
 
-@app.route("/user/bot/<int:bot_id>")
+@app.route("/user/bot/<int:slot_index>")
 @user_required
-def user_bot_editor(bot_id):
+def user_bot_editor(slot_index):
 
 
-    resp = _api("GET", f"/api/user/bot/{bot_id}/config")
+    resp = _api("GET", f"/api/user/bot/{slot_index}/config")
     if not resp.get("ok"):
         abort(404)
     user = _me()
@@ -2093,10 +2126,10 @@ def user_bot_editor(bot_id):
                            embed_templates=embed_tpl.all_templates())
 
 
-@app.route("/user/bot/<int:bot_id>/replies")
+@app.route("/user/bot/<int:slot_index>/replies")
 @user_required
-def user_bot_replies(bot_id):
-    resp = _api("GET", f"/api/user/bot/{bot_id}/config")
+def user_bot_replies(slot_index):
+    resp = _api("GET", f"/api/user/bot/{slot_index}/config")
     if not resp.get("ok"):
         abort(404)
     user = _me()

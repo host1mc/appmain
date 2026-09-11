@@ -41,8 +41,6 @@ from sqlalchemy import (
 
 from .database import Base
 from .store import (
-    ACTION_MAX_CHARS,
-    DETAIL_MAX_CHARS,
     IMAGE_MAX_CHARS,
     NAME_MAX_CHARS,
     RUNTIME_MAX_CHARS,
@@ -122,28 +120,3 @@ class PanelServer(Base):
     # "bot_token": <ciphertext>} — encrypted before storage, decrypted on read by
     # routes. NULL means "no delivery configured".
     delivery_config = Column(String(2048), nullable=True)
-
-
-class PanelActivity(Base):
-    __tablename__ = "panel_activity"
-
-    id = Column(Integer, Identity(always=False), primary_key=True)
-    user_id = Column(
-        String(36),
-        ForeignKey("panel_users.id", ondelete="CASCADE"),
-        nullable=False,
-    )
-    # Not a foreign key: the audit trail has to outlive the server it describes,
-    # so deleting a server must not cascade its history away.
-    server_id = Column(String(36), nullable=True)
-    action = Column(String(ACTION_MAX_CHARS), nullable=False)
-    # Inline VARCHAR2 rather than a CLOB. SQLite spelled this TEXT, but the
-    # activity page reads 200 rows at a time, so a LOB column would mean 200
-    # out-of-line reads per page view. Most writes are short (a name, a
-    # 100-character command slice); the joined upload list is the one that can
-    # run long, and store.py truncates on write so it cannot fail the insert.
-    detail = Column(String(DETAIL_MAX_CHARS), nullable=True)
-    created_at = Column(DateTime, nullable=False)
-
-
-Index("ix_panel_activity_user", PanelActivity.user_id, PanelActivity.created_at)

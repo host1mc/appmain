@@ -1,12 +1,12 @@
 """One async storage interface for the panel, with two backends.
 
 ``routes.py`` calls exactly one object — ``runtime.database`` — through 24 call
-sites. Both backends expose the *same* 20 coroutine methods returning the same
+sites. Both backends expose the *same* 18 coroutine methods returning the same
 plain dicts, so selecting a backend is a config change and the route layer never
 knows which one it got:
 
 * :class:`OracleStore` (``PANEL_STORE=oracle``, the default when Oracle is on)
-  keeps ``panel_users`` / ``panel_servers`` / ``panel_activity`` in the shared
+  keeps ``panel_users`` / ``panel_servers`` in the shared
   Oracle schema, reusing the app's existing async engine and connection pool.
   This is what makes the panel work across both load-balanced instances: a
   server created on instance A is listed by instance B.
@@ -27,12 +27,6 @@ from uuid import uuid4
 from starlette.concurrency import run_in_threadpool
 
 
-# Cap for the activity log's ``detail``. It lives here rather than in
-# oracle_models because both backends truncate to it, and importing that module
-# pulls in app.database — which needs the Oracle credentials the sqlite backend
-# deliberately does without. oracle_models imports it back for the column width.
-DETAIL_MAX_CHARS = 500
-
 # Written into a mirrored row's ``password_hash``, which is NOT NULL. It is not a
 # valid PBKDF2 string, so panel-local verify_password can never accept it —
 # mirrored users are authenticated by the main site and nothing else.
@@ -51,10 +45,9 @@ SERVER_LIST_MAX = 200
 # every first panel visit depends on.
 USERNAME_MAX_CHARS = 100
 
-# Width of the three id columns — panel_users.id, panel_servers.user_id and
-# panel_activity.user_id, all VARCHAR2(36). The id that reaches _user_key on
-# every request comes out of the main site's session dict, which this tier never
-# validated.
+# Width of the two id columns — panel_users.id and panel_servers.user_id, both
+# VARCHAR2(36). The id that reaches _user_key on every request comes out of the
+# main site's session dict, which this tier never validated.
 USER_ID_MAX_CHARS = 36
 
 # Width of panel_servers.image. Unlike name / runtime / version this one is never
@@ -62,8 +55,8 @@ USER_ID_MAX_CHARS = 36
 # container it just built.
 IMAGE_MAX_CHARS = 255
 
-# Widths of the four panel_servers columns a route hands over as submitted text,
-# and of panel_activity.action. Each of those routes does bound its field — but
+# Widths of the four panel_servers columns a route hands over as submitted text.
+# Each of those routes does bound its field — but
 # with len(), which counts characters, while the migration's VARCHAR2(n) counts
 # bytes (see _clip_text). So the route ceilings are not the column ceilings:
 # MAX_STARTUP_CHARS is 500 against 500 bytes, which one non-ASCII character in a
@@ -76,7 +69,6 @@ NAME_MAX_CHARS = 255
 RUNTIME_MAX_CHARS = 32
 VERSION_MAX_CHARS = 32
 STARTUP_MAX_CHARS = 500
-ACTION_MAX_CHARS = 64
 
 
 def _clip_text(value, max_chars):
@@ -115,17 +107,6 @@ def _user_key(user_id) -> str:
         return ""
     key = str(user_id).strip()
     return key if len(key) <= USER_ID_MAX_CHARS else ""
-
-
-def _truncate_detail(detail):
-    """Normalise an activity detail: empty becomes NULL, long becomes clipped.
-
-    Activity is written on the success path of a real action, so an over-long
-    detail must never be the thing that fails the user's request.
-    """
-    if not detail:
-        return None
-    return _clip_text(detail, DETAIL_MAX_CHARS)
 
 
 def _utc_now() -> datetime:
@@ -262,14 +243,6 @@ class SqliteStore:
             user_id,
             json.dumps(delivery_config) if delivery_config else None,
         )
-
-    async def log_activity(self, user_id, action, server_id=None, detail=None):
-        # Stub: activity logging is disabled by settings.activity_log in routes.py.
-        pass
-
-    async def list_activity(self, user_id, limit=200):
-        # Stub: activity logging is disabled by settings.activity_log in routes.py.
-        return []
 
 
 class OracleStore:
@@ -415,7 +388,7 @@ class OracleStore:
 
         This is the single sign-in's landing point: ``user_id`` is the main site's
         own user id and becomes ``panel_users.id`` verbatim, so ``panel_servers``
-        and ``panel_activity`` FK to a value the site already owns. Keying on the
+        FK to a value the site already owns. Keying on the
         id rather than the username matters — the site stores usernames encrypted,
         so the display name in a session is not a stable key to upsert on.
         """
@@ -760,46 +733,6 @@ class OracleStore:
             user_id,
             {"delivery_config": json.dumps(delivery_config) if delivery_config else None},
         )
-
-    # -- activity ----------------------------------------------------------
-
-    async def log_activity(self, user_id, action, server_id=None, detail=None):
-        # Stub: activity logging is disabled by settings.activity_log in routes.py.
-        pass
-
-    async def list_activity(self, user_id, limit=200):
-        # Stub: activity logging is disabled by settings.activity_log in routes.py.
-        return []
-
-    async def _activity_rows(self, user_key, limit):
-        from sqlalchemy import select
-
-        from .oracle_models import PanelActivity, PanelUser
-
-        limit = max(1, min(int(limit), 500))
-        query = (
-            select(PanelActivity, PanelUser.username)
-            .join(PanelUser, PanelUser.id == PanelActivity.user_id)
-            .order_by(PanelActivity.id.desc())
-            .limit(limit)
-        )
-        if user_key is None:
-            raise ValueError("an activity read requires an owner")
-        query = query.where(PanelActivity.user_id == user_key)
-        async with self._sessions()() as db:
-            result = await db.execute(query)
-            return [
-                {
-                    "id": int(row.id),
-                    "user_id": row.user_id,
-                    "server_id": row.server_id,
-                    "action": row.action,
-                    "detail": row.detail or "",
-                    "created_at": _iso(row.created_at),
-                    "username": username,
-                }
-                for row, username in result.all()
-            ]
 
 
 def build_store(config, *, database=None, session_factory=None):

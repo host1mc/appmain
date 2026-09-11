@@ -71,9 +71,6 @@ GCM_CONTEXT = ""
 # check below and upgraded by database._migrate_at_rest_encryption() instead.
 TARGETS = (
     ("settings", "key", ("value",)),
-    ("bots", "id", ("name", "server_ip", "token_enc", "guild_id",
-                    "channel_id", "embed_json", "ip_reply_json",
-                    "webhook_url")),
     ("fingerprints", "id", ("fingerprint_hash", "device_info_enc",
                             "ip_address")),
     ("device_events", "id", ("username", "fingerprint_enc",
@@ -81,18 +78,8 @@ TARGETS = (
     ("sessions", "id", ("data", "ip_address", "user_agent")),
     ("otp_codes", "id", ("email", "code")),
     ("users", "id", ("username", "display_name", "email", "banned_reason")),
-    # record_fingerprint_history() encrypts all three of these on every login
-    # (database.py:2088-2091). Leaving the table out did not merely skip it:
-    # --retire-old re-runs this scan to decide whether the old key is still
-    # needed, so an unscanned table reported clean and the key that could read
-    # it was then cleared, making the device-history audit trail permanently
-    # unrecoverable.
-    ("fingerprint_history", "id", ("fingerprint_hash", "device_info_enc",
-                                   "ip_address")),
-    # A hosted server's name, start command and source (database.py:3147-3148),
-    # plus every retained backup payload (database.py:3263).
+    # A hosted server's name, start command and source (database.py:3147-3148).
     ("hosting_servers", "id", ("name", "start_command", "code")),
-    ("hosting_backups", "id", ("payload",)),
 )
 
 # Keyed lookup-hash index columns, as (table, pk, ((ciphertext column, index
@@ -112,9 +99,6 @@ LOOKUP_INDEXES = (
                      ("username", "username_ci_lookup_hash", True),
                      ("email", "email_lookup_hash", False))),
     ("fingerprints", "id", (("ip_address", "ip_lookup_hash", False),)),
-    # database.py:2282 writes this on every login and database.py:2286 compares
-    # it to decide whether the device is already known.
-    ("fingerprint_history", "id", (("ip_address", "ip_lookup_hash", False),)),
     # database.py:1542; database.py:1537/1561 select pending codes by it.
     ("otp_codes", "id", (("email", "email_lookup_hash", False),)),
 )
@@ -126,7 +110,6 @@ LOOKUP_INDEXES = (
 # "nobody has classified this yet".
 UNKEYED_LOOKUP_COLUMNS = (
     ("fingerprints", "lookup_hash"),
-    ("fingerprint_history", "lookup_hash"),
     ("device_events", "lookup_hash"),
 )
 

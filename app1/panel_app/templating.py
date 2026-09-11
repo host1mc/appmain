@@ -100,7 +100,6 @@ _ENDPOINTS = {
     "server_page": "/servers/{server_id}",
     "delete_server": "/servers/{server_id}/delete",
     "api_status_map": "/api/servers/status",
-    "activity_page": "/activity",
     "account_page": "/account",
     "account_change_password": "/account/password",
     "api_power": "/api/servers/{server_id}/power",

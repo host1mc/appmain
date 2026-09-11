@@ -76,24 +76,26 @@ document.addEventListener("DOMContentLoaded", () => {
     });
   });
 
-  /* row detail viewer */
-  document.querySelectorAll("[data-row-json]").forEach((b) => {
-    b.addEventListener("click", async () => {
+  /* row detail viewer — clicking a table row opens a modal with all columns */
+  document.querySelectorAll("tbody[data-row-json]").forEach((tbody) => {
+    const baseUrl = tbody.dataset.rowJson;
+    tbody.addEventListener("click", (e) => {
+      const row = e.target.closest("tr");
+      if (!row || !row.dataset.rowId) return;
+      const jsonUrl = baseUrl.replace("__RID__", encodeURIComponent(row.dataset.rowId));
       openModal('<div class="spinner"></div>', "Row details");
-      try {
-        const res = await fetch(b.dataset.rowJson);
-        const j = await res.json();
-        if (j.error) { openModal(esc(j.error), "Row details"); return; }
-        let html = '<table class="tbl kv"><tbody>';
-        for (const [k, v] of Object.entries(j.row)) {
-          const disp = v.display === null ? '<span class="null">NULL</span>' : esc(v.display);
-          html += `<tr><th class="mono">${esc(k)}</th><td class="mono prewrap">${disp}</td></tr>`;
-        }
-        html += "</tbody></table>";
-        openModal(html, "Row details");
-      } catch (e) {
-        openModal(esc(String(e)), "Row details");
-      }
+      fetch(jsonUrl)
+        .then(res => res.json())
+        .then(j => {
+          if (j.error) { openModal('<div class="errbox">' + esc(j.error) + '</div>', "Row details"); return; }
+          let html = '<table class="tbl kv"><tbody>';
+          for (const [k, v] of Object.entries(j.row)) {
+            const disp = v.display === null ? '<span class="null">NULL</span>' : esc(String(v.display));
+            html += `<tr><th class="mono">${esc(k)}</th><td class="mono prewrap">${disp}</td></tr>`;
+          }
+          openModal(html + "</tbody></table>", "Row details");
+        })
+        .catch(err => openModal('<div class="errbox">' + esc(String(err)) + '</div>', "Row details"));
     });
   });
 
@@ -113,6 +115,11 @@ document.addEventListener("DOMContentLoaded", () => {
   }
 
   document.querySelectorAll("[data-peek]").forEach((el) => {
+    if (el.tagName !== "A" && el.hasAttribute("tabindex")) {
+      el.addEventListener("keydown", (e) => {
+        if (e.key === "Enter" || e.key === " ") { e.preventDefault(); el.click(); }
+      });
+    }
     el.addEventListener("click", async (e) => {
       e.preventDefault();
       const url = el.dataset.peek;

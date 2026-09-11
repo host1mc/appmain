@@ -605,17 +605,7 @@ svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width:
 .copy-button { margin-left: 6px; padding: 2px 8px; border: 1px solid var(--line); border-radius: 6px; background: var(--panel-2); color: var(--muted); font-size: 10px; font-weight: 700; cursor: pointer; }
 .copy-button:hover { color: inherit; border-color: var(--accent-2); }
 
-/* Activity log */
-.activity-list { padding: 6px 24px; }
-.activity-row { display: flex; align-items: center; gap: 14px; min-height: 58px; border-bottom: 1px solid var(--line-soft); }
-.activity-row:last-child { border-bottom: 0; }
-.activity-avatar, .server-row-wrap .avatar { display: grid; flex: 0 0 auto; place-items: center; width: 34px; height: 34px; border-radius: 50%; background: var(--panel-2); border: 1px solid var(--line); font-size: 12px; font-weight: 800; }
-.activity-main { display: grid; gap: 3px; min-width: 0; }
-.activity-main strong { font-size: 13px; }
-.activity-action { color: var(--muted); font-size: 12px; }
-.activity-main code { display: inline-block; width: max-content; padding: 1px 7px; border-radius: 6px; background: var(--panel-2); border: 1px solid var(--line); color: var(--accent-2); font-size: 11px; }
-.activity-detail { color: var(--muted-2); font-size: 12px; font-style: italic; }
-.activity-time { margin-left: auto; color: var(--muted-2); font-size: 11px; white-space: nowrap; }
+.server-row-wrap .avatar { display: grid; flex: 0 0 auto; place-items: center; width: 34px; height: 34px; border-radius: 50%; background: var(--panel-2); border: 1px solid var(--line); font-size: 12px; font-weight: 800; }
 .row-actions { display: flex; gap: 8px; justify-content: flex-end; }
 
 /* ---- account summary ----
@@ -846,8 +836,6 @@ svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width:
 @media (max-width: 540px) {
   .stat-cards { grid-template-columns: 1fr; }
   .search-input { width: 100%; }
-  .activity-row { align-items: flex-start; flex-wrap: wrap; padding: 12px 0; }
-  .activity-time { width: 100%; margin-left: 48px; }
 }
 .upload-progress[hidden] { display: none; }
 .upload-progress { display: grid; grid-template-columns: auto 1fr auto; align-items: center; gap: 12px; margin: 0 0 14px; padding: 12px 14px; border: 1px solid var(--line); border-radius: var(--radius); background: var(--panel-2); }

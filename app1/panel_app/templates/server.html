@@ -126,6 +126,7 @@
         </article>
         <article class="detail-card"><span>Memory limit</span><strong>{{ server.memory_mb }} MB</strong><p>Hard Docker memory limit.</p></article>
         <article class="detail-card"><span>CPU limit</span><strong>{{ server.cpu_percent }}%</strong><p>Share of one CPU core.</p></article>
+        <article class="detail-card"><span>Hosting node</span><strong>{{ node_name or '—' }}</strong><p>{% if node_name %}The host your container runs on. Containers never move between nodes.{% else %}Which host holds this container is currently unavailable.{% endif %}</p></article>
         {# The grid is two columns and holds seven cards, one of them .wide, so the
            cell beside "CPU limit" is empty. Last, and only in this tab: the console
            tab's grid is full, and the settings tab ends in .danger-zone, where a
@@ -141,6 +142,10 @@
     </section>
 
     <section class="tab-panel" data-panel="settings" role="tabpanel" id="panel-settings" aria-labelledby="tab-settings">
+      <article class="detail-card wide stacked-card">
+        <span>Hosting node</span>
+        <p style="margin:0">{% if node_name %}This container runs on <strong>{{ node_name }}</strong>. Containers never move between nodes.{% else %}Which host holds this container is currently unavailable.{% endif %}</p>
+      </article>
       <article class="detail-card wide stacked-card">
         <span>Server name</span>
         <div class="command-input"><input id="rename-input" maxlength="80" aria-label="Server name" value="{{ server.name }}"></div>

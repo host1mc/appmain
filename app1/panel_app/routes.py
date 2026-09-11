@@ -74,8 +74,7 @@ MAX_PATH_CHARS = 4096
 # node_agent/storage.py:write_text refuses a text write over 2 MiB of UTF-8, so
 # forwarding more than this only wastes the transfer.
 WRITE_MAX_CONTENT_BYTES = 2 * 1024 * 1024
-# node_agent/server_manager.py caps both of these at 500, and panel_activity's
-# detail column is 500 wide.
+# node_agent/server_manager.py caps both of these at 500.
 MAX_COMMAND_CHARS = 500
 MAX_STARTUP_CHARS = 500
 # panel_servers.name is VARCHAR2(255) but the node refuses anything over 80.
@@ -262,6 +261,69 @@ _POWER_DONE = {
     "restart": "restarted",
     "kill": "killed",
 }
+
+# User-facing container errors. Every node failure that reaches the browser goes
+# through _friendly_node_error so the visitor gets a plain-language cause plus
+# what to do next — never a raw URL, traceback, or Docker daemon line.
+_NODE_OFFLINE_MSG = (
+    "Hosting node is offline right now — your server and files are safe. "
+    "Try again in a bit. (You can still delete the server — that frees your slot.)"
+)
+_NO_SPACE_MSG = (
+    "No more container space right now — every hosting node is full. "
+    "Your slot is kept; try again later or contact support."
+)
+_NODE_BUSY_MSG = (
+    "Node is busy installing other servers — try again in about 30 seconds."
+)
+_NODE_FAILED_MSG = (
+    "The node could not complete that request — try again in a bit; "
+    "contact support if it keeps happening."
+)
+
+
+def _friendly_node_error(exc):
+    """Plain-language message for a node failure, plus the status to answer with.
+
+    Returns ``(message, status)``. Pass-through only for messages that are
+    already user-actionable (quota/disk limits, validation 4xx, busy 503);
+    everything technical (URLs, timeouts, 5xx Docker text) is replaced.
+    """
+    from .node_client import NodeClientError
+
+    status = getattr(exc, "status", 502) or 502
+    try:
+        status = int(status)
+    except (TypeError, ValueError):
+        status = 502
+    raw = str(exc) or ""
+    lowered = raw.lower()
+    if any(k in lowered for k in (
+        "unavailable", "unreachable", "did not answer", "timed out",
+        "timeout", "connection", "refused", "reset by peer", "offline",
+    )):
+        return _NODE_OFFLINE_MSG, 502
+    if status == 503 or "already running" in lowered and "dependenc" in lowered \
+            or "concurrent" in lowered and "install" in lowered:
+        return _NODE_BUSY_MSG, 503
+    if status == 429 or "rate limit" in lowered or "too many" in lowered:
+        return "Too many requests — slow down and try again in a moment.", 429
+    if status == 404 or "not found" in lowered and "node" in lowered \
+            or "no such container" in lowered or "already gone" in lowered:
+        return "Server not found on the node — it may already have been removed.", 404
+    if status == 409 or "already exists" in lowered:
+        return raw or "A server already exists with that id — try again.", 409
+    if any(k in lowered for k in (
+        "quota", "disk", "too large", "exceed", "no space", "out of memory",
+        "memory", "storage",
+    )):
+        return raw or _NODE_FAILED_MSG, status if 400 <= status <= 499 else 400
+    if status >= 500:
+        return _NODE_FAILED_MSG, 502
+    # Other 4xx already carry the node's own actionable text (bad path, bad
+    # command, still installing, bad runtime). Strip any leaked URL first.
+    cleaned = re.sub(r"https?://\S+", "[node]", raw).strip()
+    return cleaned or _NODE_FAILED_MSG, status
 
 
 def _effective_status(node_status, desired_state):
@@ -545,7 +607,7 @@ def build_routes(runtime, config):
         if settings.writes_allowed():
             return None
         text = message or settings.maintenance_message
-        if _is_form_post(request):
+        if _is_form_post(request) and not wants_json(request):
             templating.flash(request, text, "error")
             return redirect_to("dashboard")
         # 503 rather than 403: this is a temporary refusal by the operator, and
@@ -565,7 +627,7 @@ def build_routes(runtime, config):
         settings = await runtime.settings.load()
         if bool(settings.flags.get(flag, True)):
             return None
-        if _is_form_post(request):
+        if _is_form_post(request) and not wants_json(request):
             templating.flash(request, message, "error")
             return redirect_to("dashboard")
         return JSONResponse({"ok": False, "error": message}, status_code=403)
@@ -600,6 +662,15 @@ def build_routes(runtime, config):
     def bad_request(message, status_code=400):
         return JSONResponse({"ok": False, "error": message}, status_code=status_code)
 
+    def node_bad_request(exc):
+        """bad_request for a node failure: friendly text, preserved status."""
+        from .node_client import NodeClientError as _NCError
+        if isinstance(exc, _NCError):
+            msg, status = _friendly_node_error(exc)
+            return bad_request(msg, status)
+        _log.warning("node call failed (%s): %s", type(exc).__name__, exc)
+        return bad_request(_NODE_FAILED_MSG, 502)
+
     def throttled(bucket, message):
         retry_after = str(_THROTTLES[bucket][1])
         return JSONResponse(
@@ -607,26 +678,6 @@ def build_routes(runtime, config):
             status_code=429,
             headers={"Retry-After": retry_after},
         )
-
-    async def log_activity(user_id, action, server_id=None, detail=None):
-        # Activity persistence is off by default: the store's activity table lives
-        # in the shared backend database, and every power toggle / upload / command
-        # would otherwise append a row to it for the life of the deployment. All
-        # call sites route through this helper, so the early return disables the
-        # whole audit trail in one place. The switch is the database-backed one
-        # (PANEL_ACTIVITY_ENABLED is only the fallback when the settings table
-        # cannot be read), so an operator can turn the trail on for both instances
-        # without a restart.
-        settings = await runtime.settings.load()
-        if not settings.activity_log:
-            return
-        try:
-            await db.log_activity(user_id, action, server_id=server_id, detail=detail)
-        except Exception as exc:
-            _log.warning(
-                "activity %s for server %s not recorded (%s)",
-                action, server_id, type(exc).__name__,
-            )
 
     def server_id_of(request):
         """The validated ``server_id`` path parameter.
@@ -754,19 +805,32 @@ def build_routes(runtime, config):
                 _log.warning("background create failed for %s: %s", server_id, exc)
                 try:
                     import reviews_db
+                    # One row per cause, not per server: the message carries no
+                    # server id so HeatWave dedups repeats into `occurrences`.
                     reviews_db.log_app_error(
                         "ContainerCreateFailed",
-                        f"Node container creation failed for server {server_id}: {err_msg}",
-                        stack_trace=traceback.format_exc(),
+                        f"Node container creation failed: {err_msg}",
+                        stack_trace=f"server_id={server_id}\n" + traceback.format_exc(),
                         module="panel_app.routes",
                         flagged=1,
                         error_category="system_error",
                     )
                 except Exception:
                     pass
+                from .node_client import NodeClientError as _NCError
+                if isinstance(exc, _NCError):
+                    friendly, _ = _friendly_node_error(exc)
+                elif "capacity" in err_msg.lower() or "full" in err_msg.lower():
+                    friendly = _NO_SPACE_MSG
+                else:
+                    friendly = (
+                        "Container creation failed on the node — "
+                        "check the runtime/version and try again. "
+                        "Contact support if it keeps happening."
+                    )
                 p_key = id_mask.public_server_key(server_id)
-                _bg_create_errors[server_id] = f"Node container creation failed: {err_msg}"
-                _bg_create_errors[p_key] = f"Node container creation failed: {err_msg}"
+                _bg_create_errors[server_id] = friendly
+                _bg_create_errors[p_key] = friendly
                 try:
                     await run_in_threadpool(lambda: server_node.delete_server(server_id, purge=True))
                 except Exception:
@@ -813,10 +877,6 @@ def build_routes(runtime, config):
                 )
             except Exception as config_exc:
                 _log.warning("failed to save .container_config.json for server %s: %s", server_id, config_exc)
-            try:
-                await log_activity(user_id, "server_created", server_id=server_id, detail=name)
-            except Exception:
-                _log.warning("failed to record activity for server %s", server_id)
         except Exception:
             _log.exception("unexpected error in background create for %s", server_id)
         finally:
@@ -913,7 +973,8 @@ def build_routes(runtime, config):
         try:
             return JSONResponse(await run_in_threadpool(call))
         except NodeClientError as exc:
-            return JSONResponse({"ok": False, "error": str(exc)}, status_code=exc.status)
+            msg, status = _friendly_node_error(exc)
+            return JSONResponse({"ok": False, "error": msg}, status_code=status)
         except ValueError as exc:
             return JSONResponse({"ok": False, "error": str(exc)}, status_code=400)
 
@@ -1172,7 +1233,6 @@ def build_routes(runtime, config):
             templating.flash(request, "Could not renew right now — please try again in a moment.", "error")
             return redirect_to("dashboard")
         if status == "renewed":
-            await log_activity(user["id"], "trial_renewed")
             templating.flash(request, "Trial renewed — your servers keep running for another cycle.", "success")
         elif status == "too_early":
             templating.flash(request, "It's not time to renew yet — you can renew closer to your turn-off date.", "message")
@@ -1195,6 +1255,7 @@ def build_routes(runtime, config):
             return redirect_to("dashboard")
         servers = await db.list_servers_for_user(user["id"])
         errors = []
+        offline = []
         unrecorded = []
         for server in servers:
             # Resolving the node is inside the try so one node the panel cannot
@@ -1206,8 +1267,9 @@ def build_routes(runtime, config):
                 lock = _server_locks.setdefault(server["id"], asyncio.Lock())
                 async with lock:
                     await run_in_threadpool(server_node.power, server["id"], action)
-            except NodeClientError:
-                errors.append(server["name"])
+            except NodeClientError as exc:
+                msg, status = _friendly_node_error(exc)
+                (offline if status == 502 and "offline" in msg else errors).append(server["name"])
             else:
                 # Same rule as api_power: persist intent only for the servers the
                 # node actually powered, so a partial failure leaves the rest of
@@ -1227,13 +1289,16 @@ def build_routes(runtime, config):
                         server["id"], type(exc).__name__,
                     )
                     unrecorded.append(server["name"])
-        await log_activity(
-            user["id"], "batch_power",
-            detail=f"{action}: {len(servers) - len(errors)}/{len(servers)} servers",
-        )
+        if offline:
+            templating.flash(
+                request,
+                f"Hosting node is offline — could not {action}: {', '.join(offline[:3])}. "
+                f"Servers and files are safe; try again in a bit.",
+                "error",
+            )
         if errors:
-            templating.flash(request, f"Could not {action} some servers: {', '.join(errors[:3])}", "error")
-        elif servers:
+            templating.flash(request, f"Could not {action} some servers: {', '.join(errors[:3])} — try again or contact support", "error")
+        elif servers and not offline:
             templating.flash(request, f"All {len(servers)} servers {_POWER_DONE[action]}", "success")
         else:
             templating.flash(request, "No servers to " + action, "error")
@@ -1346,7 +1411,7 @@ def build_routes(runtime, config):
                 _log.warning("new server placement probe failed, creating anyway: %s", exc)
                 placeable = True
             if not placeable:
-                msg = "No node capacity is available right now — please try again later or contact support"
+                msg = _NO_SPACE_MSG
                 if wants_json(request):
                     return JSONResponse({"ok": False, "error": msg}, status_code=503)
                 templating.flash(
@@ -1364,21 +1429,24 @@ def build_routes(runtime, config):
                 )
             except ValueError as exc:
                 if getattr(exc, "code", None) == "node_capacity_exhausted":
-                    message = "No capacity is available right now — please try again later or contact support"
+                    message = _NO_SPACE_MSG
+                    # No container space is a normal capacity state, not an
+                    # error: the visitor already gets the message above, so
+                    # nothing is logged to HeatWave for it.
                 else:
                     message = f"Could not create server: {exc}"
-                try:
-                    import reviews_db
-                    reviews_db.log_app_error("ContainerCreateDbError", message, module="panel_app.routes", flagged=1, error_category="system_error")
-                except Exception:
-                    pass
+                    try:
+                        import reviews_db
+                        reviews_db.log_app_error("ContainerCreateDbError", message, module="panel_app.routes", flagged=1, error_category="system_error")
+                    except Exception:
+                        pass
                 if wants_json(request):
                     return JSONResponse({"ok": False, "error": message}, status_code=400)
                 templating.flash(request, message, "error")
                 return redirect_to("new_server")
             except Exception as exc:
-                _log.warning("new server row not created (%s)", type(exc).__name__)
-                message = f"Database error creating server: {exc}"
+                _log.warning("new server row not created (%s): %s", type(exc).__name__, exc)
+                message = "Could not save the new server right now — try again in a moment."
                 try:
                     import reviews_db
                     reviews_db.log_app_error("ContainerCreateDbError", message, stack_trace=traceback.format_exc(), module="panel_app.routes", flagged=1, error_category="system_error")
@@ -1415,10 +1483,15 @@ def build_routes(runtime, config):
                 )
             node_err = str(exc) or "node is unreachable"
             _log.warning("server %s not created, node unavailable: %s", server_id, node_err)
-            message = f"Hosting node error: {node_err}"
+            message, _ = _friendly_node_error(exc)
+            if "offline" not in message:
+                message = f"{_NODE_OFFLINE_MSG}"
             try:
                 import reviews_db
-                reviews_db.log_app_error("ContainerCreateNodeError", f"Node unavailable for server {server_id}: {node_err}", module="panel_app.routes", flagged=1, error_category="system_error")
+                # One row per cause, not per server: the message stays identical
+                # so HeatWave dedups repeats into `occurrences` (×N badge);
+                # the server id travels in the trace for diagnosis.
+                reviews_db.log_app_error("ContainerCreateNodeError", f"Node unavailable at server create: {node_err}", stack_trace=f"server_id={server_id}", module="panel_app.routes", flagged=1, error_category="system_error")
             except Exception:
                 pass
             if wants_json(request):
@@ -1438,7 +1511,6 @@ def build_routes(runtime, config):
         except Exception:
             _log.exception("failed to set creating marker for %s", server_id)
         asyncio.create_task(_background_create(server_id, user["id"], name, rt, version, startup, allocation, placement, server_node))
-        await log_activity(user["id"], "server_create_started", server_id=server_id, detail=name)
         if wants_json(request):
             # No flash on this path. q3.js narrates the deploy in its modal and
             # only opens the panel once the node confirms the container, so a
@@ -1485,6 +1557,13 @@ def build_routes(runtime, config):
         except Exception:
             # Silence failures here: status polling will update soon.
             creating = False
+        # The host this container lives on. Resolved best-effort like the
+        # delete tombstone does — empty when the registry cannot be read, and
+        # the template renders a dash instead of failing the page.
+        try:
+            node_name = await _node_name_of(server)
+        except Exception:
+            node_name = ""
         return await render(
             request,
             "server.html",
@@ -1494,6 +1573,7 @@ def build_routes(runtime, config):
                 "server": server,
                 "runtimes": runtimes,
                 "creating": creating,
+                "node_name": node_name or "",
             },
         )
 
@@ -1525,7 +1605,6 @@ def build_routes(runtime, config):
                 "error",
             )
             return redirect_to("server_page", server_id=server_id)
-        await log_activity(user["id"], "server_deleted", server_id=server_id)
 
         node_reached = False
         try:
@@ -1550,12 +1629,17 @@ def build_routes(runtime, config):
         else:
             try:
                 import reviews_db
+                _srv = server if isinstance(server, dict) else {}
                 reviews_db.enqueue_container_deletion(
                     server_id,
                     node_id=node_id_of_server(server),
                     node_ip=await _node_address_of(server),
                     node_name=await _node_name_of(server),
                     purge=True,
+                    user_id=user.get("id", ""),
+                    username=user.get("username", ""),
+                    server_name=_srv.get("name", ""),
+                    reason="user_delete",
                 )
             except Exception:
                 pass
@@ -1614,7 +1698,7 @@ def build_routes(runtime, config):
         try:
             payload = await run_in_threadpool(lambda: server_node.logs(server_id, tail))
         except NodeClientError as exc:
-            return bad_request(str(exc), exc.status)
+            return node_bad_request(exc)
         except ValueError as exc:
             return bad_request(str(exc))
         if not isinstance(payload, dict):
@@ -1641,10 +1725,8 @@ def build_routes(runtime, config):
         action = _json_text(payload, "action")
         action = (action or "").strip().lower()
         if action not in {"start", "stop", "restart", "kill"}:
-            # Validate against the node's power contract before logging: the
-            # action is concatenated into panel_activity.action (VARCHAR2(64)),
-            # so an unbounded value would overflow the column on Oracle where
-            # SQLite silently stored it. batch_power guards the same way.
+            # Validate against the node's power contract: only these four verbs
+            # may reach the node. batch_power guards the same way.
             if as_form:
                 templating.flash(request, "Unsupported power action", "error")
                 return redirect_to("dashboard")
@@ -1654,7 +1736,6 @@ def build_routes(runtime, config):
                 templating.flash(request, "Too many power requests — slow down", "error")
                 return redirect_to("dashboard")
             return throttled("power", "too many power requests — slow down")
-        await log_activity(user["id"], "power_" + action, server_id=server_id)
         if as_form:
             # A form submit is a top-level navigation, so it is answered the way
             # the other form routes are. Returning the JSON body fetch() expects
@@ -1663,7 +1744,10 @@ def build_routes(runtime, config):
                 lock = _server_locks.setdefault(server_id, asyncio.Lock())
                 async with lock:
                     await run_in_threadpool(lambda: server_node.power(server_id, action))
-            except (NodeClientError, ValueError) as exc:
+            except NodeClientError as exc:
+                msg, _ = _friendly_node_error(exc)
+                templating.flash(request, msg, "error")
+            except ValueError as exc:
                 templating.flash(request, str(exc), "error")
             else:
                 # Record intent only once the node accepted it, so a failed stop
@@ -1707,7 +1791,8 @@ def build_routes(runtime, config):
             async with lock:
                 result = await run_in_threadpool(lambda: server_node.power(server_id, action))
         except NodeClientError as exc:
-            return JSONResponse({"ok": False, "error": str(exc)}, status_code=exc.status)
+            msg, status = _friendly_node_error(exc)
+            return JSONResponse({"ok": False, "error": msg}, status_code=status)
         except ValueError as exc:
             return JSONResponse({"ok": False, "error": str(exc)}, status_code=400)
         try:
@@ -1762,7 +1847,6 @@ def build_routes(runtime, config):
             return bad_request("command must not contain a null byte")
         if not _throttle(user["id"], "command"):
             return throttled("command", "too many commands — slow down")
-        await log_activity(user["id"], "command", server_id=server_id, detail=command[:100])
         return await node_json(lambda: server_node.send_stdin(server_id, command))
 
     async def api_update_startup(request):
@@ -1782,7 +1866,7 @@ def build_routes(runtime, config):
         try:
             response = await run_in_threadpool(lambda: server_node.update_startup(server_id, startup))
         except NodeClientError as exc:
-            return bad_request(str(exc), exc.status)
+            return node_bad_request(exc)
         try:
             await db.update_server_startup(server_id, user["id"], startup)
             await run_in_threadpool(
@@ -1801,7 +1885,6 @@ def build_routes(runtime, config):
                     "the startup command was changed on the server, but the panel "
                     "could not record it — this page may still show the old value"
                 )
-        await log_activity(user["id"], "startup_changed", server_id=server_id, detail=startup[:100])
         return JSONResponse(response)
 
     async def api_rename(request):
@@ -1817,7 +1900,6 @@ def build_routes(runtime, config):
         if not name or len(name) > MAX_NAME_CHARS or _CONTROL_CHARS.search(name):
             return bad_request(f"server name must be between 1 and {MAX_NAME_CHARS} characters")
         await db.update_server_name(server_id, user["id"], name)
-        await log_activity(user["id"], "server_renamed", server_id=server_id, detail=name)
         return JSONResponse({"ok": True, "name": name})
 
     async def api_update_image(request):
@@ -1852,7 +1934,7 @@ def build_routes(runtime, config):
         try:
             response = await run_in_threadpool(lambda: server_node.update_image(server_id, runtime=rt, version=version))
         except NodeClientError as exc:
-            return bad_request(str(exc), exc.status)
+            return node_bad_request(exc)
         # The node's reply carries the tag it actually pulled. Persisting only
         # runtime/version left panel_servers.image holding the previous runtime's
         # tag, and that stale column is what the dashboard and server page show.
@@ -1879,7 +1961,6 @@ def build_routes(runtime, config):
                     "the runtime was changed on the server, but the panel could "
                     "not record it — this page may still show the old version"
                 )
-        await log_activity(user["id"], "version_changed", server_id=server_id, detail=f"{rt} {version}")
         return JSONResponse(response)
 
     async def api_server_rebuild(request):
@@ -1937,9 +2018,10 @@ def build_routes(runtime, config):
             try:
                 await run_in_threadpool(server_node.power, server_id, "stop")
             except NodeClientError as exc:
-                return bad_request(str(exc), exc.status)
-            except Exception as exc:
-                return bad_request(f"Failed to stop server: {exc}", 500)
+                return node_bad_request(exc)
+            except Exception:
+                _log.warning("rebuild stop failed for %s", server_id, exc_info=True)
+                return bad_request("Could not stop the server for rebuild — try again in a bit.", 502)
 
         # Update image (runtime + version)
         try:
@@ -1947,9 +2029,10 @@ def build_routes(runtime, config):
                 lambda: server_node.update_image(server_id, runtime=rt, version=version)
             )
         except NodeClientError as exc:
-            return bad_request(str(exc), exc.status)
-        except Exception as exc:
-            return bad_request(f"Failed to update image: {exc}", 500)
+            return node_bad_request(exc)
+        except Exception:
+            _log.warning("rebuild image update failed for %s", server_id, exc_info=True)
+            return bad_request("Could not change the runtime image — try again in a bit.", 502)
 
         # Update startup command
         try:
@@ -1957,9 +2040,10 @@ def build_routes(runtime, config):
                 lambda: server_node.update_startup(server_id, startup)
             )
         except NodeClientError as exc:
-            return bad_request(str(exc), exc.status)
-        except Exception as exc:
-            return bad_request(f"Failed to update startup: {exc}", 500)
+            return node_bad_request(exc)
+        except Exception:
+            _log.warning("rebuild startup update failed for %s", server_id, exc_info=True)
+            return bad_request("Could not update the startup command — try again in a bit.", 502)
 
         # Update database
         image = ""
@@ -1972,8 +2056,6 @@ def build_routes(runtime, config):
         except Exception as exc:
             _log.warning(f"server {server_id} rebuild not recorded: {exc}")
             # Continue anyway - the node changes succeeded
-
-        await log_activity(user["id"], "server_rebuilt", server_id=server_id, detail=f"{rt} {version} {startup[:50]}")
 
         return JSONResponse({
             "ok": True,
@@ -1999,8 +2081,7 @@ def build_routes(runtime, config):
         try:
             response = await run_in_threadpool(lambda: server_node.reinstall(server_id))
         except NodeClientError as exc:
-            return bad_request(str(exc), exc.status)
-        await log_activity(user["id"], "server_reinstalled", server_id=server_id)
+            return node_bad_request(exc)
         return JSONResponse(response)
 
     async def api_install_status(request):
@@ -2009,7 +2090,7 @@ def build_routes(runtime, config):
         try:
             payload = await run_in_threadpool(lambda: server_node.install_log(server_id))
         except NodeClientError as exc:
-            return bad_request(str(exc), exc.status)
+            return node_bad_request(exc)
         except ValueError as exc:
             return bad_request(str(exc))
         if isinstance(payload, dict) and "log" in payload:
@@ -2114,8 +2195,7 @@ def build_routes(runtime, config):
                 await run_in_threadpool(lambda p=path, c=content: server_node.upload_file(server_id, p, c))
                 uploaded.append(path)
         except NodeClientError as exc:
-            return bad_request(str(exc), exc.status)
-        await log_activity(user["id"], "files_uploaded", server_id=server_id, detail=", ".join(uploaded[:5]))
+            return node_bad_request(exc)
         return JSONResponse({"ok": True, "uploaded": uploaded}, status_code=201)
 
     async def api_extract(request):
@@ -2158,23 +2238,10 @@ def build_routes(runtime, config):
                 _extract_zip_members, server_node, server_id, content, dest
             )
         except NodeClientError as exc:
-            return bad_request(str(exc), exc.status)
+            return node_bad_request(exc)
         except ValueError as exc:
             return bad_request(str(exc))
-        await log_activity(user["id"], "zip_extracted", server_id=server_id, detail=dest or "/")
         return JSONResponse({"ok": True, "extracted": extracted}, status_code=201)
-
-    async def activity_page(request):
-        user = await auth.require_user(runtime, request)
-        # The page reads the same switch log_activity writes under, so a trail
-        # that is off renders empty rather than showing rows that stopped being
-        # appended to at the moment it was switched off.
-        settings = await runtime.settings.load()
-        entries = await db.list_activity(user_id=user["id"]) if settings.activity_log else []
-        return await render(
-            request, "activity.html", endpoint="activity_page", current_user=user,
-            context={"entries": entries},
-        )
 
     async def account_page(request):
         user = await auth.require_user(runtime, request)
@@ -2215,7 +2282,6 @@ def build_routes(runtime, config):
                 _log.warning("password not updated: %s", exc)
                 templating.flash(request, "Could not update the password — it was not changed", "error")
             else:
-                await log_activity(user["id"], "password_changed")
                 templating.flash(request, "Password updated", "success")
         return redirect_to("account_page")
 
@@ -2325,8 +2391,11 @@ def build_routes(runtime, config):
             f"?tail={tail}"
         )
         if since_val and since_val > 0:
-            follow_url += f"&since={since_val}"
+            follow_url += f"&since={parse.quote(str(since_val), safe='')}"
         try:
+            if not _is_backend_origin(node_url):
+                await websocket.close(code=4005, reason="Invalid node URL")
+                return
             req = urlrequest.Request(
                 follow_url,
                 headers={
@@ -2484,7 +2553,6 @@ def build_routes(runtime, config):
         Route("/api/servers/{server_id}/directory", api_directory, methods=["POST"]),
         Route("/api/servers/{server_id}/upload", api_upload, methods=["POST"]),
         Route("/api/servers/{server_id}/extract", api_extract, methods=["POST"]),
-        Route("/activity", activity_page, methods=["GET"]),
         Route("/account", account_page, methods=["GET"]),
         Route("/account/password", account_change_password, methods=["POST"]),
         WebSocketRoute("/ws/console/{server_id}", console_ws),

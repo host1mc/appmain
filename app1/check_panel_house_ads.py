@@ -102,36 +102,35 @@ APP_FP_GUARD = HERE / "static" / "g7.js"
 # Every template that contains promo markup of its own. base.html carries the
 # closing strip on every page plus the sidebar rail; dashboard.html carries the
 # stat-cards filler and its own closing card; new_server.html and server.html each
-# carry one tile in a rail their own layout leaves empty. account.html and
-# activity.html add nothing — they inherit base.html's two and are deliberately
-# absent here, so the group 4b sweep holds them to zero.
+# carry one tile in a rail their own layout leaves empty. account.html adds
+# nothing — it inherits base.html's two and is deliberately absent here, so the
+# group 4b sweep holds it to zero.
 PROMO_TEMPLATES = ("base.html", "dashboard.html", "new_server.html", "server.html")
 
 # The ``endpoint`` values routes.py actually passes to templating.render(), which
-# is what reaches a template as ``request.endpoint``. Five pages extend base.html
-# (account, activity, dashboard, new_server, server) and blocked.html does
-# not, so these five are the whole surface the promo bar can appear on.
+# is what reaches a template as ``request.endpoint``. Four pages extend base.html
+# (account, dashboard, new_server, server) and blocked.html does
+# not, so these four are the whole surface the promo bar can appear on.
 #
 # Spelled exactly as routes.py spells them. The nav highlighting in base.html
-# compares against these literals ("activity_page", not "activity"), so a fixture
+# compares against these literals ("server_page", not "server"), so a fixture
 # that invented a shorter name would render a nav with no active item and would
 # not be standing in for a real page at all.
 DASHBOARD_ENDPOINT = "dashboard"
 NON_DASHBOARD_ENDPOINTS = (
     "new_server",     # new_server.html
     "server_page",    # server.html
-    "activity_page",  # activity.html
     "account_page",   # account.html
 )
 
 # The endpoint each template is rendered under for the main body of group 4 and
 # for group 5's sweeps. base.html is also rendered standalone under every endpoint
-# below (see BASE_BY_ENDPOINT) because it is the only stand-in for account.html and
-# activity.html, which add no markup of their own; dashboard.html can only ever
+# below (see BASE_BY_ENDPOINT) because it is the only stand-in for account.html,
+# which adds no markup of its own; dashboard.html can only ever
 # serve "dashboard", which is also the one endpoint that suppresses the inherited
 # closing strip.
 PRIMARY_ENDPOINT = {
-    "base.html": "activity_page",
+    "base.html": "account_page",
     "dashboard.html": DASHBOARD_ENDPOINT,
     "new_server.html": "new_server",
     "server.html": "server_page",
@@ -392,10 +391,9 @@ g3 = Group("3. PanelSettings.house_ads and panel_settings._fallback")
 
 
 class StubConfig:
-    """The three PanelConfig attributes _fallback actually reads."""
+    """The two PanelConfig attributes _fallback actually reads."""
 
     allow_registration = False
-    activity_enabled = False
     max_servers_per_user = 2
 
 
@@ -764,13 +762,12 @@ for name in ("new_server.html", "server.html"):
 # should carry it (CLOSERS sums to 0). Counted per treatment rather than in total
 # because both failure directions matter and they are not symmetric.
 #
-# Every page is its own real render where one exists. account.html and activity.html
-# add no markup of their own, so standalone base.html under their endpoints is a
-# faithful stand-in; the other three are rendered as themselves, because a tile
-# added to a child template is invisible to a base.html-only fixture.
+# Every page is its own real render where one exists. account.html adds no markup
+# of its own, so standalone base.html under its endpoint is a faithful stand-in;
+# the other three are rendered as themselves, because a tile added to a child
+# template is invisible to a base.html-only fixture.
 PAGES_WITH_PROMO = [
     ("base.html@account_page", BASE_BY_ENDPOINT[("account_page", True)]),
-    ("base.html@activity_page", BASE_BY_ENDPOINT[("activity_page", True)]),
     ("dashboard.html@dashboard", RENDERED[("dashboard.html", True)]),
     ("new_server.html@new_server", RENDERED[("new_server.html", True)]),
     ("server.html@server_page", RENDERED[("server.html", True)]),
@@ -789,7 +786,6 @@ for label, html in PAGES_WITH_PROMO:
 # none. Read as: which slots does this page actually carry.
 EXPECTED_SLOTS = {
     "base.html@account_page": {"house-promo-rail", "house-promo-bar"},
-    "base.html@activity_page": {"house-promo-rail", "house-promo-bar"},
     "dashboard.html@dashboard": {"house-promo-rail", "house-promo-slot",
                                  "house-promo-card"},
     "new_server.html@new_server": {"house-promo-rail", "house-promo-tile",
@@ -814,7 +810,7 @@ for name in PROMO_TEMPLATES:
            f"{name} with house_ads=False: ZERO 'house-promo'")
 
 # No slot anywhere else. The invariants above only see the pages this script
-# renders, so a promo added to account.html or activity.html would satisfy every cell
+# renders, so a promo added to account.html would satisfy every cell
 # so far while putting two of the same treatment on that page in production. Scanning
 # the whole template directory is what closes that: only the four in PROMO_TEMPLATES
 # may contain promo markup at all.

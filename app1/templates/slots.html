@@ -86,7 +86,7 @@
     <div id="slots-mount" class="slots-grid">
       {% for bot in bots %}
 
-        <a class="slot-card" href="{{ url_for('user_bot_editor', bot_id=bot.id) }}">
+        <a class="slot-card" href="{{ url_for('user_bot_editor', slot_index=bot.slot_index) }}">
           <div class="slot-num">Slot #{{ bot.slot_index|int + 1 }}</div>
           <div class="slot-icon" aria-hidden="true">
             {% if bot.running %}

@@ -508,10 +508,22 @@ def api_admin_node_servers(node_id):
         if not slot["username"]:
             slot["username"] = s.get("username")
 
+    # The DB list is capped (newest first); say so when the registry holds
+    # more for this node than are shown — the page renders a notice from it.
+    truncated = False
+    try:
+        for node in (node_registry.list_nodes_with_usage() or []):
+            if isinstance(node, dict) and int(node.get("id", -1)) == int(node_id):
+                total = node.get("servers")
+                if total is not None and int(total) > len(servers):
+                    truncated = True
+                break
+    except Exception:
+        pass
     result = {"ok": True, "servers": merged, "url": credentials.get("url", ""),
               "users": sorted(roster.values(), key=lambda u: -u["servers"]),
               "total": len(merged), "orphan_container_ids": orphan_ids,
-              "agent_reachable": live is not None}
+              "agent_reachable": live is not None, "truncated": truncated}
     if live_error:
         result["live_error"] = live_error.get("message", "Agent unreachable")
     if schema_note:
@@ -578,6 +590,7 @@ def api_admin_delete_server(server_id):
     user_id = row.get("user_id")
     name = row.get("name", server_id)
     errors = []
+    node_confirmed = False
 
     if node_id is not None:
         try:
@@ -589,12 +602,63 @@ def api_admin_delete_server(server_id):
                 node_id, credentials, f"/api/v1/servers/{server_id}?purge=true"
             )
             if problem:
-                errors.append(f"node agent: {problem.get('message', 'unknown error')}")
+                # 404 = already gone counts as confirmed; anything else leaves
+                # the container on the node for the pending-deletion queue.
+                if problem.get("status") == 404 or problem.get("already_gone"):
+                    node_confirmed = True
+                else:
+                    errors.append(f"node agent: {problem.get('message', 'unknown error')}")
+            else:
+                node_confirmed = True
+                if payload and payload.get("already_gone"):
+                    node_confirmed = True
+        else:
+            errors.append("node is offline or unregistered — slot freed, container queued")
+    else:
+        node_confirmed = True
 
     try:
         node_registry.delete_server(server_id)
     except Exception as exc:
         errors.append(f"DB delete failed: {exc}")
+
+    # Slot-first: DB row is gone; if the node delete was not confirmed,
+    # tombstone in HeatWave with owner + reason so the admin queue shows
+    # container id, username, node and cause after the node returns.
+    if not node_confirmed:
+        try:
+            username = ""
+            try:
+                import database as db
+                _u = db.get_user(user_id) or {}
+                username = str(_u.get("username") or "")
+            except Exception:
+                username = ""
+            node_name, node_ip = "", ""
+            try:
+                for n in (node_registry.list_nodes() or []):
+                    if n.get("id") == node_id:
+                        node_name = str(n.get("name") or "")
+                        node_ip = str(n.get("url") or "")
+                        break
+            except Exception:
+                pass
+            if not node_ip:
+                try:
+                    retired = reviews_db.get_retired_node(node_id)
+                    if retired:
+                        node_name = node_name or str(retired.get("name") or "")
+                        node_ip = str(retired.get("url") or "")
+                except Exception:
+                    pass
+            reviews_db.enqueue_container_deletion(
+                server_id, node_id=node_id if node_id is not None else "",
+                node_ip=node_ip, node_name=node_name, purge=True,
+                user_id=str(user_id or ""), username=username,
+                server_name=str(name or ""), reason="admin_delete",
+            )
+        except Exception:
+            pass
 
     if errors:
         return jsonify({"ok": False, "errors": errors}), 207
@@ -689,6 +753,10 @@ def api_admin_pending_deletions():
             "requested_at": row["requested_at"],
             "node_name": info["node_name"],
             "node_url": info["node_url"],
+            "user_id": row.get("user_id", ""),
+            "username": row.get("username", ""),
+            "server_name": row.get("server_name", ""),
+            "reason": row.get("reason", "user_delete"),
         })
     return jsonify({"ok": True, "pending": pending, "total": len(pending)})
 

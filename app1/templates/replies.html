@@ -36,7 +36,7 @@
       <div style="display:flex;align-items:center;gap:12px;margin-top:8px;flex-wrap:wrap">
         <label class="inline-check"><input type="checkbox" id="r_enabled"> Reply to the trigger word</label>
         <span class="status-pill" id="save-state" aria-live="polite"></span>
-        <a class="btn btn-ghost btn-sm" href="{{ url_for('user_bot_editor', bot_id=bot.id) }}">← Back to bot editor</a>
+        <a class="btn btn-ghost btn-sm" href="{{ url_for('user_bot_editor', slot_index=bot.slot_index) }}">← Back to bot editor</a>
       </div>
     </div>
 
@@ -136,7 +136,7 @@
     (function(){
 
       var CSRF_TOKEN = document.querySelector('meta[name="csrf-token"]')?.content || '';
-      var BOT_ID = {{ bot.id|tojson }};
+      var BOT_ID = {{ bot.slot_index|tojson }};
       var REPLY = null;
       var activeEditor = null;
 

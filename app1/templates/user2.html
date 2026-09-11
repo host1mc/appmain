@@ -44,7 +44,7 @@
         <h1 id="bot-topbar-name" style="font-size:inherit;font-weight:inherit">{{ bot.name }}</h1>
       </div>
       <div id="bot-topbar-right">
-        <a class="btn btn-ghost btn-sm" href="{{ url_for('user_bot_replies', bot_id=bot.id) }}">IP Reply</a>
+        <a class="btn btn-ghost btn-sm" href="{{ url_for('user_bot_replies', slot_index=bot.slot_index) }}">IP Reply</a>
         <span style="width:1px;height:20px;background:var(--line)"></span>
         <span id="bot-lastrun" style="color:var(--muted2);font-size:13px">—</span>
         <span style="width:1px;height:20px;background:var(--line)"></span>
@@ -292,7 +292,7 @@
   <div class="toast" id="toast" role="status" aria-live="polite"></div>
 
 <script nonce="{{ csp_nonce }}">
-const BOT_ID = {{ bot.id | tojson }};
+const BOT_ID = {{ bot.slot_index | tojson }};
 const USER_ID = {{ user.uid | string | tojson }};
 const IS_TRIAL = {{ ('1' if user.account_type == 'trial' else '0') | tojson }};
 const CSRF_TOKEN = {{ csrf_token() | tojson }};

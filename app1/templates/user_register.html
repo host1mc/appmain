@@ -66,6 +66,18 @@
               <p class="field-hint" id="otp-hint">Six digits, no spaces. The code expires shortly, so use it soon.</p>
               <p class="field-hint field-error" id="otp-error"></p>
             </div>
+            {% if link_existing %}
+            <div class="field">
+              <label for="password">New password</label>
+              <div class="pw-wrap">
+                <input id="password" name="password" type="password"
+                       autocomplete="new-password" required minlength="8"
+                       aria-describedby="password-error" data-strength>
+              </div>
+              <p class="field-hint">This email already has an account — this password will sign you into the same account.</p>
+              <p class="field-hint field-error" id="password-error"></p>
+            </div>
+            {% endif %}
             <button class="btn btn-primary btn-block" type="submit" data-busy-label="Verifying…">Verify &amp; activate</button>
           </form>
 

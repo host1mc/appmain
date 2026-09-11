@@ -43,7 +43,7 @@
 
     <div class="card" style="margin-top:14px">
       <h2>Pending container deletions</h2>
-      <p style="font-size:13px;color:var(--muted)">Servers deleted while their node was offline. The owner's slot is already freed, but the container is still on that node — and nothing removes it automatically, so nothing is lost until an operator confirms it here. <strong>Delete from node</strong> removes the container and its data on the node; <strong>Remove entry</strong> only clears the queue row, for a container you already removed by hand on the host.</p>
+      <p style="font-size:13px;color:var(--muted)">Servers deleted while their node was offline (by the user, or automatically for ban / no-renewal). The owner's slot is already freed, but the container is still on that node — and nothing removes it automatically, so nothing is lost until an operator confirms it here. Each row keeps the container id, owner, server name and reason until the node is back. <strong>Delete from node</strong> removes the container and its data on the node; <strong>Remove entry</strong> only clears the queue row, for a container you already removed by hand on the host.</p>
       <div id="pending-content"><div class="empty">Loading…</div></div>
     </div>
 
@@ -191,8 +191,8 @@ function nodeRow(n){
       <button class="btn btn-ghost btn-sm" onclick="startEditUrl(${id})" aria-label="Edit URL for node ${id}">Edit URL</button>
       ${enabled ? `<button class="btn btn-ghost btn-sm" onclick="setEnabled(${id}, false)" aria-label="Disable node ${id}">Disable</button>`
                 : `<button class="btn btn-green btn-sm" onclick="setEnabled(${id}, true)" aria-label="Enable node ${id}">Enable</button>`}
-      <button class="btn btn-ghost btn-sm" id="srvbtn-${id}" onclick="toggleServers(${id})"
-              aria-expanded="false" aria-controls="srv-${id}" aria-label="Show servers on node ${id}">Servers</button>
+      <button class="btn btn-ghost btn-sm" id="srvbtn-${id}" onclick="toggleServers(${id})" data-count="${servers == null ? '' : servers}"
+              aria-expanded="false" aria-controls="srv-${id}" aria-label="Show servers on node ${id}">Servers${servers == null ? '' : ' (' + servers + ')'}</button>
       <button class="btn btn-ghost btn-sm" id="cfgbtn-${id}" onclick="toggleConfig(${id})"
               aria-expanded="false" aria-controls="cfg-${id}" aria-label="Show configuration for node ${id}">Config</button>
       <button class="btn btn-red btn-sm" onclick="deleteNode(${id})" aria-label="Delete node ${id}">Delete</button>
@@ -401,6 +401,27 @@ function serverRow(s){
   </tr>`;
 }
 
+// Per-node dchost-only filter: when on, rows with no container on the VPS
+// (registry rows the node answered without) are hidden, so the table is
+// exactly what is physically in that VPS's dchost. Ownerless live containers
+// (orphans) always stay — they are in dchost with no owner. When the node did
+// not answer, nothing is hidden because presence could not be checked.
+const DCHOST_ONLY = {};
+function toggleDchostOnly(id){
+  DCHOST_ONLY[id] = !DCHOST_ONLY[id];
+  loadServersInto(id);
+}
+async function loadServersInto(id){
+  const box = $('#srv-' + id); if(!box) return;
+  box.innerHTML = '<div class="empty" style="margin:0">Reading the registry and asking the node…</div>';
+  try {
+    const r = await fetch('/api/admin/nodes/' + id + '/servers', {headers:{'Content-Type':'application/json'}});
+    renderServers(id, await r.json());
+  } catch(e) {
+    renderServers(id, {ok:false, error:'Request failed'});
+  }
+}
+
 function renderServers(id, d){
   const box = $('#srv-' + id);
   if(!box) return;
@@ -409,7 +430,9 @@ function renderServers(id, d){
       + esc((d && d.error) || 'Could not read the servers on this node.') + '</div>';
     return;
   }
-  const servers = Array.isArray(d.servers) ? d.servers : [];
+  const allServers = Array.isArray(d.servers) ? d.servers : [];
+  const dchostOnly = !!DCHOST_ONLY[id] && d.agent_reachable === true;
+  const servers = dchostOnly ? allServers.filter(s => s.container_missing !== true) : allServers;
   const users = Array.isArray(d.users) ? d.users : [];
   const orphans = Array.isArray(d.orphan_container_ids) ? d.orphan_container_ids : [];
   // Same idiom as the config panel's warnings: an amber card, one badge, one
@@ -433,7 +456,7 @@ function renderServers(id, d){
       + '<br><span style="word-break:break-all">' + orphans.map(esc).join('<br>') + '</span>');
   }
 
-  const missing = servers.filter(s => s.container_missing === true).length;
+  const missing = allServers.filter(s => s.container_missing === true).length;
   if(missing){
     html += warn(missing + ' SERVER ROW' + (missing===1?'':'S') + ' WITH NO CONTAINER',
       'The node has no container for these, so they cannot start — but each one still counts against this node\'s capacity.');
@@ -443,14 +466,25 @@ function renderServers(id, d){
     ? users.map(u => (u.username ? esc(u.username) : esc(u.user_id || '—'))
         + ' <span class="muted">(' + Number(u.servers) + ')</span>').join(' · ')
     : '<span class="muted">nobody</span>';
+  // Physically in this VPS's dchost: rows the node confirmed with a live
+  // container. Unknown while the node does not answer — never guessed.
+  const inDchost = d.agent_reachable === true
+    ? allServers.filter(s => s.live != null).length : null;
   html += '<p class="note" style="text-align:left;margin:0 0 10px">'
     + Number(d.total || 0) + ' server' + (Number(d.total||0)===1?'':'s') + ' · '
     + users.length + ' user' + (users.length===1?'':'s') + ' · agent '
     + (d.agent_reachable ? 'reachable' : 'not reachable')
+    + (inDchost == null ? '' : ' · <strong>in dchost: ' + inDchost + '</strong>')
     + '<br><strong>Users on this node:</strong> ' + roster + '</p>';
+  if(d.agent_reachable === true && allServers.length){
+    html += '<div style="margin:0 0 10px"><button class="btn btn-ghost btn-sm" onclick="toggleDchostOnly(' + Number(id) + '">'
+      + (dchostOnly ? 'Show all rows' : 'Show dchost-only') + '</button>'
+      + '<span class="note" style="margin-left:8px">dchost-only hides registry rows with no container on this VPS.</span></div>';
+  }
 
   if(!servers.length){
-    html += '<div class="empty" style="margin:0">No server is placed on this node.</div>';
+    html += '<div class="empty" style="margin:0">'
+      + (dchostOnly ? 'No container is physically in this VPS\u2019s dchost.' : 'No server is placed on this node.') + '</div>';
     box.innerHTML = html;
     return;
   }
@@ -478,7 +512,11 @@ async function toggleServers(id){
   if(!row || !box) return;
   if(!row.hidden){
     row.hidden = true;
-    if(btn){ btn.setAttribute('aria-expanded', 'false'); btn.textContent = 'Servers'; }
+    if(btn){
+      btn.setAttribute('aria-expanded', 'false');
+      const n = btn.getAttribute('data-count');
+      btn.textContent = 'Servers' + (n ? ' (' + n + ')' : '');
+    }
     return;
   }
   row.hidden = false;
@@ -728,8 +766,16 @@ function pendingRow(p){
     : (p.node_id ? '<span class="log-ip">#' + esc(p.node_id) + '</span>'
                  : '<span class="muted">node unknown</span>');
   const ips = splitNodeUrls(p.node_ip).map(esc).join('<br>');
+  const owner = p.username
+    ? esc(p.username) + (p.user_id ? ' <span class="log-ip">(' + esc(p.user_id) + ')</span>' : '')
+    : (p.user_id ? '<span class="log-ip">' + esc(p.user_id) + '</span>'
+                 : '<span class="muted">—</span>');
+  const reasonLabels = {user_delete: 'deleted by user', banned: 'auto: ban', retention: 'auto: no renewal', admin_delete: 'deleted by admin'};
+  const reason = reasonLabels[p.reason] || esc(p.reason || 'deleted by user');
   return `<tr>
-    <td class="log-ip" style="word-break:break-all">${esc(p.server_id)}</td>
+    <td class="log-ip" style="word-break:break-all">${esc(p.server_id)}${p.server_name ? '<br><span class="muted">' + esc(p.server_name) + '</span>' : ''}</td>
+    <td>${owner}</td>
+    <td>${reason}</td>
     <td>${node}</td>
     <td class="log-ip" style="word-break:break-all">${ips || '<span class="muted">—</span>'}</td>
     <td class="log-ip">${esc(fmtDate(p.requested_at))}${p.purge ? '' : ' <span class="muted">(data kept)</span>'}</td>
@@ -756,6 +802,8 @@ async function loadPending(){
     box.innerHTML = `<table class="log-table">
       <thead><tr>
         <th scope="col">Container</th>
+        <th scope="col">Owner</th>
+        <th scope="col">Reason</th>
         <th scope="col">Node</th>
         <th scope="col">Node address</th>
         <th scope="col">Queued</th>

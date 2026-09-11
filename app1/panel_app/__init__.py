@@ -18,7 +18,7 @@ async engine pointed at the same database the app tiers use; it is built lazily
 and reached only by a request that actually runs a query.
 
 With ``PANEL_STORE=oracle`` (the default when ``ORACLE_ENABLED`` is true) the
-panel's three tables are registered on the panel's own declarative ``Base`` at
+panel's two tables are registered on the panel's own declarative ``Base`` at
 mount time. Registering is not creating: the DDL in this tier lives in
 :func:`panel_app.database.ensure_schema`, which the panel tier's lifespan calls at
 startup — it creates a panel table the schema is missing and adds a column an
@@ -70,9 +70,25 @@ MAIN_SITE_LOGIN_PATH = "/user/login"
 _BUSY_RETRY_AFTER_SECONDS = 5
 
 
+def _wants_json(request):
+    """Whether an error for this request must be JSON.
+
+    ``/api/`` routes always do — and so does any ``fetch()`` caller: q3.js posts
+    the deploy form with ``X-Requested-With: fetch`` to a non-API route, and a
+    text/redirect error there surfaced in its modal as a bare
+    "Server returned HTTP error NNN" instead of the real message.
+    """
+    if "/api/" in request.url.path:
+        return True
+    try:
+        return request.headers.get("x-requested-with", "").lower() == "fetch"
+    except Exception:
+        return False
+
+
 def _exception_handlers(config: PanelConfig):
     async def on_login_required(request, exc):
-        if "/api/" in request.url.path:
+        if _wants_json(request):
             # A 303 is followed by fetch() and answered with the main site's login
             # *page*, so the caller saw a 200 whose body is HTML: q4.js showed
             # the first 200 characters of that page to the user as the error text,
@@ -94,7 +110,7 @@ def _exception_handlers(config: PanelConfig):
         return RedirectResponse(target, status_code=303)
 
     async def on_csrf_error(request, exc):
-        if "/api/" in request.url.path:
+        if _wants_json(request):
             return JSONResponse({"ok": False, "error": "invalid CSRF token"}, status_code=400)
         return PlainTextResponse("Bad Request: invalid CSRF token", status_code=400)
 
@@ -102,7 +118,7 @@ def _exception_handlers(config: PanelConfig):
         # Not a redirect to login: the tier that would serve that login is the
         # same one that just failed, so bouncing there would only loop.
         message = "Sign-in is temporarily unavailable. Please try again shortly."
-        if "/api/" in request.url.path:
+        if _wants_json(request):
             return JSONResponse({"ok": False, "error": message}, status_code=503)
         return PlainTextResponse(message, status_code=503)
 
@@ -111,7 +127,7 @@ def _exception_handlers(config: PanelConfig):
             "This account cannot be linked to the panel yet. "
             "Please contact support."
         )
-        if "/api/" in request.url.path:
+        if _wants_json(request):
             return JSONResponse({"ok": False, "error": message}, status_code=409)
         return PlainTextResponse(message, status_code=409)
 
@@ -123,7 +139,7 @@ def _exception_handlers(config: PanelConfig):
         if not isinstance(retry_after, int) or retry_after < 1:
             retry_after = _BUSY_RETRY_AFTER_SECONDS
         headers = {"Retry-After": str(retry_after)}
-        if "/api/" in request.url.path:
+        if _wants_json(request):
             return JSONResponse(
                 {"ok": False, "error": message}, status_code=503, headers=headers
             )
@@ -134,7 +150,7 @@ def _exception_handlers(config: PanelConfig):
             raise exc
         message = "The panel is busy right now. Please try again shortly."
         headers = {"Retry-After": str(_BUSY_RETRY_AFTER_SECONDS)}
-        if "/api/" in request.url.path:
+        if _wants_json(request):
             return JSONResponse(
                 {"ok": False, "error": message}, status_code=503, headers=headers
             )
@@ -167,13 +183,13 @@ def _exception_handlers(config: PanelConfig):
         status = getattr(exc, "status", 502)
         if not isinstance(status, int) or not 400 <= status <= 599:
             status = 502
-        if "/api/" in request.url.path:
+        if _wants_json(request):
             return JSONResponse({"ok": False, "error": message}, status_code=status)
         return PlainTextResponse(message, status_code=status)
 
     async def on_http_exception(request, exc):
         detail = getattr(exc, "detail", None) or str(exc.status_code)
-        if "/api/" in request.url.path:
+        if _wants_json(request):
             return JSONResponse({"ok": False, "error": detail}, status_code=exc.status_code)
         return PlainTextResponse(detail, status_code=exc.status_code)
 
@@ -189,7 +205,7 @@ def _exception_handlers(config: PanelConfig):
         # the logs; only the client-facing body is replaced, and it is a fixed
         # string so no exception text leaks the internal host, path or query.
         message = "Internal Server Error"
-        if "/api/" in request.url.path:
+        if _wants_json(request):
             response = JSONResponse({"ok": False, "error": message}, status_code=500)
         else:
             response = PlainTextResponse(message, status_code=500)
@@ -222,7 +238,7 @@ def create_panel_app(
     )
 
     if config.store == "oracle":
-        # Import (not connect) so panel_users / panel_servers / panel_activity are
+        # Import (not connect) so panel_users / panel_servers are
         # on Base.metadata before anything reads it — a query, or the
         # ensure_schema call in the panel tier's lifespan, which mounting does not
         # make: mounting this app into a host that never runs that lifespan gets a

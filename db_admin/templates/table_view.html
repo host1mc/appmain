@@ -69,11 +69,11 @@
               <th></th>
             </tr>
           </thead>
-          <tbody>
+          <tbody data-row-json="/api/table/{{ tname|urlencode }}/row/__RID__">
             {% for r in rows %}
-            <tr>
-              {% set pk_col = col_names[0] if col_names else none %}
-              {% set pk_val = r.get(pk_col) if pk_col else none %}
+            {% set pk_col = col_names[0] if col_names else none %}
+            {% set pk_val = r.get(pk_col) if pk_col else none %}
+            <tr data-row-id="{{ pk_val }}">
               <td><input type="checkbox" name="rowid" value="{{ pk_val }}" style="width:14px;height:14px;accent-color:#e74c3c;cursor:pointer"></td>
               {% for c in col_names %}
               <td class="mono {% if r.get(c) is none %}null{% endif %}">

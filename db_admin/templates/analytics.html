@@ -10,24 +10,27 @@
 
 <div class="stat-grid">
   <div class="stat" style="--accent:#6ed0e0">
-    <div class="top"><div class="k">Active sensors</div><div class="ic">◈</div></div>
-    <div class="v" data-anim="num" data-n="{{ live_count }}">{{ live_count }}</div>
-    <div class="d">tables with at least one sample</div>
+    <div class="top"><div class="k">Tables</div><div class="ic">▤</div></div>
+    <div class="v" data-anim="num" data-n="{{ tables|length }}">{{ tables|length }}</div>
+    <div class="d">{{ live_count }} with samples</div>
   </div>
   <div class="stat" style="--accent:#73bf69">
-    <div class="top"><div class="k">Idle / empty</div><div class="ic">○</div></div>
-    <div class="v" data-anim="num" data-n="{{ idle_count }}">{{ idle_count }}</div>
-    <div class="d">no rows yet — still in catalog</div>
+    <div class="top"><div class="k">Rows</div><div class="ic">≡</div></div>
+    <div class="v" data-anim="num" data-n="{{ totals.rows }}">{{ totals.rows|num }}</div>
+    <div class="d">across the selected plane</div>
   </div>
   <div class="stat" style="--accent:#3274d9">
-    <div class="top"><div class="k">Peak node</div><div class="ic">▲</div></div>
-    <div class="v" style="font-size:18px">{{ peak.name if peak else '—' }}</div>
-    <div class="d">{{ (peak.rows if peak else 0)|num }} samples · {{ '%.1f'|format(peak_share) }}% of fleet</div>
+    <div class="top"><div class="k">Fields</div><div class="ic">◈</div></div>
+    <div class="v" data-anim="num" data-n="{{ field_count }}">{{ field_count }}</div>
+    <div class="d">schema width</div>
   </div>
   <div class="stat" style="--accent:#faad14">
-    <div class="top"><div class="k">Avg fields / node</div><div class="ic">▤</div></div>
-    <div class="v">{{ avg_fields }}</div>
-    <div class="d">schema width across {{ tables|length }} tables</div>
+    <div class="top"><div class="k">Space remaining</div><div class="ic">▣</div></div>
+    <div class="v" style="font-size:22px">{{ storage.remaining_h }}</div>
+    <div class="d">{{ storage.used_h }} used of {{ storage.quota_h }}</div>
+    <div class="mini" style="margin-top:10px">
+      <div class="fill" data-anim="bar" data-w="{{ storage.pct|round(1) }}" style="width:0"></div>
+    </div>
   </div>
 </div>
 
@@ -41,7 +44,7 @@
       <div class="heatgrid">
         {% for t in tables %}
         {% set lvl = ((t.rows / max_rows) * 5)|int %}
-        <a class="heatcell h{{ lvl }}" href="/table/{{ t.name }}" data-peek="/api/table/{{ t.name|urlencode }}" data-peek-name="{{ t.name }}" title="{{ t.name }} · {{ t.rows|num }} rows">
+        <a class="heatcell h{{ lvl }}" href="/table/{{ t.name }}" title="{{ t.name }} · {{ t.rows|num }} rows">
           <span class="hn">{{ t.name[:10] }}</span>
           <span class="hv">{{ t.rows|num }}</span>
         </a>
@@ -99,13 +102,12 @@
             <th data-key class="num">Share</th>
             <th>Trend</th>
             <th>Status</th>
-            <th></th>
           </tr>
         </thead>
         <tbody>
           {% for t in tables %}
           {% set share = (t.rows / total * 100) if total else 0 %}
-          <tr>
+          <tr class="rowlink" data-peek="/api/table/{{ t.name|urlencode }}" data-peek-name="{{ t.name }}" title="Inspect {{ t.name }}" tabindex="0">
             <td class="mono fw-bold">{{ t.name }}</td>
             <td class="num mono" data-v="{{ t.rows }}">{{ t.rows|num }}</td>
             <td class="num mono" data-v="{{ t.fields }}">{{ t.fields }}</td>
@@ -126,7 +128,6 @@
               <span class="badge green">live</span>
               {% endif %}
             </td>
-            <td class="num"><a class="btn sm" href="/table/{{ t.name }}" data-peek="/api/table/{{ t.name|urlencode }}" data-peek-name="{{ t.name }}">Inspect</a></td>
           </tr>
           {% endfor %}
         </tbody>

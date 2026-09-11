@@ -859,37 +859,21 @@ def _known_table(tname):
 
 @app.route("/")
 def dashboard():
-    tables, totals = collections_report()
-    storage = storage_report()
-    live = sum(1 for t in tables if t.get("rows"))
-    return render_template(
-        "dashboard.html",
-        tables=tables,
-        totals=totals,
-        storage=storage,
-        live_count=live,
-        field_count=sum(t.get("fields") or 0 for t in tables),
-    )
+    return redirect("/analytics")
 
 
 @app.route("/analytics")
 def analytics_page():
     tables, totals = collections_report()
     live_count = sum(1 for t in tables if t.get("rows"))
-    idle_count = max(0, len(tables) - live_count)
-    peak = tables[0] if tables else None
-    peak_share = (100.0 * peak["rows"] / totals["rows"]) if peak and totals.get("rows") else 0.0
-    field_sum = sum(t.get("fields") or 0 for t in tables)
-    avg_fields = round(field_sum / len(tables), 1) if tables else 0
+    field_count = sum(t.get("fields") or 0 for t in tables)
     return render_template(
         "analytics.html",
         tables=tables,
         totals=totals,
+        storage=storage_report(),
         live_count=live_count,
-        idle_count=idle_count,
-        peak=peak,
-        peak_share=peak_share,
-        avg_fields=avg_fields,
+        field_count=field_count,
     )
 
 
@@ -1524,6 +1508,57 @@ def api_table(tname):
         "ms": round((time.time() - t0) * 1000, 1),
         "href": "/table/" + quote(tname),
     })
+
+
+@app.get("/api/table/<tname>/row/<rowid>")
+def api_table_row(tname, rowid):
+    """Return a single row as JSON for the inline row-click modal."""
+    if not _known_table(tname):
+        return jsonify({"error": "unknown table"}), 404
+    s = _get_shard_id()
+    tq = _ident(tname)
+    fields = collection_fields(tname)
+    try:
+        if _is_oracle(s):
+            # Use the primary key column to fetch the row
+            pk = _pk_field(fields)
+            if not pk:
+                return jsonify({"error": "no primary key"}), 400
+            result = _oracle_query(
+                f"SELECT * FROM {_ora_ident(tq)} WHERE {_ora_ident(pk)} = :1",
+                [rowid], shard_id=s,
+            )
+            if not result:
+                return jsonify({"error": "row not found"}), 404
+            row = result[0]
+        elif _is_heatwave(s):
+            pk = _pk_field(fields)
+            if not pk:
+                return jsonify({"error": "no primary key"}), 400
+            result = _heatwave_query(
+                f"SELECT * FROM {_my_ident(tq)} WHERE {_my_ident(pk)} = %s", [rowid]
+            )
+            if not result:
+                return jsonify({"error": "row not found"}), 404
+            row = result[0]
+        else:
+            # MongoDB
+            doc = _mongo(s)[tq].find_one({_pk_field(fields): rowid})
+            if not doc:
+                return jsonify({"error": "row not found"}), 404
+            row = doc
+        # Build the JSON structure expected by the frontend: {columns: [...], row: {col: {display: ..., ...}}}
+        columns = list(fields.keys())
+        row_data = {}
+        for col in columns:
+            val = row.get(col) if isinstance(row, dict) else getattr(row, col, None)
+            row_data[col] = {
+                "display": display_value(val, col),
+                # Optionally include raw value if needed by the frontend, but the frontend only uses display
+            }
+        return jsonify({"columns": columns, "row": row_data})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 400
 
 
 # ─── template helpers ────────────────────────────────────────────────────────

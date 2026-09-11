@@ -521,7 +521,10 @@ class NodeClient:
                 self._on_unreachable(self)
             except Exception:
                 _log.warning("NodeClient: on_unreachable callback failed", exc_info=True)
-        raise NodeClientError(f"node agent is unavailable ({last_url})") from last_exc
+        # No URL in the message: routes.py surfaces this text to the browser
+        # (see _friendly_node_error), and the address is an internal detail.
+        # The URL that failed is kept on the exception chain for operators.
+        raise NodeClientError("node agent is unreachable") from last_exc
 
     def _http_error(self, exc, raw=b"") -> NodeClientError:
         """Map an agent error response onto NodeClientError.

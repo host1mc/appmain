@@ -112,10 +112,6 @@ class PanelSettings:
         return bool(self.flags.get("registration"))
 
     @property
-    def activity_log(self):
-        return bool(self.flags.get("activity_log"))
-
-    @property
     def deploys(self):
         return bool(self.flags.get("deploys"))
 
@@ -204,7 +200,6 @@ def _fallback(config):
         flags={
             "maintenance": False,
             "registration": bool(getattr(config, "allow_registration", False)),
-            "activity_log": bool(getattr(config, "activity_enabled", False)),
             "deploys": True,
             "uploads": True,
             "console": True,
