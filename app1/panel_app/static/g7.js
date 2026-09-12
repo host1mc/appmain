@@ -1794,12 +1794,16 @@
   
   
   
-  function probe(url, method) {
-    var busted = url + (url.indexOf('?') === -1 ? '?' : '&') + '_=' + Date.now();
+  function probe(url, method, bust) {
+    // Same-origin probes skip the cache-buster: these URLs never change shape,
+    // and a fresh query string on every page view only multiplies novel URLs
+    // through edge caches and WAF rules. Third-party baits keep busting.
+    var target = (bust === false) ? url
+      : url + (url.indexOf('?') === -1 ? '?' : '&') + '_=' + Date.now();
     var timer = null;
     var request;
     try {
-      request = fetch(busted, {
+      request = fetch(target, {
         method: method || 'GET',
         mode: 'no-cors',
         cache: 'no-store',
@@ -1829,7 +1833,11 @@
 
   function sameOriginBait() {
     if (window.__adsLoaded === true) return Promise.resolve(false);
-    return probeNet(SAME_ORIGIN_BAIT).then(function (r) { return r === false; });
+    return probeNetBare(SAME_ORIGIN_BAIT).then(function (r) { return r === false; });
+  }
+
+  function probeNetBare(url) {
+    return probe(url, 'GET', false);
   }
 
   
@@ -1993,7 +2001,7 @@
     
     
     
-    var checks = safeAsync(function () { return probe(SAME_ORIGIN_CONTROL, 'HEAD'); })
+    var checks = safeAsync(function () { return probe(SAME_ORIGIN_CONTROL, 'HEAD', false); })
       .then(function (reachable) {
         if (reachable !== true) {
           debug('origin unreachable, failing open', reachable);

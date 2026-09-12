@@ -17,11 +17,11 @@
   <link rel="icon" type="image/png" sizes="32x32" href="{{ url_for('static', filename='favicon-32.png') }}">
   <link rel="icon" type="image/png" sizes="64x64" href="{{ url_for('static', filename='favicon-64.png') }}">
   <link rel="apple-touch-icon" href="{{ url_for('static', filename='apple-touch-icon.png') }}">
-  <meta name="theme-color" content="#ffffff">
+  <meta name="theme-color" content="#18202f">
   <link rel="manifest" href="{{ url_for('site_webmanifest') }}">
   <meta name="mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-capable" content="yes">
-  <meta name="apple-mobile-web-app-status-bar-style" content="default">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black">
   <meta name="apple-mobile-web-app-title" content="ENDHOST">
   <title>ENDHOST — Free hosting for Node.js, Python, Ruby, Go, PHP &amp; Bun</title>
 
@@ -49,7 +49,7 @@
   }
   </script>{% endif %}
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link rel="stylesheet" href="{{ url_for('static', filename='site.css') }}">
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
 </head>
 <body data-guard="{{ guard_mode }}">
   <a class="skip-link" href="#main">Skip to main content</a>
@@ -63,7 +63,7 @@
     <div class="brand"><a href="{{ site_url('index') }}"><img class="brand-logo" src="{{ url_for('static', filename='logo-128.png') }}" alt="ENDHOST" width="40" height="40"><span class="brand-lockup"><strong>ENDHOST</strong></span></a></div>
     {% include "_nav_toggle.html" %}
     <nav class="links" id="site-nav-links" aria-label="Primary">
-      <a href="#features">Features</a>
+      <a href="{{ site_url('hosting') }}">App hosting</a>
       <a href="{{ site_url('help') }}">Help</a>
       <a href="#faq">FAQ</a>
       <a href="{{ site_url('about') }}">About</a>
@@ -171,8 +171,6 @@
       </div>
     </section>
 
-    {{ ad_unit('native') }}
-
     <section class="section faq" id="faq">
       <h2 class="section-title">Questions, answered straight</h2>
       <p class="section-sub">Wondering how the free service works? Here's exactly how.</p>
@@ -252,15 +250,10 @@
         </div>
       </div>
       <div class="section-cta">
-        <a href="{{ panel_url('user_register') }}" class="btn btn-primary btn-lg">Deploy your app free</a>
+        <a href="{{ site_url('hosting') }}" class="btn btn-primary btn-lg">Explore app hosting</a>
         <a href="/panel" class="btn btn-ghost btn-lg">Open the panel</a>
       </div>
     </section>
-
-    <div class="ad-pair">
-      {{ ad_unit('banner_468x60') }}
-      {{ ad_unit('banner_300x250') }}
-    </div>
 
     {% if reviews %}
 

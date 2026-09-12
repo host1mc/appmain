@@ -1460,8 +1460,8 @@ def site_webmanifest():
         "start_url": url_for("index"),
         "scope": "/",
         "display": "standalone",
-        "background_color": "#ffffff",
-        "theme_color": "#ffffff",
+        "background_color": "#08090e",
+        "theme_color": "#08090e",
         "icons": [
             {"src": url_for("static", filename="favicon-32.png"),
              "sizes": "32x32", "type": "image/png"},

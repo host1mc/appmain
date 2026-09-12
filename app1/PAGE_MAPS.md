@@ -298,10 +298,9 @@ i.e. they advertise until an admin turns their row off.
 
 | Template | Endpoint | Head | Slots, top to bottom |
 |---|---|---|---|
-| index.html | `index` | L4 | leaderboard (pre-footer) · native (after features) · 468×60 + 300×250 pair (before reviews) · mobile · popunder · social_bar |
-| about.html | `about` | L4 | leaderboard (top) · native (mid-article) · 300×250 (mid-article) · mobile · social_bar |
-| contact.html | `contact` | L4 | leaderboard (top) · 300×250 (mid-article) · native (mid-article) · mobile · social_bar |
-| help.html | `help` | L4 | leaderboard · banner_468x60 + banner_300x250 (`.ad-pair`) · native (mid-guides) · mobile · social_bar |
+| about.html | `about` | L4 | leaderboard L44 · mobile L99 · social_bar L100 |
+| contact.html | `contact` | L4 | leaderboard L44 · mobile L105 · social_bar L106 |
+| help.html | `help` | L4 | leaderboard L46 · banner_468x60 L61 + banner_300x250 L62 (`.ad-pair`) · mobile L453 · social_bar L454 |
 | terms.html | `terms` | L4 | none — head loader only |
 | privacy.html | `privacy` | — | none; emits no ad code at all, so its switch is inert |
 

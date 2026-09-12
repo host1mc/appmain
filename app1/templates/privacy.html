@@ -18,28 +18,24 @@
   <link rel="icon" type="image/png" sizes="32x32" href="{{ url_for('static', filename='favicon-32.png') }}">
   <link rel="icon" type="image/png" sizes="64x64" href="{{ url_for('static', filename='favicon-64.png') }}">
   <link rel="apple-touch-icon" href="{{ url_for('static', filename='apple-touch-icon.png') }}">
-  <meta name="theme-color" content="#ffffff">
+  <meta name="theme-color" content="#18202f">
   <link rel="manifest" href="{{ url_for('site_webmanifest') }}">
   <meta name="mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-capable" content="yes">
-  <meta name="apple-mobile-web-app-status-bar-style" content="default">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black">
   <meta name="apple-mobile-web-app-title" content="ENDHOST">
-  <link rel="stylesheet" href="{{ url_for('static', filename='site.css') }}">
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
   <title>Privacy Policy — ENDHOST</title>
 </head>
 <body data-guard="{{ guard_mode }}">
   <a class="skip-link" href="#main">Skip to main content</a>
-  {% if guard_mode == 'gate' %}
-  <div id="script-gate">
-    <div class="js-required"><div><h1>JavaScript Required</h1><p>This site needs JavaScript enabled to continue. Please disable any script/content blocker for this site, then reload.</p></div></div>
-  </div>
-  {% endif %}
   <header class="nav">
     <div class="brand"><a href="{{ site_url('index') }}"><img class="brand-logo" src="{{ url_for('static', filename='logo-128.png') }}" alt="ENDHOST" width="40" height="40"><span class="brand-lockup"><strong>ENDHOST</strong></span></a></div>
     {% include "_nav_toggle.html" %}
     <nav class="links" id="site-nav-links" aria-label="Primary">
       <a href="{{ site_url('index') }}">Home</a>
       <a href="{{ site_url('help') }}">Help</a>
+      <a href="{{ site_url('blog') }}">Blog</a>
       <a href="{{ site_url('about') }}">About</a>
       <a href="{{ site_url('contact') }}">Contact</a>
       <a href="{{ site_url('terms') }}">Terms</a>
@@ -110,10 +106,9 @@
       </div>
       <div class="footer-col">
         <h4>Product</h4>
-        <a href="{{ site_url('index') }}#setup">How it works</a>
-        <a href="{{ site_url('index') }}#features">Features</a>
+        <a href="{{ site_url('hosting') }}">App Hosting</a>
         <a href="{{ site_url('help') }}">Help / setup</a>
-        <a href="{{ site_url('index') }}#faq">FAQ</a>
+        <a href="{{ site_url('blog') }}">Blog</a>
       </div>
       <div class="footer-col">
         <h4>Community</h4>

@@ -19,30 +19,24 @@
   <link rel="icon" type="image/png" sizes="32x32" href="{{ url_for('static', filename='favicon-32.png') }}">
   <link rel="icon" type="image/png" sizes="64x64" href="{{ url_for('static', filename='favicon-64.png') }}">
   <link rel="apple-touch-icon" href="{{ url_for('static', filename='apple-touch-icon.png') }}">
-  <meta name="theme-color" content="#ffffff">
+  <meta name="theme-color" content="#18202f">
   <link rel="manifest" href="{{ url_for('site_webmanifest') }}">
   <meta name="mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-capable" content="yes">
-  <meta name="apple-mobile-web-app-status-bar-style" content="default">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black">
   <meta name="apple-mobile-web-app-title" content="ENDHOST">
-  <link rel="stylesheet" href="{{ url_for('static', filename='site.css') }}">
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
   <title>Contact Us — ENDHOST</title>
 </head>
 <body data-guard="{{ guard_mode }}">
   <a class="skip-link" href="#main">Skip to main content</a>
-  {% if guard_mode == 'gate' %}
-  <div id="script-gate">
-    <div class="js-required"><div><h1>JavaScript Required</h1><p>This site needs JavaScript enabled to continue. Please disable any script/content blocker for this site, then reload.</p></div></div>
-  </div>
-  {% endif %}
   <header class="nav">
     <div class="brand"><a href="{{ site_url('index') }}"><img class="brand-logo" src="{{ url_for('static', filename='logo-128.png') }}" alt="ENDHOST" width="40" height="40"><span class="brand-lockup"><strong>ENDHOST</strong></span></a></div>
     {% include "_nav_toggle.html" %}
     <nav class="links" id="site-nav-links" aria-label="Primary">
       <a href="{{ site_url('index') }}">Home</a>
       <a href="{{ site_url('help') }}">Help</a>
-      <a href="{{ site_url('about') }}">About</a>
-      <a href="{{ site_url('contact') }}" aria-current="page">Contact</a>
+      <a href="{{ site_url('blog') }}">Blog</a>
       <a href="{{ panel_url('user_login') }}">Log in</a>
       <a href="{{ panel_url('user_register') }}" class="btn btn-primary btn-sm nav-cta">Get started free</a>
     </nav>
@@ -57,23 +51,6 @@
 
       <p class="legal-intro">The first place to get help is our Discord server — that is the support desk and the community. Email exists for private or legal mail only, and replies there can be late.</p>
 
-      <div class="contact-grid">
-        <div class="contact-card">
-          <h2>Discord — support &amp; community</h2>
-          <p>Setup help, bot problems, feature requests and outage notices land here first, answered by the people who run the service.</p>
-          <a class="btn btn-discord btn-sm" href="{{ discord_invite }}" rel="noopener noreferrer" target="_blank">Join our Discord</a>
-        </div>
-        <div class="contact-card">
-          <h2>Email — private mail only</h2>
-          {% if contact_email %}
-          <p>Account recovery, privacy requests, legal notices, security reports and advertising: <a href="mailto:{{ contact_email }}">{{ contact_email }}</a>. Replies can take several days.</p>
-          <a class="btn btn-ghost btn-sm" href="mailto:{{ contact_email }}">Write an email</a>
-          {% else %}
-          <p>For anything private, message an operator in the Discord server rather than posting it publicly.</p>
-          {% endif %}
-        </div>
-      </div>
-
       <h2>Discord — support and community (preferred)</h2>
       <p>Join <a href="{{ discord_invite }}" rel="noopener noreferrer" target="_blank">our Discord server</a>. Open a support ticket or ask in the community channels. The people who run the service are in that server, so setup help, bot problems, feature requests, and outage notices all land there first.</p>
       <p>Use Discord for:</p>
@@ -86,8 +63,6 @@
       </ul>
       <p>Do not paste your Discord bot token in any channel. If a token leaked, reset it in the Discord Developer Portal and paste the new one into the panel.</p>
 
-      {{ ad_unit('banner_300x250') }}
-
       {% if contact_email %}
       <h2>Email — replies can be late</h2>
       <p>For private or formal mail only — account recovery, privacy requests, legal notices, security reports, or advertising — write to <a href="mailto:{{ contact_email }}">{{ contact_email }}</a>. Include the email on your account. Do not send a bot token by email.</p>
@@ -99,8 +74,6 @@
 
       <h2>Reporting abuse</h2>
       <p>If a bot hosted here is being used to harass, spam, or impersonate, tell us and we will act on it. Include the bot's name, the Discord server where you saw it, and roughly when it happened. Accounts that abuse the platform are suspended under our <a href="{{ site_url('terms') }}">Terms of Service</a>.</p>
-
-      {{ ad_unit('native') }}
 
       <h2>Security disclosure</h2>
       <p>If you have found a vulnerability, please report it privately first and give us a chance to fix it before publishing. We will not pursue anyone who reports a genuine issue in good faith, stays within their own account, and does not access, alter, or destroy other people's data. We do not currently run a paid bounty programme.</p>
@@ -124,10 +97,9 @@
       </div>
       <div class="footer-col">
         <h4>Product</h4>
-        <a href="{{ site_url('index') }}#setup">How it works</a>
-        <a href="{{ site_url('index') }}#features">Features</a>
+        <a href="{{ site_url('hosting') }}">App Hosting</a>
         <a href="{{ site_url('help') }}">Help / setup</a>
-        <a href="{{ site_url('index') }}#faq">FAQ</a>
+        <a href="{{ site_url('blog') }}">Blog</a>
       </div>
       <div class="footer-col">
         <h4>Community</h4>

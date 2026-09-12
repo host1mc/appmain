@@ -4,12 +4,12 @@
   {{ ad_head() }}
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <meta name="description" content="ENDHOST help and setup guides — create a status bot, deploy your own app, manage renewals, and fix common problems.">
+  <meta name="description" content="How to host on ENDHOST — a live Minecraft status embed for Discord, or your own app in Node.js, Python, Ruby, Go, PHP or Bun, step by step.">
   <meta name="robots" content="index, follow">
-  <meta property="og:type" content="website">
+  <meta property="og:type" content="article">
   <meta property="og:site_name" content="ENDHOST">
-  <meta property="og:title" content="Help &amp; setup guides — ENDHOST">
-  <meta property="og:description" content="ENDHOST help and setup guides — create a status bot, deploy your own app, manage renewals, and fix common problems.">
+  <meta property="og:title" content="Help — Create and host your Discord bot on ENDHOST">
+  <meta property="og:description" content="How to create a Discord bot and host a live Minecraft server-status embed with ENDHOST — step by step, with screenshots.">
   <meta name="twitter:card" content="summary">
   {% if site_host %}<meta property="og:url" content="{{ site_url('help') }}">
   <meta property="og:image" content="{{ site_host }}{{ url_for('static', filename='apple-touch-icon.png') }}">
@@ -19,28 +19,24 @@
   <link rel="icon" type="image/png" sizes="32x32" href="{{ url_for('static', filename='favicon-32.png') }}">
   <link rel="icon" type="image/png" sizes="64x64" href="{{ url_for('static', filename='favicon-64.png') }}">
   <link rel="apple-touch-icon" href="{{ url_for('static', filename='apple-touch-icon.png') }}">
-  <meta name="theme-color" content="#ffffff">
+  <meta name="theme-color" content="#18202f">
   <link rel="manifest" href="{{ url_for('site_webmanifest') }}">
   <meta name="mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-capable" content="yes">
-  <meta name="apple-mobile-web-app-status-bar-style" content="default">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black">
   <meta name="apple-mobile-web-app-title" content="ENDHOST">
-  <link rel="stylesheet" href="{{ url_for('static', filename='site.css') }}">
-  <title>Help &amp; setup guides — ENDHOST</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+  <title>Help — Create and host your Discord bot on ENDHOST</title>
 </head>
-<body data-guard="{{ guard_mode }}">
+<body class="help-body" data-guard="{{ guard_mode }}">
   <a class="skip-link" href="#main">Skip to main content</a>
-  {% if guard_mode == 'gate' %}
-  <div id="script-gate">
-    <div class="js-required"><div><h1>JavaScript Required</h1><p>This site needs JavaScript enabled to continue. Please disable any script/content blocker for this site, then reload.</p></div></div>
-  </div>
-  {% endif %}
   <header class="nav">
     <div class="brand"><a href="{{ site_url('index') }}"><img class="brand-logo" src="{{ url_for('static', filename='logo-128.png') }}" alt="ENDHOST" width="40" height="40"><span class="brand-lockup"><strong>ENDHOST</strong></span></a></div>
     {% include "_nav_toggle.html" %}
     <nav class="links" id="site-nav-links" aria-label="Primary">
       <a href="{{ site_url('index') }}">Home</a>
       <a href="{{ site_url('help') }}" aria-current="page">Help</a>
+      <a href="{{ site_url('blog') }}">Blog</a>
       <a href="{{ site_url('about') }}">About</a>
       <a href="{{ site_url('contact') }}">Contact</a>
       <a href="{{ panel_url('user_login') }}">Log in</a>
@@ -51,114 +47,526 @@
   {{ ad_unit('leaderboard') }}
 
   <main id="main">
-    <div class="help-hero">
-      <p class="help-kicker">Guides</p>
-      <h1>Help &amp; setup guides</h1>
-      <p class="help-lead">Everything below is the real procedure — follow it top to bottom and your bot is live. Stuck anywhere? Ask in the Discord.</p>
-      <p class="help-meta">6 guides · about 10 minutes of reading</p>
+  <div class="help-hero">
+    <p class="help-kicker">Setup guide</p>
+    <h1>Create the Discord bot.<br>We keep it online.</h1>
+    <p class="help-lead">You make the bot in Discord’s developer portal, invite it to your server, then paste a few IDs into our panel. From there, pick your path: let us run a live Minecraft status embed for you (step 5), or upload your own app — Node.js, Python, Ruby, Go, PHP or Bun — and we run that instead (step 7). Either way — no VPS, no PC left on.</p>
+    <div class="help-meta">
+      <span>~10 minutes</span>
+      <span>Status embed or your own app</span>
+      <span>Free</span>
     </div>
+  </div>
 
-    <div class="help-layout">
-      <nav class="help-rail" aria-label="Guides">
-        <a href="#status-bot">Status bot setup</a>
-        <a href="#embed">Designing the embed</a>
-        <a href="#own-app">Deploying your own app</a>
-        <a href="#renew">Weekly renewals</a>
-        <a href="#fix">Fixing problems</a>
-        <a href="#faq">FAQ</a>
-      </nav>
+  <div class="ad-pair help-ad-pair">
+    {{ ad_unit('banner_468x60') }}
+    {{ ad_unit('banner_300x250') }}
+  </div>
 
-      <div class="help-main">
-        <section class="help-step" id="status-bot">
-          <h2><span class="help-num">1</span> Status bot setup, start to finish</h2>
-          <ol class="help-list">
-            <li><strong>Create a Discord application</strong> in the <a href="https://discord.com/developers/applications" rel="noopener noreferrer" target="_blank">Developer Portal</a>, open the Bot tab, and copy the token. Keep it private — anyone holding it controls your bot.</li>
-            <li><strong>Invite the bot</strong> to your server with the OAuth2 URL generator: scopes <code>bot</code>, permissions <code>View Channel</code>, <code>Send Messages</code> and <code>Read Message History</code>. It needs nothing else — no administrator, no kick, no ban.</li>
-            <li><strong>Make a free account</strong> <a href="{{ panel_url('user_register') }}">here</a>, open the panel, and paste the token into a new bot slot. It is encrypted before it is stored and never shown back to you.</li>
-            <li><strong>Point it at your server:</strong> the public IP or hostname plus port — <code>25565</code> for Java, <code>19132</code> for Bedrock. We query the public status endpoint only; no RCON, FTP or plugin is needed.</li>
-            <li><strong>Paste the guild ID and channel ID</strong> (enable Developer Mode in Discord, right-click, Copy ID). The engine posts one embed, then edits that same message on your refresh interval.</li>
-            <li><strong>Press Start.</strong> The engine picks the bot up on the next tick and the embed goes live.</li>
-          </ol>
-          <div class="help-callout">Never paste your bot token in Discord, email, or a help ticket. If one leaks, reset it in the Developer Portal and paste the new token into the panel.</div>
-        </section>
+  <div class="help-layout">
+    <aside class="help-rail" aria-label="Steps">
+      <ol>
+        <li><a href="#s1"><span>1</span> Discord application</a></li>
+        <li><a href="#s2"><span>2</span> Bot token</a></li>
+        <li><a href="#s3"><span>3</span> Invite the bot</a></li>
+        <li><a href="#s4"><span>4</span> Guild &amp; channel IDs</a></li>
+        <li><a href="#s5"><span>5</span> Minecraft address</a></li>
+        <li><a href="#s6"><span>6</span> Save &amp; start hosting</a></li>
+        <li><a href="#s7"><span>7</span> Packages &amp; startup files</a></li>
+        <li><a href="#fix"><span>?</span> Troubleshooting</a></li>
+      </ol>
+    </aside>
 
-        <section class="help-step" id="embed">
-          <h2><span class="help-num">2</span> Designing the status embed</h2>
-          <p>Open any bot slot to reach the embed builder. The preview on the right renders exactly what Discord will show, and every change appears there before you save.</p>
-          <ul class="help-list">
-            <li><strong>Title, description and footer</strong> accept Discord markdown: <code>**bold**</code>, <code>*italic*</code>, <code>__underline__</code>, <code>~~strike~~</code>, <code>`code`</code> and <code>[links](https://…)</code>.</li>
-            <li><strong>Widgets</strong> are the live fields — status, MOTD, IP and port, players online, player list, version, software, plugins, and timestamps. Drag them to reorder; each renders in sequence.</li>
-            <li><strong>Placeholders</strong> like <code>{ip_port}</code> expand when the reply is sent, so one template serves every server.</li>
-            <li><strong>Refresh interval</strong> minimum is 15 seconds; 60 seconds suits almost every server and is gentler on your Minecraft host and Discord's API.</li>
-            <li><strong>IP replies:</strong> set a trigger word (for example <code>ip</code>) and the bot answers with your address as a plain message or a styled embed.</li>
-          </ul>
-        </section>
+    <div class="help-main">
+      <article class="help-step" id="s1">
+        <div class="help-num">01</div>
+        <h2>Create a Discord application</h2>
+        <p>Open the <a href="https://discord.com/developers/applications" rel="noopener noreferrer" target="_blank">Discord Developer Portal</a> while logged into the Discord account that owns (or can manage) your server.</p>
+        <ol class="help-list">
+          <li>Click <strong>New Application</strong>.</li>
+          <li>Name it something members will recognise — for example <em>Survival Status</em>.</li>
+          <li>Accept the terms and create it.</li>
+        </ol>
 
-        <div class="ad-pair help-ad-pair">
-          {{ ad_unit('banner_468x60') }}
-          {{ ad_unit('banner_300x250') }}
+        <figure class="shot" aria-hidden="true">
+          <div class="shot-browser">
+            <div class="shot-chrome">
+              <span class="shot-lights"><i></i><i></i><i></i></span>
+              <span class="shot-tab"><span class="shot-fav shot-fav-d"></span>Discord Developer Portal</span>
+              <span class="shot-url"><span class="shot-lock"></span>discord.com/developers/applications</span>
+            </div>
+            <div class="shot-body">
+              <aside class="dpl-side">
+                <span class="dpl-logo">D</span>
+                <nav class="dpl-nav">
+                  <span class="dpl-item on">Applications</span>
+                  <span class="dpl-item">Start a Project</span>
+                  <span class="dpl-item">Documentation</span>
+                  <span class="dpl-item">Community</span>
+                </nav>
+              </aside>
+              <div class="dpl-main">
+                <div class="dpl-top">
+                  <h3>Your Applications</h3>
+                  <span class="dpl-btn" id="target-new-app">New Application</span>
+                </div>
+                <div class="dpl-empty">
+                  <span class="dpl-empty-icon"></span>
+                  <p>You have not created any applications yet.</p>
+                  <span class="dpl-btn">New Application</span>
+                </div>
+                <span class="shot-mark" style="top:10px;right:6px" data-label="click this"></span>
+              </div>
+            </div>
+          </div>
+          <figcaption class="shot-cap">Discord Developer Portal — click the blurple <b>New Application</b> button in the top-right corner.</figcaption>
+        </figure>
+      </article>
+
+      <article class="help-step" id="s2">
+        <div class="help-num">02</div>
+        <h2>Turn it into a bot and copy the token</h2>
+        <p>An application is not a bot until you add the Bot user. The token is the password our engine uses to post the embed. Treat it like a password.</p>
+        <ol class="help-list">
+          <li>Open the <strong>Bot</strong> tab in the left sidebar.</li>
+          <li>Click <strong>Reset Token</strong> / <strong>Copy</strong> and store the token somewhere private for a moment.</li>
+          <li>Under Privileged Gateway Intents, you do <em>not</em> need Message Content, Presence, or Server Members for a status embed. Leave them off unless you later use keyword replies that require them.</li>
+        </ol>
+
+        <figure class="shot" aria-hidden="true">
+          <div class="shot-browser">
+            <div class="shot-chrome">
+              <span class="shot-lights"><i></i><i></i><i></i></span>
+              <span class="shot-tab"><span class="shot-fav shot-fav-d"></span>Discord Developer Portal</span>
+              <span class="shot-url"><span class="shot-lock"></span>discord.com/developers/applications/1141534237612908603/bot</span>
+            </div>
+            <div class="shot-body">
+              <aside class="dpl-side">
+                <span class="dpl-logo">D</span>
+                <nav class="dpl-nav">
+                  <span class="dpl-item on">Applications</span>
+                  <span class="dpl-item">Start a Project</span>
+                  <span class="dpl-item">Documentation</span>
+                  <span class="dpl-item">Community</span>
+                </nav>
+              </aside>
+              <div class="dpl-main">
+                <div class="dpl-apphead">
+                  <span class="dpl-appicon">S</span>
+                  <div><b>Survival Status</b><small>Application ID 1141534237612908603</small></div>
+                </div>
+                <div class="dpl-tabs">
+                  <span>General Information</span><span class="on">Bot</span><span>OAuth2</span><span>Roles</span><span>Webhooks</span><span>Integrations</span><span>Monetization</span>
+                </div>
+                <div class="dpl-card">
+                  <div class="dpl-fieldrow">
+                    <span class="dpl-fname">BOT USERNAME</span>
+                    <span class="dpl-input"><span class="dpl-avatar">S</span>Survival Status</span>
+                  </div>
+                  <div class="dpl-fieldrow">
+                    <span class="dpl-fname">TOKEN</span>
+                    <span class="dpl-token">••••••••••••••••••••••••••••••••••</span>
+                    <span class="dpl-btn dpl-btn-warn">Reset Token</span>
+                    <span class="dpl-btn" id="target-copy-token">Copy</span>
+                  </div>
+                  <div class="dpl-intents">
+                    <div class="dpl-fname">PRIVILEGED GATEWAY INTENTS</div>
+                    <div class="dpl-toggle"><span>Presence Intent</span><i></i></div>
+                    <div class="dpl-toggle"><span>Server Members Intent</span><i></i></div>
+                    <div class="dpl-toggle"><span>Message Content Intent</span><i></i></div>
+                  </div>
+                </div>
+                <span class="shot-mark" style="top:186px;right:10px" data-label="press copy"></span>
+              </div>
+            </div>
+          </div>
+          <figcaption class="shot-cap">Bot tab — <b>Copy</b> the token. Keep it private; paste it into our panel in step 6.</figcaption>
+        </figure>
+
+        <div class="help-callout">
+          <strong>Never share the token.</strong> Paste it only into our panel. We encrypt it before storage, never send it back to the browser, and never log it. If it leaks, reset it in the Developer Portal and paste the new one.
+        </div>
+      </article>
+
+      <article class="help-step" id="s3">
+        <div class="help-num">03</div>
+        <h2>Invite the bot to your Discord server</h2>
+        <p>The bot must already be in the server before our engine can post.</p>
+        <ol class="help-list">
+          <li>Open <strong>OAuth2 → URL Generator</strong>.</li>
+          <li>Scopes: tick <strong>bot</strong>.</li>
+          <li>Bot permissions: <strong>View Channels</strong>, <strong>Send Messages</strong>, <strong>Read Message History</strong>, and <strong>Embed Links</strong>. Do not grant Administrator.</li>
+          <li>Copy the generated URL, open it, pick your server, and authorise.</li>
+        </ol>
+
+        <figure class="shot" aria-hidden="true">
+          <div class="shot-browser">
+            <div class="shot-chrome">
+              <span class="shot-lights"><i></i><i></i><i></i></span>
+              <span class="shot-tab"><span class="shot-fav shot-fav-d"></span>Discord Developer Portal</span>
+              <span class="shot-url"><span class="shot-lock"></span>discord.com/developers/applications/1141534237612908603/oauth2/url-generator</span>
+            </div>
+            <div class="shot-body">
+              <aside class="dpl-side">
+                <span class="dpl-logo">D</span>
+                <nav class="dpl-nav">
+                  <span class="dpl-item on">Applications</span>
+                  <span class="dpl-item">Start a Project</span>
+                  <span class="dpl-item">Documentation</span>
+                  <span class="dpl-item">Community</span>
+                </nav>
+              </aside>
+              <div class="dpl-main">
+                <div class="dpl-breadcrumb">OAuth2 <i>/</i> URL Generator</div>
+                <div class="dpl-scopes">
+                  <div class="dpl-fname">SCOPES</div>
+                  <span class="dpl-check on">bot</span>
+                  <span class="dpl-check">applications.commands</span>
+                  <span class="dpl-check">email</span>
+                </div>
+                <div class="dpl-card">
+                  <div class="dpl-fname">BOT PERMISSIONS</div>
+                  <div class="dpl-perms">
+                    <span class="dpl-check on">View Channels</span>
+                    <span class="dpl-check on">Send Messages</span>
+                    <span class="dpl-check on">Read Message History</span>
+                    <span class="dpl-check on">Embed Links</span>
+                    <span class="dpl-check">Manage Roles</span>
+                    <span class="dpl-check">Kick Members</span>
+                    <span class="dpl-check">Ban Members</span>
+                    <span class="dpl-check off">Administrator</span>
+                  </div>
+                  <div class="dpl-fname">GENERATED URL</div>
+                  <div class="dpl-url">
+                    <span>https://discord.com/oauth2/authorize?client_id=1141534237612908603&amp;permissions=84992&amp;scope=bot</span>
+                    <span class="dpl-btn" id="target-copy-url">Copy</span>
+                  </div>
+                </div>
+                <span class="shot-mark" style="bottom:34px;right:10px" data-label="then copy the URL"></span>
+              </div>
+            </div>
+          </div>
+          <figcaption class="shot-cap">OAuth2 URL Generator — tick <b>bot</b>, tick the four permissions above, then <b>Copy</b> the generated URL and open it in a new tab.</figcaption>
+        </figure>
+
+        <div class="help-pills">
+          <span>View Channel</span>
+          <span>Send Messages</span>
+          <span>Read History</span>
+          <span>Embed Links</span>
+        </div>
+      </article>
+
+      <article class="help-step" id="s4">
+        <div class="help-num">04</div>
+        <h2>Copy the guild ID and channel ID</h2>
+        <p>Discord calls a server a <em>guild</em>. You need two snowflake IDs so the engine knows where to post.</p>
+        <ol class="help-list">
+          <li>In Discord, open <strong>User Settings → App Settings → Advanced</strong> and turn on <strong>Developer Mode</strong>.</li>
+          <li>Right-click your server icon → <strong>Copy Server ID</strong>. That is the guild ID.</li>
+          <li>Right-click the status channel (a text channel you are happy to keep as one live card) → <strong>Copy Channel ID</strong>.</li>
+        </ol>
+
+        <figure class="shot" aria-hidden="true">
+          <div class="shot-browser">
+            <div class="shot-chrome">
+              <span class="shot-lights"><i></i><i></i><i></i></span>
+              <span class="shot-tab"><span class="shot-fav shot-fav-dc"></span>Discord</span>
+            </div>
+            <div class="shot-body">
+              <div class="dc-client">
+                <div class="dc-guilds">
+                  <span class="dc-guild dc-guild-home">D</span>
+                  <span class="dc-guild dc-guild-srv">S</span>
+                  <span class="dc-guild dc-guild-add">+</span>
+                </div>
+                <div class="dc-side">
+                  <div class="dc-side-head">Survival SMP <i>▾</i></div>
+                  <div class="dc-side-label">TEXT CHANNELS</div>
+                  <span class="dc-channel"># general</span>
+                  <span class="dc-channel on"># server-status</span>
+                </div>
+                <div class="dc-chat">
+                  <div class="dc-chat-head"># server-status</div>
+                  <div class="dc-chat-pad">
+                    <div class="dc-mini-embed"><div class="dc-mini-title">Survival SMP</div><div class="dc-mini-dot"></div><span class="dc-mini-line">online · 24/100 · 1.21.1</span></div>
+                    <div class="dc-chat-lines"><i style="width:72%"></i><i style="width:58%"></i><i style="width:64%"></i></div>
+                  </div>
+                  <div class="dc-menu">
+                    <span class="dc-menu-head">Survival SMP</span>
+                    <span class="dc-menu-item">Invite People</span>
+                    <span class="dc-menu-item">Server Settings</span>
+                    <span class="dc-menu-item">Create Channel</span>
+                    <span class="dc-menu-item">Create Category</span>
+                    <span class="dc-menu-item hot">Copy Server ID</span>
+                    <span class="dc-menu-item">Copy Server URL</span>
+                    <span class="dc-menu-sep"></span>
+                    <span class="dc-menu-item danger">Leave Server</span>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+          <figcaption class="shot-cap">In Discord, right-click the server icon in the sidebar → <b>Copy Server ID</b> (guild ID).</figcaption>
+        </figure>
+
+        <figure class="shot" aria-hidden="true">
+          <div class="shot-browser">
+            <div class="shot-chrome">
+              <span class="shot-lights"><i></i><i></i><i></i></span>
+              <span class="shot-tab"><span class="shot-fav shot-fav-dc"></span>Discord</span>
+            </div>
+            <div class="shot-body">
+              <div class="dc-client">
+                <div class="dc-guilds">
+                  <span class="dc-guild dc-guild-home">D</span>
+                  <span class="dc-guild dc-guild-srv">S</span>
+                  <span class="dc-guild dc-guild-add">+</span>
+                </div>
+                <div class="dc-side">
+                  <div class="dc-side-head">Survival SMP <i>▾</i></div>
+                  <div class="dc-side-label">TEXT CHANNELS</div>
+                  <span class="dc-channel"># general</span>
+                  <span class="dc-channel on"># server-status</span>
+                </div>
+                <div class="dc-chat">
+                  <div class="dc-chat-head"># server-status</div>
+                  <div class="dc-chat-pad">
+                    <div class="dc-mini-embed"><div class="dc-mini-title">Survival SMP</div><div class="dc-mini-dot"></div><span class="dc-mini-line">online · 24/100 · 1.21.1</span></div>
+                    <div class="dc-chat-lines"><i style="width:66%"></i><i style="width:52%"></i><i style="width:60%"></i></div>
+                  </div>
+                  <div class="dc-menu">
+                    <span class="dc-menu-head">server-status</span>
+                    <span class="dc-menu-item">Invite People</span>
+                    <span class="dc-menu-item">Edit Channel</span>
+                    <span class="dc-menu-item">Clone Channel</span>
+                    <span class="dc-menu-item hot">Copy Channel ID</span>
+                    <span class="dc-menu-item">Copy Channel URL</span>
+                    <span class="dc-menu-sep"></span>
+                    <span class="dc-menu-item">Create Event</span>
+                    <span class="dc-menu-item danger">Delete Channel</span>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+          <figcaption class="shot-cap">Then right-click the <b># server-status</b> channel → <b>Copy Channel ID</b>. Create a dedicated channel if you can — the bot posts once and edits that same message in place.</figcaption>
+        </figure>
+      </article>
+
+      <article class="help-step" id="s5">
+        <div class="help-num">05</div>
+        <h2>Point it at the Minecraft server</h2>
+        <p>For the hosted status embed. Uploading your own bot instead? Skip to step 7.</p>
+        <p>We only query the public status endpoint. No RCON, FTP, plugin, or whitelist for our IP is required — the same query a multiplayer client uses when it lists the server.</p>
+        <div class="help-split">
+          <div>
+            <h3>Java Edition</h3>
+            <p>Hostname or IP, port usually <strong>25565</strong>. Edition: Java.</p>
+          </div>
+          <div>
+            <h3>Bedrock</h3>
+            <p>Hostname or IP, port usually <strong>19132</strong>. Edition: Bedrock.</p>
+          </div>
+        </div>
+        <p>If the server is offline, the embed flips to your offline wording. When it comes back, it flips back on its own.</p>
+      </article>
+
+      <article class="help-step" id="s6">
+        <div class="help-num">06</div>
+        <h2>Create your free account, paste, start hosting</h2>
+        <ol class="help-list">
+          <li><a href="{{ panel_url('user_register') }}">Register</a> with a Gmail or Outlook address and verify the 6-digit code.</li>
+          <li>Open a bot slot. Paste the token, guild ID, channel ID, Minecraft address, and port.</li>
+          <li>Design the card in the visual builder (title, colour, fields, player list). Preview it before you save.</li>
+          <li>Save, then <strong>Start Hosting</strong>. The engine picks the bot up on the next tick and posts the first embed. After that it only edits that message.</li>
+        </ol>
+        <p>Minimum refresh is 15 seconds. 60 seconds is enough for almost every server. You can close the browser — hosting does not run on your PC.</p>
+
+        <figure class="shot" aria-hidden="true">
+          <div class="shot-browser">
+            <div class="shot-chrome">
+              <span class="shot-lights"><i></i><i></i><i></i></span>
+              <span class="shot-tab"><span class="shot-fav shot-fav-e"></span>End × Zairo — Panel</span>
+              <span class="shot-url"><span class="shot-lock"></span>your panel · embed builder</span>
+            </div>
+            <div class="shot-body">
+              <div class="panel-row">
+                <span class="panel-dot"></span>
+                <b>Survival SMP Status</b>
+                <span class="panel-run">RUNNING</span>
+                <span class="panel-last">updated 4s ago</span>
+                <span class="dpl-btn dpl-btn-green">Start Hosting</span>
+              </div>
+              <div class="panel-grid">
+                <div class="panel-cell">
+                  <span class="panel-fname">Server IP / Host</span>
+                  <span class="panel-input">play.survivalsmp.net</span>
+                  <span class="panel-fname">Port</span>
+                  <span class="panel-input">25565</span>
+                </div>
+                <div class="panel-cell">
+                  <span class="panel-fname">Discord Connection</span>
+                  <span class="panel-input panel-masked">token ••••••••••••••</span>
+                  <span class="panel-input">guild · channel · IDs set</span>
+                </div>
+                <div class="panel-cell panel-embed">
+                  <div class="dc-mini-embed wide"><div class="dc-mini-title">Survival SMP</div><div class="dc-mini-dot"></div><span class="dc-mini-line">24/100 players · 1.21.1 · play.survivalsmp.net</span></div>
+                  <span class="panel-preview">static preview — how the embed appears in chat</span>
+                </div>
+              </div>
+              <span class="shot-mark" style="top:16px;right:26px" data-label="press start"></span>
+            </div>
+          </div>
+          <figcaption class="shot-cap">Paste the four values, design the card in the visual builder, preview it, then <b>Start Hosting</b>. The engine does the rest, 24/7.</figcaption>
+        </figure>
+
+        <div class="help-cta-row">
+          <a class="btn btn-primary" href="{{ panel_url('user_register') }}">Create a free account</a>
+          <a class="btn btn-ghost" href="{{ panel_url('user_login') }}">I already have one</a>
+        </div>
+      </article>
+
+      <article class="help-step" id="s7">
+        <div class="help-num">07</div>
+        <h2>Choose the package folder and startup file</h2>
+        <p>For your own app in any of the six runtimes — Node.js, Python, Ruby, Go, PHP or Bun. See <a href="/hosting">App Hosting</a> for versions and limits.</p>
+        <p>If your app lives in a subfolder, open the file list first. Click <strong>Pkg Install</strong> beside the manifest in that folder and the panel remembers the directory for future installs, so the next restart runs the install from there before your app starts.</p>
+        <div class="help-split">
+          <div>
+            <h3>Node.js &amp; Bun</h3>
+            <p>Use <code>package.json</code> to set the install location, then click your entry file and press <strong>Startup</strong>. That turns the file into the container command, for example <code>node index.js</code>, <code>bun run index.ts</code>, or <code>cd app &amp;&amp; npm install &amp;&amp; node src/index.js</code>.</p>
+          </div>
+          <div>
+            <h3>Python, Ruby, Go &amp; PHP</h3>
+            <p>Same pattern with your own manifest — <code>requirements.txt</code>, <code>Gemfile</code> or <code>go.mod</code>. Install it from the folder that contains it, then choose the file that launches your app: <code>main.py</code>, <code>main.rb</code>, <code>go run .</code> or <code>main.php</code>.</p>
+          </div>
         </div>
 
-        <section class="help-step" id="own-app">
-          <h2><span class="help-num">3</span> Deploying your own app</h2>
-          <p>The same panel hosts code you wrote yourself. Pick a runtime, set a start command, deploy — the container runs around the clock.</p>
-          <ol class="help-list">
-            <li>Open the panel's <strong>Deploy server</strong> page and name the container.</li>
-            <li>Pick a <strong>runtime and version</strong>: Node.js, Python, Ruby, Go, PHP or Bun. Only versions the node can actually build are offered.</li>
-            <li>Set the <strong>startup command</strong> that runs inside <code>/home/container</code> — for example <code>node index.js</code> or <code>python bot.py</code>.</li>
-            <li>Upload files or let the dependency step run (<code>npm install</code>, <code>pip install -r requirements.txt</code>), then create and start the server.</li>
-            <li>Watch the <strong>live console</strong> and the <strong>files</strong> tab to confirm it booted; memory, CPU, storage and network meters show what it uses.</li>
-          </ol>
-          <div class="help-callout">Outbound networking only: your app can reach Discord, an API or a database, and nothing on the internet dials in to it. There is no inbound port, domain, or TLS to configure.</div>
-        </section>
-
-        {{ ad_unit('native') }}
-
-        <section class="help-step" id="renew">
-          <h2><span class="help-num">4</span> Weekly renewals, explained</h2>
-          <p>Free accounts stay live with a one-click renewal each cycle. A few days before the turn-off date a <strong>Renew</strong> button appears on your home page and in the hosting panel — press it and the deadline moves a full cycle past the old expiry. The button hides again until the next window opens, so you cannot renew twice by accident.</p>
-          <ul class="help-list">
-            <li>Renewing also restarts anything the inactivity policy had paused.</li>
-            <li>Paid accounts never need to renew.</li>
-            <li>Miss the window and workloads stop; renewing brings them back.</li>
-          </ul>
-        </section>
-
-        <section class="help-step" id="fix">
-          <h2><span class="help-num">5</span> Fixing the common problems</h2>
-          <ul class="help-list">
-            <li><strong>Embed stuck or not updating:</strong> check the bot is Started in the panel, then confirm the Minecraft IP and port answer from your own connection. A changed server IP is the usual cause.</li>
-            <li><strong>Server shows offline but is up:</strong> the status query may be blocked by the host's firewall, or the server lists a different port than the one you entered. Bedrock servers must use the Bedrock port.</li>
-            <li><strong>Bot has no permission:</strong> re-check View Channel, Send Messages and Read Message History on the status channel — then re-invite with the corrected URL.</li>
-            <li><strong>Own app restarts in a loop:</strong> read the first lines of the live console; missing dependencies and wrong start commands announce themselves there. Reinstall dependencies from the server settings if the install step was skipped.</li>
-            <li><strong>Login trouble:</strong> registration codes arrive by email and expire quickly — check spam, then request a fresh one.</li>
-          </ul>
-          <div class="help-callout warn">Still stuck after the list above? Ask in the Discord with your bot name, what you expected, and what you see instead — that is everything needed to help.</div>
-        </section>
-
-        <section class="help-step" id="faq">
-          <h2><span class="help-num">6</span> Quick answers</h2>
-          <div class="faq-list">
-            <details class="faq-item">
-              <summary>Is everything here really free?</summary>
-              <p>Yes. No paid tier exists. The public pages carry ads, which is what pays for the servers — see <a href="{{ site_url('about') }}">how the service is funded</a>.</p>
-            </details>
-            <details class="faq-item">
-              <summary>Do you support Bedrock?</summary>
-              <p>Yes — player count, version, MOTD and player lists work for Java and Bedrock alike.</p>
-            </details>
-            <details class="faq-item">
-              <summary>Can I run code that isn't a Discord bot?</summary>
-              <p>Yes. Web services, Telegram bots, scrapers and scheduled jobs all run, within the container's memory, CPU and disk limits shown at deploy time.</p>
-            </details>
-            <details class="faq-item">
-              <summary>How do I delete everything?</summary>
-              <p>Delete the account from the panel. Bots stop and the stored data is removed, as described in the <a href="{{ site_url('privacy') }}">Privacy Policy</a>.</p>
-            </details>
+        <div class="help-runtime-card">
+          <div class="help-runtime-head">
+            <div>
+              <span class="help-runtime-kicker">Container image</span>
+              <strong>Pick the runtime first</strong>
+            </div>
+            <span class="dpl-btn dpl-btn-green">Ready to deploy</span>
           </div>
-        </section>
-      </div>
+          <div class="runtime-grid help-runtime-grid">
+            <div class="runtime-choice">
+              <span class="runtime-card active">
+                <span class="runtime-icon large nodejs">JS</span>
+                <span><strong>Node.js</strong><small>Best for discord.js, ESM, CommonJS, and package.json projects</small></span>
+                <i></i>
+              </span>
+            </div>
+            <div class="runtime-choice">
+              <span class="runtime-card">
+                <span class="runtime-icon large python">PY</span>
+                <span><strong>Python</strong><small>Use requirements.txt, discord.py, Pycord, or Flask bots</small></span>
+                <i></i>
+              </span>
+            </div>
+            <div class="runtime-choice">
+              <span class="runtime-card">
+                <span class="runtime-icon large ruby">RB</span>
+                <span><strong>Ruby</strong><small>For Ruby bots and older wrappers that run from a Gemfile</small></span>
+                <i></i>
+              </span>
+            </div>
+            <div class="runtime-choice">
+              <span class="runtime-card">
+                <span class="runtime-icon large go">GO</span>
+                <span><strong>Go</strong><small>For compiled bots or tools that ship as one binary</small></span>
+                <i></i>
+              </span>
+            </div>
+            <div class="runtime-choice">
+              <span class="runtime-card">
+                <span class="runtime-icon large php">PHP</span>
+                <span><strong>PHP</strong><small>For PHP workers, webhooks, and long-lived scripts</small></span>
+                <i></i>
+              </span>
+            </div>
+            <div class="runtime-choice">
+              <span class="runtime-card">
+                <span class="runtime-icon large bun">BUN</span>
+                <span><strong>Bun</strong><small>For fast Node-compatible containers and newer runtimes</small></span>
+                <i></i>
+              </span>
+            </div>
+          </div>
+          <p class="help-runtime-note">This is the same kind of runtime picker the real panel shows before creating the container. It helps users see that Node, Python, Ruby, Go, PHP, and Bun are separate container images, not just different startup commands.</p>
+        </div>
+
+        <figure class="shot file-shot" aria-hidden="true" inert>
+          <div class="shot-browser">
+            <div class="shot-chrome">
+              <span class="shot-lights"><i></i><i></i><i></i></span>
+              <span class="shot-tab"><span class="shot-fav shot-fav-e"></span>Hosting panel</span>
+              <span class="shot-url"><span class="shot-lock"></span>/server/files</span>
+            </div>
+            <div class="shot-body">
+              <div class="help-panel-mock">
+                <div class="help-file-toolbar">
+                  <div class="help-breadcrumbs breadcrumbs" aria-label="Path">
+                    <button type="button">home</button>
+                    <button type="button">container</button>
+                    <button type="button">bot</button>
+                  </div>
+                  <div class="file-toolbar-actions">
+                    <span class="dpl-btn dpl-btn-green">Pkg Install set</span>
+                  </div>
+                </div>
+
+                <div class="help-file-list">
+                  <div class="file-row">
+                    <button class="file-name" type="button"><i>{ }</i><span>package.json</span></button>
+                    <span>/home/container/bot/package.json</span>
+                    <span>File</span>
+                    <span class="file-actions"><button type="button">Edit</button><button type="button">Startup</button><button type="button">Pkg Install</button></span>
+                  </div>
+                  <div class="file-row">
+                    <button class="file-name" type="button"><i>PY</i><span>requirements.txt</span></button>
+                    <span>/home/container/bot/requirements.txt</span>
+                    <span>File</span>
+                    <span class="file-actions"><button type="button">Edit</button><button type="button">Startup</button><button type="button">Pkg Install</button></span>
+                  </div>
+                  <div class="file-row active">
+                    <button class="file-name" type="button"><i>JS</i><span>index.js</span></button>
+                    <span>/home/container/bot/index.js</span>
+                    <span>File</span>
+                    <span class="file-actions"><button type="button">Edit</button><button type="button">Startup</button></span>
+                  </div>
+                  <div class="file-row">
+                    <button class="file-name" type="button"><i>PY</i><span>main.py</span></button>
+                    <span>/home/container/bot/main.py</span>
+                    <span>File</span>
+                    <span class="file-actions"><button type="button">Edit</button><button type="button">Startup</button></span>
+                  </div>
+                </div>
+
+                <span class="shot-mark" style="top:18px;right:18px" data-label="click package.json"></span>
+                <span class="shot-mark" style="top:106px;right:18px" data-label="or requirements.txt"></span>
+                <span class="shot-mark" style="bottom:88px;right:18px" data-label="then click Startup"></span>
+              </div>
+            </div>
+          </div>
+          <figcaption class="shot-cap">Choose the folder that contains your package or requirements file, then pick the file that starts the bot (for example <code>index.js</code> or <code>main.py</code>) and press <b>Startup</b>.</figcaption>
+        </figure>
+      </article>
+
+      <article class="help-step" id="fix">
+        <div class="help-num">?</div>
+        <h2>If something does not appear</h2>
+        <ul class="help-list">
+          <li><strong>No embed.</strong> Confirm the bot is online in the member list, has the four permissions on that channel, and the IDs have no extra spaces.</li>
+          <li><strong>Always offline.</strong> Check the edition (Java vs Bedrock) and that the address is the public one players use, not <code>localhost</code>.</li>
+          <li><strong>Token error.</strong> Reset the token in the Developer Portal and paste the new one. An old token cannot be recovered from our panel.</li>
+          <li><strong>Still stuck.</strong> <a href="{{ site_url('contact') }}">Contact us</a> or ask in the <a href="{{ discord_invite }}" rel="noopener noreferrer" target="_blank">Discord community</a>. Do not paste your token there.</li>
+        </ul>
+      </article>
     </div>
+  </div>
   </main>
 
   <footer class="footer">
@@ -169,10 +577,9 @@
       </div>
       <div class="footer-col">
         <h4>Product</h4>
-        <a href="{{ site_url('index') }}#setup">How it works</a>
-        <a href="{{ site_url('index') }}#features">Features</a>
+        <a href="{{ site_url('hosting') }}">App Hosting</a>
         <a href="{{ site_url('help') }}">Help / setup</a>
-        <a href="{{ site_url('index') }}#faq">FAQ</a>
+        <a href="{{ site_url('blog') }}">Blog</a>
       </div>
       <div class="footer-col">
         <h4>Community</h4>
@@ -192,7 +599,6 @@
       <p class="footer-note">Powered by End × Zairo · Free</p>
     </div>
   </footer>
-
   {% include "_ad_rail.html" %}
   {{ ad_unit('mobile') }}
   {{ ad_unit('social_bar') }}
