@@ -53,6 +53,8 @@
     </div>
     {% endif %}
 
+    {{ ad_unit('leaderboard') }}
+
     <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px">
       <h1 style="font-size:22px;font-weight:700">Home</h1>
     </div>
@@ -120,6 +122,8 @@
     <p class="note" style="text-align:left">No status-bot slots are enabled on this account, so there is nothing to show here yet. Ask in <a href="{{ discord_invite }}" rel="noopener noreferrer" target="_blank">our Discord</a> to have a slot enabled.</p>
     {% endif %}
 
+    {{ ad_unit('native') }}
+
     {% include "_panel_side_ads.html" %}
 
     <div class="review-box card" id="review-box">
@@ -138,10 +142,6 @@
     </div>
 
     {{ ad_unit('banner_300x250') }}
-
-    {{ ad_unit('leaderboard') }}
-
-    {{ ad_unit('native') }}
     </main>
   </div>
   <div class="sidebar-scrim" id="sidebar-scrim"></div>

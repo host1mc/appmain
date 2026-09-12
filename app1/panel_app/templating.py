@@ -137,7 +137,7 @@ def url_for(endpoint: str, **values) -> str:
 def _make_site_url(base: str):
     """Build a link to a page on the Flask site rather than on the panel.
 
-    /help, /hosting and /blog are served by the site, not by this app, and the
+    /help is served by the site, not by this app, and the
     panel also answers directly on its own loopback port — where a bare "/help"
     resolves against that port and finds nothing, because the panel mounts only
     /panel. Prefixing ``main_site_url`` sends it to the site's own origin, and an

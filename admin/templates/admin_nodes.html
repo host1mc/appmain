@@ -654,7 +654,22 @@ function cancelEditUrl(nodeId){
   if(edit) edit.hidden = true;
 }
 
-async function saveUrl(nodeId){
+// A save the server refused because none of the addresses answered from this
+// console. The operator may know the panel hosts reach one of them another
+// way, so this offers the save again with force rather than dead-ending: the
+// sweep stays silent afterwards for any address that answers, since the panel
+// tries every origin in order and only flags a node none of them reach.
+function deadOriginList(d){
+  const dead = Array.isArray(d && d.unreachable) ? d.unreachable : [];
+  return dead.length ? dead.join(', ') : 'the addresses';
+}
+function warnDeadOrigins(d){
+  const checks = Array.isArray(d && d.origin_checks) ? d.origin_checks : [];
+  const dead = checks.filter(c => c && c.reachable === false).map(c => c.origin);
+  if(dead.length) toast('Saved, but did not answer: ' + dead.join(', '), true);
+}
+
+async function saveUrl(nodeId, force){
   const input = $('#url-input-' + nodeId);
   // A list typed with spaces after its commas is the same list, so it is tidied
   // rather than refused. Nothing else about the text is touched.
@@ -662,12 +677,19 @@ async function saveUrl(nodeId){
   if(raw === ''){ toast('URL is required', true); return; }
   try {
     const r = await fetch('/api/admin/nodes/' + nodeId + '/url', {
-      method:'PUT', headers:{'Content-Type':'application/json'}, body: JSON.stringify({url: raw})
+      method:'PUT', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify(force ? {url: raw, force: true} : {url: raw})
     });
     const d = await r.json();
     if(d && d.ok){
       toast('URL updated');
       if(d.warning) toast(d.warning, true);
+      warnDeadOrigins(d);
+    } else if(d && d.code === 'none_reachable' && !force
+              && confirm('None of these addresses answered:\n\n' + deadOriginList(d)
+                         + '\n\nThe node will warn as unreachable until one answers. Save anyway?')) {
+      await saveUrl(nodeId, true);
+      return;
     } else {
       toast((d && d.error) || 'Could not update URL', true);
     }
@@ -701,7 +723,7 @@ async function deleteNode(nodeId){
   loadNodes();
 }
 
-async function createNode(ev){
+async function createNode(ev, force){
   ev.preventDefault();
   const res = $('#create-result');
   // Every field is sent as typed and validated server-side, so one set of rules
@@ -718,6 +740,7 @@ async function createNode(ev){
     token: $('#f-token').value,
     capacity: $('#f-capacity').value
   };
+  if(force) body.force = true;
   if(res) res.textContent = 'Registering…';
   try {
     const r = await fetch('/api/admin/nodes', {
@@ -731,6 +754,7 @@ async function createNode(ev){
       $('#f-url').value = '';
       $('#f-url2').value = '';
       $('#f-capacity').value = '';
+      warnDeadOrigins(d);
       if(d.warning){
         // The one condition worth interrupting for: the token this operator just
         // typed will cross the network in the clear on every control call.
@@ -742,6 +766,10 @@ async function createNode(ev){
         toast('Node registered');
       }
       loadNodes();
+    } else if(d && d.code === 'none_reachable' && !force
+              && confirm('None of these addresses answered:\n\n' + deadOriginList(d)
+                         + '\n\nRegister it anyway? It will warn as unreachable until one answers.')) {
+      await createNode(ev, true);
     } else {
       if(res) res.textContent = (d && d.error) || 'Could not register the node';
       toast((d && d.error) || 'Could not register the node', true);

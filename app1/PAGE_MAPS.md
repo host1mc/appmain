@@ -13,8 +13,9 @@ below only `index` is **default on**; `user_login`, `user_register`,
 are **default off** — the six account/credential endpoints advertising used to
 refuse outright, now a default an admin can overrule rather than a literal in
 `frontend.py`. `blocked` has no switch because it has no units. The remaining
-default-on pages (`about`, `hosting`, `contact`, `help`, `blog`, `blog_post`,
-`terms`, `privacy`) are tabulated at the end instead of wireframed.
+default-on pages (`about`, `contact`, `help`,
+`terms`, `privacy`) are tabulated at the end instead of wireframed. (`hosting`,
+`blog` and `blog_post` were retired: 301 to home, rows dropped from AD_PAGES.)
 
 All markup comes from `ads_config.py`; slots render via `ad_unit('<zone>')`,
 which asks `ad_zone()` first. A unit reaches the browser only if every one of
@@ -297,14 +298,17 @@ i.e. they advertise until an admin turns their row off.
 
 | Template | Endpoint | Head | Slots, top to bottom |
 |---|---|---|---|
-| about.html | `about` | L4 | leaderboard L44 · mobile L99 · social_bar L100 |
-| hosting.html | `hosting` | L4 | leaderboard L44 · mobile L118 · social_bar L119 |
-| contact.html | `contact` | L4 | leaderboard L44 · mobile L105 · social_bar L106 |
-| help.html | `help` | L4 | leaderboard L46 · banner_468x60 L61 + banner_300x250 L62 (`.ad-pair`) · mobile L453 · social_bar L454 |
-| blog.html | `blog` | L4 | leaderboard L45 · banner_468x60 L54 + banner_300x250 L55 (`.ad-pair`) · mobile L90 · social_bar L91 |
-| blog_post.html | `blog_post` | L4 | leaderboard L96 · mobile L144 · social_bar L145 |
+| index.html | `index` | L4 | leaderboard (pre-footer) · native (after features) · 468×60 + 300×250 pair (before reviews) · mobile · popunder · social_bar |
+| about.html | `about` | L4 | leaderboard (top) · native (mid-article) · 300×250 (mid-article) · mobile · social_bar |
+| contact.html | `contact` | L4 | leaderboard (top) · 300×250 (mid-article) · native (mid-article) · mobile · social_bar |
+| help.html | `help` | L4 | leaderboard · banner_468x60 + banner_300x250 (`.ad-pair`) · native (mid-guides) · mobile · social_bar |
 | terms.html | `terms` | L4 | none — head loader only |
 | privacy.html | `privacy` | — | none; emits no ad code at all, so its switch is inert |
+
+Retired: `hosting.html`, `blog.html` and `blog_post.html` were removed from the
+public site. Their endpoints (`hosting`, `blog`, `blog_post`) answer 301 to the
+home page, and their `AD_PAGES` rows were dropped, so the admin console no
+longer lists switches for pages that cannot carry ads.
 
 `terms` and `privacy` are in `AD_PAGES` because a head loader is ad code on its
 own — a legacy head loader can still serve without a slot beneath it — and an endpoint
@@ -323,8 +327,8 @@ with no row is waved through by `_ads_permitted()` with no switch reaching it.
 | **Effective CPM** | Popunder (pl29657147) | entry pages only: index, user_login, user_register |
 | **Adstera** | — | `ads_config.py:88-93` — entry exists with a blank loader, so `ad_head_html()` skips it; paste the dashboard loader/zone to enable |
 
-`database.AD_PAGES` has 15 rows: 9 default on (index, about, hosting, contact,
-help, blog, blog_post, terms, privacy) and 6 default off (user_login,
+`database.AD_PAGES` has 12 rows: 6 default on (index, about, contact,
+help, terms, privacy) and 6 default off (user_login,
 user_register, user_dashboard, user_bot_editor, user_bot_replies,
 user_formatting). blocked.html, banned.html and rate_limited.html call only
 `ad_scripts()` — the fingerprint/guard pair, not advertising — so they have no

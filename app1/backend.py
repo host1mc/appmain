@@ -1019,8 +1019,10 @@ def api_internal_required(f):
 def _owns(user_id):
     """True when the caller *is* that user. There is no override: this tier has
     no admin surface any more, so nothing here may act on another account.
-    Assumes _authenticate() already ran via a decorator."""
-    return g.get("current_user_id") == user_id
+    Assumes _authenticate() already ran via a decorator. The truthiness guard
+    is belt-and-braces: an unset session (None) must never equal an empty id.
+    """
+    return bool(user_id) and g.get("current_user_id") == user_id
 
 
 def _own_bot(slot_index):
@@ -2231,7 +2233,7 @@ def api_get_bot_config(slot_index):
     except db.OraclePoolExhausted:
         raise
     except Exception as e:
-        reviews_db.log_app_error("GetBotConfigFailed", f"get_bot_config failed for slot {slot_index}: {e}", module="backend", flagged=1)
+        reviews_db.log_app_error("GetBotConfigFailed", f"get_bot_config failed for user {g.current_user_id} slot {slot_index}: {e}", module="backend", flagged=1)
         _debug_print(f"[backend] get_bot_config failed for slot {slot_index}: {e}", file=sys.stderr)
         return ec.err(ec.INTERNAL_ERROR, "Could not load bot configuration", 500)
 
@@ -2278,7 +2280,7 @@ def api_save_bot_config(slot_index):
         # let the registered error handlers render it.
         raise
     except Exception as e:
-        reviews_db.log_app_error("SaveBotConfigFailed", f"save_bot_config failed for slot {slot_index}: {e}", module="backend", flagged=1)
+        reviews_db.log_app_error("SaveBotConfigFailed", f"save_bot_config failed for user {g.current_user_id} slot {slot_index}: {e}", module="backend", flagged=1)
         _debug_print(f"[backend] save_bot_config failed for slot {slot_index}: {e}", file=sys.stderr)
         return ec.err(ec.BOT_SAVE_FAILED, "Save failed. Please try again.", 500)
 
@@ -2322,7 +2324,7 @@ def api_set_bot_delivery(slot_index):
     except HTTPException:
         raise
     except Exception as e:
-        reviews_db.log_app_error("SetBotDeliveryFailed", f"set_bot_delivery failed for slot {slot_index}: {e}", module="backend", flagged=1)
+        reviews_db.log_app_error("SetBotDeliveryFailed", f"set_bot_delivery failed for user {g.current_user_id} slot {slot_index}: {e}", module="backend", flagged=1)
         _debug_print(f"[backend] set_bot_delivery failed for slot {slot_index}: {e}", file=sys.stderr)
         return ec.err(ec.INTERNAL_ERROR, "Could not save the delivery choice", 500)
 
@@ -2394,7 +2396,7 @@ def api_user_bot_status(slot_index):
     except db.OraclePoolExhausted:
         raise
     except Exception as e:
-        reviews_db.log_app_error("BotStatusFailed", f"bot status failed for slot {slot_index}: {e}", module="backend", flagged=1)
+        reviews_db.log_app_error("BotStatusFailed", f"bot status failed for user {g.current_user_id} slot {slot_index}: {e}", module="backend", flagged=1)
         _debug_print(f"[backend] bot status failed for slot {slot_index}: {e}", file=sys.stderr)
         return ec.err(ec.INTERNAL_ERROR, "Could not load bot status", 500)
 
@@ -2528,7 +2530,7 @@ def _placement_capacity_available():
     try:
         return node_registry.placement_capacity_available()
     except Exception as exc:
-        reviews_db.log_app_error("NodeCapacityProbeError", f"panel store: node capacity probe unavailable: {exc}", module="backend", flagged=1)
+        reviews_db.log_app_error("NodeCapacityProbeError", f"panel store: could not read node capacity ({exc}) — placement is proceeding without it. If the registry database is down, fix that first; otherwise the fleet may simply be full.", module="backend", flagged=1)
         _debug_print(f"[backend] panel store: node capacity probe unavailable "
                      f"({type(exc).__name__}: {exc})", file=sys.stderr)
         return True
@@ -2558,7 +2560,7 @@ def _placement_node_id(conn=None):
     except node_registry.NodeCapacityError as exc:
         raise _NodeCapacityValueError(str(exc)) from exc
     except Exception as exc:
-        reviews_db.log_app_error("NodePlacementError", f"panel store: node placement unavailable: {exc}", module="backend", flagged=1)
+        reviews_db.log_app_error("NodePlacementError", f"panel store: could not pick a node for a new server ({exc}). Check the registry database, then whether every node is full or down — see the Nodes page.", module="backend", flagged=1)
         _debug_print(f"[backend] panel store: node placement unavailable "
                      f"({type(exc).__name__}: {exc})", file=sys.stderr)
         return None

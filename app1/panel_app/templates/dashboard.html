@@ -61,7 +61,7 @@
       <aside class="house-promo-slot" aria-label="Promotion">
         <span class="house-promo-eyebrow">Included</span>
         <span class="house-promo-copy">Every slot ships with {{ settings.memory_mb if settings else 300 }} MB RAM, persistent disk and outbound networking — no card required.</span>
-        <a class="house-promo-cta" href="{{ site_url('/hosting') }}">What you get <i>&rarr;</i></a>
+        <a class="house-promo-cta" href="{{ site_url('/help') }}">What you get <i>&rarr;</i></a>
       </aside>
     {% endif %}
   </section>
@@ -145,7 +145,7 @@
         <strong>Need room for another bot?</strong>
         <p>You have {{ stats.total }} of {{ max_servers }} server slots in use. See what a slot includes and how memory and CPU are allocated.</p>
       </div>
-      <a class="button button-primary" href="{{ site_url('/hosting') }}">Hosting details</a>
+      <a class="button button-primary" href="{{ site_url('/help') }}">Hosting details</a>
     </section>
   {% endif %}
 {% endblock %}

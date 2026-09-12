@@ -4756,11 +4756,8 @@ AD_GUARD_MODE_DEFAULT = "gate"
 AD_PAGES = {
     "index": {"label": "Home", "default_on": True},
     "about": {"label": "About", "default_on": True},
-    "hosting": {"label": "Hosting", "default_on": True},
     "contact": {"label": "Contact", "default_on": True},
     "help": {"label": "Help", "default_on": True},
-    "blog": {"label": "Blog index", "default_on": True},
-    "blog_post": {"label": "Blog post", "default_on": True},
     # No ad_unit slots, but terms.html calls ad_head(), and a network head loader
     # is ad code whether or not a slot follows it. Listed so the console can
     # govern that; without a row here

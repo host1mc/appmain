@@ -31,8 +31,8 @@ ZONES = {"leaderboard": True, "native": True}
 NETWORKS = {"effective_cpm": True}
 # The real map, mirroring database.AD_PAGES defaults: the content pages plus the
 # four account pages on, only the two credential forms (login, register) off.
-ALL_PAGES = {"index": True, "about": True, "hosting": True, "contact": True,
-             "help": True, "blog": True, "blog_post": True,
+ALL_PAGES = {"index": True, "about": True, "contact": True,
+             "help": True,
              "terms": True, "privacy": True,
              "user_dashboard": True, "user_bot_editor": True,
              "user_bot_replies": True, "user_formatting": True,
@@ -148,7 +148,7 @@ ALL_NETWORKS = {k: True for k in ads_config.AD_NETWORKS}
 ZONES, NETWORKS = ALL_ZONES, ALL_NETWORKS
 backend(guard_mode="warn")
 client = app.test_client()
-for url in ("/", "/about", "/hosting", "/help", "/privacy"):
+for url in ("/", "/about", "/contact", "/help", "/privacy"):
     r = client.get(url, headers={"User-Agent": "Mozilla/5.0"})
     body = r.get_data(as_text=True)
     has_warn = 'data-guard="warn"' in body

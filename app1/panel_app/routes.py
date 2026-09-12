@@ -253,6 +253,35 @@ def _ws_origin_allowed(origin, host, main_site_url):
     return sent_netloc == (host or "").strip().lower()
 
 
+def _is_backend_origin(url):
+    """Whether `url` is shaped like a node-agent origin.
+
+    Same per-address rules as node_client.parse_node_urls (absolute
+    http/https, a host, no query/fragment — plus no embedded credentials and
+    no control characters), checked without importing the whole client. The
+    console log stream builds its own urllib request out of this string and
+    attaches the node's bearer token, so a malformed value must be refused
+    before the socket is accepted rather than after a failed connect: by then
+    the caller is already inside, and a NameError-shaped hole here once meant
+    every console connect died at exactly that point.
+    """
+    if not isinstance(url, str) or not url.strip():
+        return False
+    if any(ord(ch) < 32 or ord(ch) == 127 for ch in url):
+        return False
+    try:
+        parsed = parse.urlsplit(url.strip())
+    except ValueError:
+        return False
+    if parsed.scheme not in {"http", "https"} or not parsed.hostname:
+        return False
+    if parsed.username or parsed.password:
+        return False
+    if parsed.query or parsed.fragment:
+        return False
+    return True
+
+
 # Past tense per power action, for the flash a form submit gets. Suffixing "ed"
 # onto the action spells "stoped", and this is text the visitor reads.
 _POWER_DONE = {
@@ -1528,7 +1557,9 @@ def build_routes(runtime, config):
                 # One row per cause, not per server: the message stays identical
                 # so HeatWave dedups repeats into `occurrences` (×N badge);
                 # the server id travels in the trace for diagnosis.
-                reviews_db.log_app_error("ContainerCreateNodeError", f"Node unavailable at server create: {node_err}", stack_trace=f"server_id={server_id}", module="panel_app.routes", flagged=1, error_category="system_error")
+                reviews_db.log_app_error("ContainerCreateNodeError", f"Node unavailable at server create: {node_err}. "
+                                         "Nodes none of whose addresses answer are flagged NodeUnreachable on the Errors page — "
+                                         "start there, then the Nodes page.", stack_trace=f"server_id={server_id}", module="panel_app.routes", flagged=1, error_category="system_error")
             except Exception:
                 pass
             if wants_json(request):
@@ -2405,6 +2436,11 @@ def build_routes(runtime, config):
         if not node_url or not node_token:
             await websocket.close(code=4005, reason="node agent not configured")
             return
+        # Before accept: past this point the browser is inside, and the bearer
+        # below must only ever travel to a well-formed agent origin.
+        if not _is_backend_origin(node_url):
+            await websocket.close(code=4005, reason="Invalid node URL")
+            return
 
         await websocket.accept()
         await websocket.send_json({"type": "connected"})
@@ -2431,9 +2467,6 @@ def build_routes(runtime, config):
         if since_val and since_val > 0:
             follow_url += f"&since={parse.quote(str(since_val), safe='')}"
         try:
-            if not _is_backend_origin(node_url):
-                await websocket.close(code=4005, reason="Invalid node URL")
-                return
             req = urlrequest.Request(
                 follow_url,
                 headers={

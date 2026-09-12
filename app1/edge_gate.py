@@ -111,7 +111,7 @@ CHALLENGE_EXEMPT_PREFIXES = ("/static/", "/api/", "/panel", "/__gate/")
 # worker, and the ads.txt an ad network fetches. Challenging any of these breaks
 # something silently.
 CHALLENGE_EXEMPT_EXACT = frozenset({
-    "/health", "/robots.txt", "/sitemap.xml", "/feed.xml", "/ads.txt",
+    "/health", "/robots.txt", "/sitemap.xml", "/ads.txt",
     "/site.webmanifest", "/sw.js", "/favicon.ico",
 })
 

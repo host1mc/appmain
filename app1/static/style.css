@@ -1131,7 +1131,7 @@ a:hover{color:var(--accent)}
 }
 
 .ad-leaderboard{
-  min-height:90px;padding:10px 12px;
+  width:min(728px,100%);height:112px;padding:10px 12px;
   background:var(--bg2);border-top:1px solid var(--line)
 }
 
@@ -1146,7 +1146,7 @@ a:hover{color:var(--accent)}
 
 .ad-mobile{
   display:none;position:sticky;bottom:0;z-index:90;
-  min-height:50px;padding:4px 0;
+  width:min(320px,100%);min-height:50px;padding:4px 0;
   padding-bottom:calc(4px + env(safe-area-inset-bottom,0px));
   background:var(--bg2);border-top:1px solid var(--line)
 }
@@ -1159,8 +1159,8 @@ a:hover{color:var(--accent)}
 .ad-native{aspect-ratio:4/1;min-height:80px;margin:8px auto 40px;max-width:468px;padding:0 16px}
 
 .ad-native>div{width:100%}
-.ad-banner-468x60{min-height:60px;margin:16px 0}
-.ad-banner-300x250{min-height:250px;margin:12px 0}
+.ad-banner-468x60{width:min(468px,100%);height:60px;margin:16px 0}
+.ad-banner-300x250{width:min(300px,100%);height:250px;margin:12px 0}
 .ad-pair{display:flex;justify-content:center;align-items:flex-start;gap:18px;flex-wrap:wrap;margin:16px auto;max-width:640px}
 .ad-pair > .ad-container{margin:0;flex:0 1 auto}
 .blog-ad-pair,.help-ad-pair{max-width:800px;margin:0 auto 36px}
@@ -1170,8 +1170,8 @@ a:hover{color:var(--accent)}
 
 @media(max-width:768px){.ad-banner-468x60{display:none}}
 
-.ad-banner-160x600{min-height:600px;margin:16px auto}
-.ad-banner-160x300{min-height:300px;margin:16px auto}
+.ad-banner-160x600{width:160px;height:600px;margin:16px auto}
+.ad-banner-160x300{width:160px;height:300px;margin:16px auto}
 @media(max-width:900px){.ad-banner-160x600,.ad-banner-160x300{display:none}}
 
 .ad-rail{position:fixed;top:calc(var(--nav-height) + 24px);right:24px;z-index:40;display:none;width:160px}

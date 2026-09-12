@@ -287,7 +287,8 @@ class PanelRuntime:
                 import reviews_db
                 reviews_db.log_app_error(
                     error_type="NodeCatalogFetchFailed",
-                    message=f"catalog fetch failed: {exc}",
+                    message=f"catalog fetch failed: {exc}. The panel keeps serving the cached runtime list "
+                            "until a node answers; if this persists, a node is down — see its NodeUnreachable row.",
                     module="panel_app",
                     flagged=1,
                     flag_reason="node_unreachable"
@@ -385,7 +386,13 @@ class PanelRuntime:
                         pass
                     continue
                 return client
-        err_msg = "no reachable node in the database — all nodes are down"
+        tried = ", ".join(
+            str(n.get("name") or f"#{n.get('id')}")
+            for n in nodes if n.get("enabled")
+        )[:400]
+        err_msg = (f"no reachable node in the database \u2014 tried {tried or 'no enabled nodes'}; "
+                   "all nodes are down or unreachable from here. Check power and "
+                   "network on those hosts, then the Nodes page in the admin console.")
         try:
             import reviews_db
             reviews_db.log_app_error(
@@ -517,7 +524,17 @@ class PanelRuntime:
             except Exception as exc:
                 cause = exc.__cause__
                 cause_str = f" (cause: {type(cause).__name__}: {cause})" if cause else ""
-                err_msg = f"reconcile: node {nid} sweep failed: {type(exc).__name__}: {exc}{cause_str}"
+                node_label = f"#{nid}"
+                try:
+                    import node_registry as _nr
+                    for _n in _nr.list_nodes() or []:
+                        if str(_n.get("id")) == str(nid):
+                            _nm = str(_n.get("name") or "").strip()
+                            node_label = f"'{_nm}' (#{nid})" if _nm else f"#{nid}"
+                            break
+                except Exception:
+                    pass
+                err_msg = f"reconcile: node {node_label} sweep failed: {type(exc).__name__}: {exc}{cause_str}"
                 try:
                     import reviews_db
                     reviews_db.log_app_error("ReconcileSweepFailed", err_msg, module="panel_runtime", flagged=1)

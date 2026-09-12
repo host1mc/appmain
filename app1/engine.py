@@ -1494,6 +1494,22 @@ def _node_agent_origins(credentials):
     ]
 
 
+def _node_display(node_id):
+    """`'name' (#id)` for operator-facing messages, `'#id'` on any failure.
+
+    One registry read, best-effort: this runs on error paths only, so a
+    lookup that fails must not become a second error.
+    """
+    try:
+        for node in node_registry.list_nodes() or []:
+            if str(node.get("id")) == str(node_id):
+                name = str(node.get("name") or "").strip()
+                return f"'{name}' (#{node_id})" if name else f"#{node_id}"
+    except Exception:
+        pass
+    return f"#{node_id}"
+
+
 def _node_agent_get(node_id, credentials, path, max_bytes=_NODE_CONFIG_MAX_BYTES):
     """GET `path` from a node agent. Returns (payload, problem); one is None.
 
@@ -1510,6 +1526,7 @@ def _node_agent_get(node_id, credentials, path, max_bytes=_NODE_CONFIG_MAX_BYTES
             "code": ec.BAD_REQUEST, "status": 400,
             "message": "This node has no usable stored credentials — re-register it.",
         }
+    display = _node_display(node_id)
     for position, url in enumerate(origins):
         last = position == len(origins) - 1
         try:
@@ -1530,7 +1547,7 @@ def _node_agent_get(node_id, credentials, path, max_bytes=_NODE_CONFIG_MAX_BYTES
             # message, and on a redirect or a proxy error it can carry the request
             # headers with it — that is the agent token.
             _log_internal_failure(
-                f"node {node_id} agent GET failed", type(exc).__name__)
+                f"node {display} agent GET failed", type(exc).__name__)
             if not last:
                 continue
             return None, {"code": ec.INTERNAL_ERROR, "status": 502,

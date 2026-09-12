@@ -10,8 +10,7 @@ import socket
 import sys
 import threading
 import time
-from datetime import timedelta, datetime, timezone
-from email.utils import format_datetime
+from datetime import timedelta
 from functools import wraps
 from urllib.parse import quote, urlsplit as _urlsplit
 
@@ -40,7 +39,6 @@ from werkzeug.exceptions import HTTPException
 from jinja2 import TemplateNotFound
 from markupsafe import Markup, escape
 import ads_config
-import blog as blog_content
 import cf_edge
 import obs
 import embed_templates as embed_tpl
@@ -706,7 +704,7 @@ def _check_csrf():
 
 _INTEGRITY_EXEMPT_PREFIXES = (
     "/api/", "/static/", "/health", "/sw.js", "/ads.txt",
-    "/robots.txt", "/sitemap.xml", "/feed.xml", "/site.webmanifest", "/panel",
+    "/robots.txt", "/sitemap.xml", "/site.webmanifest", "/panel",
 )
 _integrity_warned = False
 
@@ -1338,10 +1336,12 @@ def about():
     return render_template("about.html")
 
 
+# Retired marketing pages. The Hosting and Blog pages were removed from the
+# public site; the redirects below keep old links, bookmarks and indexed URLs
+# landing on the home page instead of a 404.
 @app.route("/hosting")
 def hosting():
-    user_id = session.get("user_id")
-    return render_template("hosting.html", logged_in=bool(user_id))
+    return redirect(url_for("index"), code=301)
 
 
 @app.route("/contact")
@@ -1356,15 +1356,12 @@ def help():
 
 @app.route("/blog")
 def blog():
-    return render_template("blog.html", posts=blog_content.all_posts())
+    return redirect(url_for("index"), code=301)
 
 
 @app.route("/blog/<slug>")
 def blog_post(slug):
-    post = blog_content.get_post(slug)
-    if not post:
-        abort(404)
-    return render_template("blog_post.html", post=post)
+    return redirect(url_for("index"), code=301)
 
 
 _ADS_TXT_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "ads.txt")
@@ -1390,11 +1387,8 @@ def ads_txt():
 _ROBOTS_TXT = """User-agent: *
 Allow: /$
 Allow: /about
-Allow: /blog
-Allow: /blog/
 Allow: /contact
 Allow: /help
-Allow: /hosting
 Allow: /privacy
 Allow: /terms
 Allow: /ads.txt
@@ -1429,7 +1423,7 @@ def robots_txt():
 
 
 _SITEMAP_ENDPOINTS = (
-    "index", "help", "blog", "about", "hosting", "contact", "privacy", "terms")
+    "index", "help", "about", "contact", "privacy", "terms")
 
 
 @app.route("/sitemap.xml")
@@ -1444,15 +1438,6 @@ def sitemap_xml():
         loc = str(escape(loc))
         priority = "1.0" if endpoint == "index" else "0.5"
         urls.append(f"  <url><loc>{loc}</loc><priority>{priority}</priority></url>")
-    for post in blog_content.all_posts():
-        loc = str(escape(
-            _external(SITE_URL, "blog_post", slug=post["slug"])
-            if SITE_URL else url_for("blog_post", slug=post["slug"], _external=True)))
-        urls.append(
-            f"  <url><loc>{loc}</loc>"
-            f"<lastmod>{post['date']}</lastmod>"
-            f"<priority>0.7</priority></url>"
-        )
     body = (
         '<?xml version="1.0" encoding="UTF-8"?>\n'
         '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n'
@@ -1460,63 +1445,6 @@ def sitemap_xml():
         + "\n</urlset>\n"
     )
     return FlaskResponse(body, content_type="application/xml; charset=utf-8")
-
-
-def _rfc822(date_str):
-
-
-    try:
-        parsed = datetime.strptime(date_str, "%Y-%m-%d").replace(
-            tzinfo=timezone.utc)
-    except (ValueError, TypeError):
-        return str(escape(date_str))
-    return format_datetime(parsed)
-
-
-@app.route("/feed.xml")
-@limiter.exempt
-def blog_feed():
-    def _abs(endpoint, **values):
-
-
-        loc = (_external(SITE_URL, endpoint, **values) if SITE_URL
-               else url_for(endpoint, _external=True, **values))
-        return str(escape(loc))
-
-    posts = sorted(
-        blog_content.all_posts(), key=lambda p: p["date"], reverse=True)
-    feed_url = _abs("blog_feed")
-    blog_url = _abs("blog")
-    items = []
-    for post in posts:
-        link = _abs("blog_post", slug=post["slug"])
-        items.append(
-            "    <item>\n"
-            f"      <title>{str(escape(post['title']))}</title>\n"
-            f"      <link>{link}</link>\n"
-            f'      <guid isPermaLink="true">{link}</guid>\n'
-            f"      <description>{str(escape(post['description']))}</description>\n"
-            f"      <category>{str(escape(post['category']))}</category>\n"
-            f"      <pubDate>{_rfc822(post['date'])}</pubDate>\n"
-            "    </item>"
-        )
-    last_build = _rfc822(posts[0]["date"]) if posts else ""
-    body = (
-        '<?xml version="1.0" encoding="UTF-8"?>\n'
-        '<rss version="2.0" xmlns:atom="http://www.w3.org/2005/Atom">\n'
-        "  <channel>\n"
-        "    <title>ENDHOST — Blog</title>\n"
-        f"    <link>{blog_url}</link>\n"
-        f'    <atom:link href="{feed_url}" rel="self" type="application/rss+xml"/>\n'
-        "    <description>Guides and product notes on app "
-        "hosting from ENDHOST.</description>\n"
-        "    <language>en</language>\n"
-        f"    <lastBuildDate>{last_build}</lastBuildDate>\n"
-        + "\n".join(items)
-        + "\n  </channel>\n</rss>\n"
-    )
-    return FlaskResponse(
-        body, content_type="application/rss+xml; charset=utf-8")
 
 
 @app.route("/site.webmanifest")
@@ -1532,8 +1460,8 @@ def site_webmanifest():
         "start_url": url_for("index"),
         "scope": "/",
         "display": "standalone",
-        "background_color": "#08090e",
-        "theme_color": "#08090e",
+        "background_color": "#ffffff",
+        "theme_color": "#ffffff",
         "icons": [
             {"src": url_for("static", filename="favicon-32.png"),
              "sizes": "32x32", "type": "image/png"},
@@ -2456,7 +2384,7 @@ _NAV_ALPHABET = "0123456789abcdefghijklmnopqrstuvwxyz"
 
 
 _NAV_SAFE_ENDPOINTS = {
-    "index", "blocked", "privacy", "terms", "about", "hosting", "contact", "help",
+    "index", "blocked", "privacy", "terms", "about", "contact", "help",
     "user_dashboard",
     "user_bot_editor", "user_bot_replies", "user_formatting",
 }
@@ -2539,7 +2467,7 @@ _AD_WALL_KEY = "ad_blocked_at"
 _AD_WALL_EXEMPT_PREFIXES = (
     "/blocked", "/api/", "/static/", "/assets/", "/health", "/panel", "/nav",
     "/impersonate", "/embed", "/sw.js", "/ads.txt", "/robots.txt",
-    "/sitemap.xml", "/feed.xml", "/site.webmanifest",
+    "/sitemap.xml", "/site.webmanifest",
 )
 
 

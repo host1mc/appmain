@@ -205,8 +205,15 @@ function flagIp(di, ip, extra){
 function flagIpCell(di, ip, extra){
   const {show, reported} = flagIp(di, ip, extra);
   if(!show) return '—';
+  const obs = (ip == null) ? '' : String(ip);
+  // When the shown address is the browser-reported one, the stored (observed)
+  // address is what same_ip_accounts was computed from — print it so the link
+  // stays explainable instead of reading as a mismatch.
+  const via = (reported && obs && obs !== show)
+    ? ` <span class="log-ip" title="Server-observed address — the same-IP links on this page were computed from this, not the reported one">via ${esc(obs)}</span>` : '';
   return `<button type="button" class="fbtn" title="Filter this page by ${esc(show)}" onclick="setq('${jsArg(show)}')">${esc(show)}</button>`
-       + (reported ? ' <span class="badge warn xs" title="Reported by the browser over WebRTC, not observed by the server">REPORTED</span>' : '');
+       + (reported ? ' <span class="badge warn xs" title="Reported by the browser over WebRTC, not observed by the server">REPORTED</span>' : '')
+       + via;
 }
 
 // ── tamper / automation signal ─────────────────────────────────────────────

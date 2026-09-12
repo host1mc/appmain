@@ -47,6 +47,12 @@ _AGENT_TIMEOUT = 8
 _AGENT_CONFIG_MAX_BYTES = 64 * 1024
 _AGENT_SERVERS_MAX_BYTES = 512 * 1024
 
+# How long each origin may take to answer the pre-save /health probe below.
+# Sequential over at most NODE_URL_MAX_ORIGINS origins, so the worst case is a
+# few seconds on an admin click, never on a request path.
+_AGENT_PROBE_TIMEOUT = 3
+_AGENT_PROBE_MAX_BYTES = 1024
+
 _HTTP = requests.Session()
 _HTTP.headers["User-Agent"] = "MCStatusHosting"
 
@@ -162,6 +168,69 @@ def _body():
     if not isinstance(data, dict):
         return None, (jsonify({"ok": False, "error": "Invalid JSON body"}), 400)
     return data, None
+
+
+def _probe_origins(url):
+    """Which of a node's origins answer, probed from this console.
+
+    One unauthenticated GET per origin against the agent's /health route — the
+    same route the panel probes, and one that needs no token, so nothing secret
+    is sent to an address that has not answered yet. Any HTTP response counts
+    as reachable; only a transport failure does not. A short timeout, because
+    this runs inside the save request, sequentially over a handful of origins.
+    """
+    checks = []
+    for origin in (url or "").split(","):
+        origin = origin.strip().rstrip("/")
+        if not origin:
+            continue
+        reachable = False
+        try:
+            resp = _HTTP.request(
+                "GET", f"{origin}/health",
+                headers={"Accept": "application/json"},
+                timeout=_AGENT_PROBE_TIMEOUT,
+                allow_redirects=False,
+                stream=True,
+            )
+            with resp:
+                resp.raw.read(_AGENT_PROBE_MAX_BYTES + 1, decode_content=True)
+            reachable = True
+        except Exception:
+            reachable = False
+        checks.append({"origin": origin, "reachable": reachable})
+    return checks
+
+
+def _gate_unreachable_origins(url, data):
+    """Block a node save when none of its origins answer — unless forced.
+
+    A node row may carry several addresses for the same agent because different
+    app instances reach it different ways, so one dead origin is a warning, not
+    a refusal: the panel tries them in order and uses whichever answers. But a
+    row none of whose addresses answer from anywhere is either down right now
+    or mistyped, and saving it buys a node that can never place. The health
+    sweep would then flag it NodeUnreachable on its first pass — this gate
+    stops that warning at the source instead.
+
+    Returns (checks, problem_response): problem_response is None when the save
+    may proceed. ``{"force": true}`` in the body overrides the block, for the
+    case this console cannot route to an address the panel hosts can.
+    """
+    checks = _probe_origins(url)
+    if any(check["reachable"] for check in checks):
+        return checks, None
+    if data.get("force") is True:
+        return checks, None
+    dead = [check["origin"] for check in checks] or [url]
+    return checks, (jsonify({
+        "ok": False,
+        "code": "none_reachable",
+        "error": ("None of these addresses answered from this console — "
+                  "the node looks down or the addresses are mistyped "
+                  f"({', '.join(dead)}). Save again to register it anyway."),
+        "unreachable": dead,
+    }), 400)
 
 
 def _reject(message):
@@ -345,13 +414,18 @@ def api_admin_create_node():
     if message:
         return _reject(message)
 
+    checks, blocked = _gate_unreachable_origins(url, data)
+    if blocked is not None:
+        return blocked
+
     try:
         node_id = node_registry.create_node(
             name=name, url=url, token=token, capacity=capacity)
     except Exception as exc:
         return _reject(str(exc))
 
-    result = {"ok": True, "node_id": node_id, "url": url}
+    result = {"ok": True, "node_id": node_id, "url": url,
+              "origin_checks": checks}
     result["insecure_token_transport"] = _token_travels_cleartext(url)
     if result["insecure_token_transport"]:
         result["warning"] = CLEARTEXT_TOKEN_WARNING
@@ -385,13 +459,16 @@ def api_admin_set_node_url(node_id):
     url, message = _node_url(data.get("url"))
     if message:
         return _reject(message)
+    checks, blocked = _gate_unreachable_origins(url, data)
+    if blocked is not None:
+        return blocked
     try:
         changed = node_registry.update_node_url(node_id, url)
     except Exception as exc:
         return _reject(str(exc))
     if not changed:
         return _err("Node not found", 404)
-    result = {"ok": True, "url": url}
+    result = {"ok": True, "url": url, "origin_checks": checks}
     result["insecure_token_transport"] = _token_travels_cleartext(url)
     if result["insecure_token_transport"]:
         result["warning"] = CLEARTEXT_TOKEN_WARNING

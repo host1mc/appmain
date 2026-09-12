@@ -105,11 +105,23 @@ class NodeRouter:
                     _log.info("node_router: resolved default node %s url=%s", nid, candidate.base_url)
                     break
             if client is None and len(nodes) > 0:
+                # Name the checked nodes: a bare count tells the admin nothing
+                # about which hosts to look at. Membership changes rarely, so a
+                # rename/re-list minting one fresh row is acceptable — and the
+                # old one stops recurring on its own.
+                tried = ", ".join(
+                    str(n.get("name") or f"#{n.get('id')}") for n in nodes[:10]
+                )
+                if len(nodes) > 10:
+                    tried += f", and {len(nodes) - 10} more"
                 try:
                     import reviews_db
                     reviews_db.log_app_error(
                         error_type="NodeRouterError",
-                        message=f"node_router: no reachable node in database ({len(nodes)} enabled)",
+                        message=f"no reachable node in the fleet — tried {tried} "
+                                f"({len(nodes)} enabled); every one is down or "
+                                "unreachable from here. Check power and network "
+                                "on those hosts, then the Nodes page.",
                         module="node_router",
                         flagged=1,
                         flag_reason="no_reachable_node"
