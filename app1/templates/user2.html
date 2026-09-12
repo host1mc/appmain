@@ -63,7 +63,7 @@
 
     {% if user.account_type == 'trial' and user.renew_open %}
     <div id="activity-banner" style="display:flex;align-items:center;gap:10px;margin-bottom:10px;padding:8px 14px;background:rgba(155,89,182,.12);border-radius:8px;font-size:13px">
-      <span style="flex:1">Your trial renew window is open. Click <strong>Renew</strong> to keep your trial active for another cycle.</span>
+      <span style="flex:1">Your trial renew window is open. Click <strong>Renew</strong> to keep your trial active for another cycle. <span style="color:var(--muted2)">Expires <b data-renew-expiry="{{ user.trial_expires_at or '' }}"></b>.</span></span>
       <button class="btn btn-primary btn-sm" data-act="renew">Renew</button>
     </div>
     {% endif %}
@@ -270,6 +270,8 @@
         </div>
       </div>
     </div>
+
+    {% include "_panel_mid_ads.html" %}
 
     {{ ad_unit('leaderboard') }}
     </main>
@@ -1432,7 +1434,13 @@ async function renewTrial(){
   try {
     busy(btn, true, 'Renewing…');
     const res = await api('/api/user/' + USER_ID + '/renew', {method:'POST'});
-    if (res && res.ok) toast('Trial renewed — your bot keeps running for 7 more days');
+    if (res && res.ok){
+      // The new deadline is already a week past the old expiry, so the window
+      // is closed again — drop the banner at once instead of waiting for a reload.
+      document.getElementById('activity-banner')?.remove();
+      const next = res.trial_expires_at ? fmtExpiry(res.trial_expires_at) : '';
+      toast(next ? 'Trial renewed — next expiry ' + next : 'Trial renewed — your bot keeps running for 7 more days');
+    }
     else if (res && res.code === 'rate_limited') toast(res?.error || 'You can renew once a day closer to your turn-off date.', true);
     else toast(res?.error || 'Failed to renew', true);
   } catch(e) {
@@ -1442,6 +1450,15 @@ async function renewTrial(){
     busy(btn, false);
   }
 }
+function fmtExpiry(iso){
+  try {
+    const d = new Date(iso);
+    return isNaN(d) ? '' : d.toLocaleString();
+  } catch(e) { return ''; }
+}
+document.querySelectorAll('[data-renew-expiry]').forEach(el => {
+  el.textContent = fmtExpiry(el.getAttribute('data-renew-expiry')) || 'soon';
+});
 
 async function generateNow(){
   const btn = actBtn('generate-now');

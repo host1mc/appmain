@@ -115,14 +115,19 @@ function toast(msg, err){
 function api(path, opts){
   return fetch(path, {headers:{'Content-Type':'application/json'}, ...opts}).then(r=>r.json()).catch(()=>({ok:false}));
 }
-function fmtDate(s){ if(!s) return '—'; try{ return new Date(s).toLocaleString(); }catch(e){ return esc(s); } }
+// IST with a 12-hour clock for every timestamp on this console, whatever zone
+// the operator's browser sits in.
+const _IST_DATE = new Intl.DateTimeFormat('en-IN',{timeZone:'Asia/Kolkata',day:'2-digit',month:'short',year:'numeric',hour:'numeric',minute:'2-digit',second:'2-digit',hour12:true});
+function fmtDate(s){ if(!s) return '—'; try{ return _IST_DATE.format(new Date(s)); }catch(e){ return esc(s); } }
+// Every console timestamp renders in IST with a 12-hour clock, whatever zone
+// the operator's browser sits in.
 // "3h ago" in the table, the full timestamp on hover
 function relTime(s){
   if(!s) return '—';
   const d = new Date(s);
   if(isNaN(d.getTime())) return esc(s);
   const sec = Math.round((Date.now() - d.getTime()) / 1000);
-  const abs = d.toLocaleString();
+  const abs = _IST_DATE.format(d);
   let label;
   if(sec < 60) label = sec + 's ago';
   else if(sec < 3600) label = Math.round(sec / 60) + 'm ago';
@@ -296,6 +301,15 @@ function eventBadge(t){
     onclick="setq('${jsArg(t)}')"><span class="action-badge ${cls}" style="${style}">${label}</span></button></span>`;
 }
 
+// Repeats no longer stack as rows -- log_device_event keeps one row per account
+// per rule and bumps a counter -- so the count is what tells an operator this
+// is a pattern and not a one-off. Muted on purpose: a repeat is not a severity.
+function repeatBadge(n){
+  const c = Number(n) || 1;
+  if(c < 2) return '';
+  return ` <span class="badge off xs" title="Seen ${c} times; the time shown is the most recent">×${c}</span>`;
+}
+
 // the badges, the account link and the IP cell all double as filter shortcuts
 function setq(v){
   const q = $('#q');
@@ -439,7 +453,7 @@ function render(){
       const who = f.username ? '@'+esc(f.username) : (f.uid ? esc(f.uid) : 'unregistered');
       return `
       <tr class="${flagSev(f)}${f.reviewed?' row-reviewed':''}">
-        <td data-label="Time" class="log-time">${relTime(f.created_at)}</td>
+        <td data-label="Time" class="log-time">${relTime(f.created_at)}${repeatBadge(f.occurrences)}</td>
         <td data-label="Event">${eventBadge(f.event_type)} ${f.blocked?'<span class="badge bad">BLOCKED</span>':'<span class="badge on">ALLOWED</span>'}</td>
         <td data-label="Account" class="log-target">${f.uid?`<a href="/admin/user/${esc(f.uid)}">@${esc(f.username||f.uid)}</a>`:(f.username?'@'+esc(f.username):'—')}</td>
         <td data-label="Fingerprint" class="log-ip mono">${short(f.fingerprint)}</td>
@@ -617,7 +631,7 @@ async function openInfo(flagId){
       + `<div class="table-wrap"><table class="log-table">
       <thead><tr><th scope="col">When</th><th scope="col">Event</th><th scope="col">IP</th><th scope="col">Details</th><th scope="col"><span class="sr-only">Actions</span></th></tr></thead>
       <tbody>${d.flags.map(x => `<tr class="${flagSev(x)}${x.reviewed?' row-reviewed':''}">
-        <td class="log-time">${fmtDate(x.created_at)}</td>
+        <td class="log-time">${fmtDate(x.created_at)}${repeatBadge(x.occurrences)}</td>
         <td>${eventBadge(x.event_type)}</td>
         <td class="log-ip">${flagIpCell(x.device_info || f.device_info, x.ip_address)}</td>
         <td class="log-details">${details(x.details)}</td>

@@ -1082,6 +1082,25 @@ def build_routes(runtime, config):
 
     # -- dashboard / servers ----------------------------------------------
 
+    def _format_expiry_display(expires_raw):
+        """A stored trial expiry as a short labelled IST string, or None.
+
+        One home for the shape so the dashboard banner, the renew flash and the
+        account page cannot drift apart. Unparseable stays None: a renew banner
+        must never be the reason the dashboard 500s.
+        """
+        if not expires_raw:
+            return None
+        try:
+            from datetime import datetime, timedelta, timezone
+            exp = datetime.fromisoformat(str(expires_raw))
+            if exp.tzinfo is None:
+                exp = exp.replace(tzinfo=timezone.utc)
+            ist = exp.astimezone(timezone(timedelta(hours=5, minutes=30)))
+            return ist.strftime("%d %b %Y, %I:%M %p IST")
+        except Exception:
+            return None
+
     async def _trial_status(user):
         """The host account's trial clock for the Renew card, or None.
 
@@ -1145,6 +1164,8 @@ def build_routes(runtime, config):
             "renew_open": renew_open,
             "renew_opens_in": opens_in,
             "renew_window_days": window,
+            "expires_at": expires_raw,
+            "expires_display": _format_expiry_display(expires_raw),
         }
 
     async def dashboard(request):
@@ -1233,7 +1254,23 @@ def build_routes(runtime, config):
             templating.flash(request, "Could not renew right now — please try again in a moment.", "error")
             return redirect_to("dashboard")
         if status == "renewed":
-            templating.flash(request, "Trial renewed — your servers keep running for another cycle.", "success")
+            # Re-read the row: renew extends from the previous expiry (+1
+            # cycle), and the flash should name the new deadline. The redirect
+            # re-renders the dashboard, where the window is closed again, so
+            # the banner vanishes on its own.
+            def _fresh():
+                import database
+                return database.get_user(user["id"])
+
+            try:
+                fresh_row = await run_in_threadpool(_fresh)
+            except Exception:
+                fresh_row = None
+            next_display = _format_expiry_display((fresh_row or {}).get("trial_expires_at"))
+            if next_display:
+                templating.flash(request, f"Trial renewed — next expiry {next_display}.", "success")
+            else:
+                templating.flash(request, "Trial renewed — your servers keep running for another cycle.", "success")
         elif status == "too_early":
             templating.flash(request, "It's not time to renew yet — you can renew closer to your turn-off date.", "message")
         else:
@@ -2254,6 +2291,7 @@ def build_routes(runtime, config):
                 "max_servers": max_servers,
                 "quota_step": quota_step(len(servers), max_servers),
                 "password_local": config.auth_mode == "local",
+                "trial": await _trial_status(user),
             },
         )
 

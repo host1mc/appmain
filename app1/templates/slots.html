@@ -48,7 +48,7 @@
 
     {% if user.account_type == 'trial' and user.renew_open %}
     <div id="trial-banner" style="display:flex;align-items:center;gap:10px;margin-bottom:10px;padding:8px 14px;background:rgba(155,89,182,.12);border-radius:8px;font-size:13px">
-      <span style="flex:1">Your trial renew window is open. Click <strong>Renew</strong> to keep it working for another cycle.</span>
+      <span style="flex:1">Your trial renew window is open. Click <strong>Renew</strong> to keep it working for another cycle. <span style="color:var(--muted2)">Expires <b data-renew-expiry="{{ user.trial_expires_at or '' }}"></b>.</span></span>
       <button type="button" class="btn btn-primary btn-sm" data-act="renew">Renew</button>
     </div>
     {% endif %}
@@ -82,6 +82,9 @@
     </div>
     <p class="note" style="text-align:left;margin-top:0">Each slot is a fully independent bot with its own server, Discord connection, and embed design.</p>
     <p class="note" style="text-align:left">Keep your own backup of your bot configuration and files. No data loss is expected, but the site is not responsible if it happens, so looking after your own copy is your responsibility. Details are in the <a href="{{ site_url('terms') }}">terms</a>.</p>
+    {% if user.account_type == 'trial' and user.trial_expires_at %}
+    <p class="note" style="text-align:left">Trial expires <b data-renew-expiry="{{ user.trial_expires_at }}"></b> — the Renew button appears above once the renew window opens.</p>
+    {% endif %}
 
     <div id="slots-mount" class="slots-grid">
       {% for bot in bots %}
@@ -116,6 +119,8 @@
 
     <p class="note" style="text-align:left">No status-bot slots are enabled on this account, so there is nothing to show here yet. Ask in <a href="{{ discord_invite }}" rel="noopener noreferrer" target="_blank">our Discord</a> to have a slot enabled.</p>
     {% endif %}
+
+    {% include "_panel_side_ads.html" %}
 
     <div class="review-box card" id="review-box">
       <h2 style="font-size:18px;font-weight:700;margin:0 0 4px">Leave a review</h2>
@@ -245,7 +250,13 @@ async function renewTrial(btn){
   try {
     busy(btn, true, 'Renewing…');
     const res = await api('/api/user/' + USER_ID + '/renew', {method:'POST'});
-    if (res && res.ok) toast('Trial renewed — your bot keeps running for 7 more days');
+    if (res && res.ok){
+      // The new deadline is already a week past the old expiry, so the window
+      // is closed again — drop the banner at once instead of waiting for a reload.
+      document.getElementById('trial-banner')?.remove();
+      const next = res.trial_expires_at ? fmtExpiry(res.trial_expires_at) : '';
+      toast(next ? 'Trial renewed — next expiry ' + next : 'Trial renewed — your bot keeps running for 7 more days');
+    }
 
     else if (res && res.code === 'rate_limited') toast(res?.error || 'You can renew once a day closer to your turn-off date.', true);
     else toast(res?.error || 'Failed to renew', true);
@@ -256,6 +267,15 @@ async function renewTrial(btn){
     busy(btn, false);
   }
 }
+function fmtExpiry(iso){
+  try {
+    const d = new Date(iso);
+    return isNaN(d) ? '' : d.toLocaleString();
+  } catch(e) { return ''; }
+}
+document.querySelectorAll('[data-renew-expiry]').forEach(el => {
+  el.textContent = fmtExpiry(el.getAttribute('data-renew-expiry')) || 'soon';
+});
 
 document.getElementById('settings-modal')?.addEventListener('click',function(e){if(e.target===this)closeSettings()});
 

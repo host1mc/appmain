@@ -116,9 +116,11 @@
             </div>
           </div>
         </div>
-        {{ ad_unit('banner_160x300') }}
+        {% include "_panel_side_ads.html" %}
       </div>
     </div>
+
+    {% include "_panel_mid_ads.html" %}
 
     {{ ad_unit('native') }}
     </main>

@@ -73,13 +73,6 @@
         <small class="upload-progress-meta" id="upload-progress-meta">0%</small>
       </div>
       <div class="file-list" id="file-list"><div class="file-loading">Loading files…</div></div>
-      {% if house_ads %}
-        <aside class="house-promo-tile" aria-label="Promotion">
-          <span class="house-promo-eyebrow">Docs</span>
-          <span class="house-promo-copy">Drag-and-drop uploads, SFTP access and per-file size limits are all covered in the help pages.</span>
-          <a class="house-promo-cta" href="{{ site_url('/help') }}">Open the docs <i>&rarr;</i></a>
-        </aside>
-      {% endif %}
     </section>
 
     <section class="tab-panel" data-panel="startup" role="tabpanel" id="panel-startup" aria-labelledby="tab-startup">
@@ -144,7 +137,7 @@
     <section class="tab-panel" data-panel="settings" role="tabpanel" id="panel-settings" aria-labelledby="tab-settings">
       <article class="detail-card wide stacked-card">
         <span>Hosting node</span>
-        <p style="margin:0">{% if node_name %}This container runs on <strong>{{ node_name }}</strong>. Containers never move between nodes.{% else %}Which host holds this container is currently unavailable.{% endif %}</p>
+        <p class="stacked-note">{% if node_name %}This container runs on <strong>{{ node_name }}</strong>. Containers never move between nodes.{% else %}Which host holds this container is currently unavailable.{% endif %}</p>
       </article>
       <article class="detail-card wide stacked-card">
         <span>Server name</span>

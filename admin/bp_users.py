@@ -1,7 +1,7 @@
 """Admin API: users and accounts. Ported from backend.py; runs locally with
 direct database access, so there is no internal-auth hop."""
 import _bootstrap  # noqa: F401
-from datetime import timedelta
+from datetime import datetime, timedelta, timezone
 
 from flask import Blueprint, request, jsonify
 
@@ -230,6 +230,47 @@ def api_admin_extend_trial(user_id):
     new_expiry = (db._utcnow() + timedelta(days=7)).isoformat()
     db.set_user_trial_expiry(user_id, new_expiry)
     return jsonify({"ok": True, "trial_expires_at": new_expiry})
+
+
+@users_bp.route("/api/admin/users/<user_id>/trial-expiry", methods=["PUT"])
+@auth.require_admin
+def api_admin_set_trial_expiry(user_id):
+    """Set this account's trial expiry to an explicit date and time, or clear it.
+
+    Body {"trial_expires_at": "<ISO-8601 datetime>"} stores exactly that moment;
+    {"trial_expires_at": null} (or "") clears the column so the trial never
+    expires. A timezone-naive value is read as UTC, matching _parse_iso and
+    is_trial_expired; the stored value is always tz-aware ISO, because
+    is_trial_expired() compares the column against the tz-aware _utcnow() and a
+    naive value there used to read as "not expired" indefinitely.
+    """
+    user = db.get_user(user_id)
+    if not user:
+        return jsonify({"ok": False, "error": "Not found"}), 404
+    data = request.get_json(force=True, silent=True)
+    if not isinstance(data, dict) or "trial_expires_at" not in data:
+        return jsonify({"ok": False,
+                        "error": "trial_expires_at required (ISO datetime, or null to clear)"}), 400
+    raw = data.get("trial_expires_at")
+    if raw is None or (isinstance(raw, str) and not raw.strip()):
+        db.set_user_trial_expiry(user_id, None)
+        return jsonify({"ok": True, "trial_expires_at": None, "cleared": True})
+    if not isinstance(raw, str):
+        return jsonify({"ok": False,
+                        "error": "trial_expires_at must be an ISO datetime string, or null to clear"}), 400
+    text = raw.strip()
+    if text.endswith(("Z", "z")):
+        text = text[:-1] + "+00:00"
+    try:
+        when = datetime.fromisoformat(text)
+    except ValueError:
+        return jsonify({"ok": False,
+                        "error": "trial_expires_at is not a valid ISO datetime"}), 400
+    if when.tzinfo is None:
+        when = when.replace(tzinfo=timezone.utc)
+    value = when.isoformat()
+    db.set_user_trial_expiry(user_id, value)
+    return jsonify({"ok": True, "trial_expires_at": value})
 
 
 @users_bp.route("/api/admin/users/<user_id>/email-verified", methods=["PUT"])

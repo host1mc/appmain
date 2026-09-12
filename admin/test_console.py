@@ -319,6 +319,27 @@ def phase_users(c, user_id):
     r = c.post(f"/api/admin/users/{user_id}/extend-trial")
     check("extend-trial returns the new expiry", bool(body(r).get("trial_expires_at")), body(r))
 
+    r = c.put(f"/api/admin/users/{user_id}/trial-expiry",
+              json={"trial_expires_at": "2031-05-06T07:08:00+00:00"})
+    check("an explicit expiry lands in the database",
+          db.get_user(user_id)["trial_expires_at"] == "2031-05-06T07:08:00+00:00",
+          db.get_user(user_id)["trial_expires_at"])
+    r = c.put(f"/api/admin/users/{user_id}/trial-expiry",
+              json={"trial_expires_at": "2031-05-06T07:08:00"})
+    check("a naive expiry is stored as UTC",
+          db.get_user(user_id)["trial_expires_at"] == "2031-05-06T07:08:00+00:00",
+          db.get_user(user_id)["trial_expires_at"])
+    r = c.put(f"/api/admin/users/{user_id}/trial-expiry", json={"trial_expires_at": "not-a-date"})
+    check("a garbage expiry is rejected", r.status_code == 400, r.status_code)
+    r = c.put(f"/api/admin/users/{user_id}/trial-expiry", json={})
+    check("a missing expiry is rejected", r.status_code == 400, r.status_code)
+    r = c.put(f"/api/admin/users/{user_id}/trial-expiry", json={"trial_expires_at": None})
+    check("clearing the expiry lands",
+          body(r).get("cleared") is True and db.get_user(user_id)["trial_expires_at"] is None,
+          (body(r), db.get_user(user_id)["trial_expires_at"]))
+    r = c.put(f"/api/admin/users/{MISSING_ID}/trial-expiry", json={"trial_expires_at": None})
+    check("an expiry edit on an unknown user is 404", r.status_code == 404, r.status_code)
+
     r = c.post(f"/api/admin/users/{user_id}/reset-password",
                json={"password": "brand-new-pw-1"})
     check("the password reset succeeds", body(r).get("ok") is True, body(r))

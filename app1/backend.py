@@ -251,6 +251,31 @@ def _get_client_ip():
     return request.remote_addr or ""
 
 
+def _identity_ip():
+    """The visitor's address when it identifies the visitor, otherwise "".
+
+    _get_client_ip() answers "who do we rate-limit?" and must always name
+    something, so it falls back to the peer — the frontend — whenever address
+    resolution fails or TRUSTED_PROXY_HOPS is 0. That fallback is the right
+    answer for a counter and the wrong one for identity: it records 127.0.0.1
+    as every visitor's address, and accounts that share only that placeholder
+    then read as "same IP" in the device rules, which is how an IPv6 visitor and
+    an IPv4 one were reported as sharing an address.
+
+    Returning "" keeps the address out of the record entirely, so the console
+    shows nothing rather than a loopback that means nothing. Same is_global
+    predicate _webrtc_foreign_ips() already uses to decide an address cannot be
+    compared.
+    """
+    ip = _get_client_ip()
+    try:
+        if ipaddress.ip_address(ip.strip()).is_global:
+            return ip
+    except ValueError:
+        pass
+    return ""
+
+
 # Rate-limit on the *visitor's* IP, not the peer's. Every request here arrives
 # from the frontend, so keying on the raw peer address would put the whole site
 # in one bucket — a single busy visitor would lock everyone else out of login.
@@ -1064,7 +1089,7 @@ def api_create_session():
     data = _json_object()
     sid = _text_field(data, "sid")
     sdata = data.get("data", {})
-    ip = _get_client_ip()
+    ip = _identity_ip()
     ua = request.headers.get("User-Agent", "")
     # sid is the sessions PK (VARCHAR2(64)) and the blob is what _authenticate()
     # later calls .get() on, so a non-dict stored here turned every authenticated
@@ -1102,6 +1127,10 @@ def api_get_session(sid):
     data = db.get_session(sid)
     if data is None:
         return ec.err(ec.SESSION_NOT_FOUND, "Session not found", 404)
+    # Surface the account's ad opt-out so the panel's house-ad gate can honour it
+    # without a second round-trip; the panel has no other read path to users.
+    if isinstance(data, dict) and data.get("user_id"):
+        data["ads_disabled"] = db.get_user_ads_disabled(data["user_id"])
     return jsonify({"ok": True, "data": data})
 
 
@@ -1160,7 +1189,7 @@ def api_auth_register():
     display = _text_field(data, "display_name") or None
     fp, fp_anomaly = _clean_fingerprint(_text_field(data, "fingerprint"))
     fp_detail, fp_parsed, detail_anomaly = _clean_fp_detail(_text_field(data, "fingerprint_detail"))
-    client_ip = _get_client_ip()
+    client_ip = _identity_ip()
 
     if not username or not password or not email:
         return ec.err(ec.MISSING_FIELDS, "Username, password and email required", 400)
@@ -1338,7 +1367,7 @@ def api_complete_registration():
     new_password = _raw_field(data, "new_password")
     fp, fp_anomaly = _clean_fingerprint(_text_field(data, "fingerprint"))
     fp_detail, fp_parsed, detail_anomaly = _clean_fp_detail(_text_field(data, "fingerprint_detail"))
-    client_ip = _get_client_ip()
+    client_ip = _identity_ip()
 
     if not uid or not email or not code:
         return ec.err(ec.MISSING_FIELDS, "Missing user_id, email or otp_code", 400)
@@ -1467,7 +1496,7 @@ def api_auth_login():
     password = _raw_field(data, "password")
     fp, fp_anomaly = _clean_fingerprint(_text_field(data, "fingerprint"))
     fp_detail, fp_parsed, detail_anomaly = _clean_fp_detail(_text_field(data, "fingerprint_detail"))
-    client_ip = _get_client_ip()
+    client_ip = _identity_ip()
 
     if len(username) > EMAIL_MAX_LEN or len(password) > PASSWORD_MAX_LEN:
         # verify_user() accepts a username *or* an email here, so the wider of the
@@ -1684,7 +1713,7 @@ def api_auth_github():
     fp, fp_anomaly = _clean_fingerprint(_text_field(data, "fingerprint"))
     fp_detail, fp_parsed, detail_anomaly = _clean_fp_detail(_text_field(data, "fingerprint_detail"))
     agreed = _text_field(data, "agreed")
-    client_ip = _get_client_ip()
+    client_ip = _identity_ip()
 
     # 1. code -> access token
     tok = _github_http("https://github.com/login/oauth/access_token", form={
@@ -1855,7 +1884,7 @@ def api_user_devtools_flag():
         DEVICE_EVENT_DEVTOOLS,
         user_id=g.current_user_id,
         fingerprint_hash=fp or None,
-        ip_address=_get_client_ip(),
+        ip_address=_identity_ip(),
         blocked=False,
         details={"open_seconds": seconds, "source": "devtools-detector-compatible", "outcome": "flag_only"},
     )
@@ -1966,7 +1995,12 @@ def api_renew(user_id):
         return ec.err(ec.NOT_AUTHORIZED, "Not authorized", 403)
     res = db.renew_user(user_id)
     if res == "renewed":
-        return jsonify({"ok": True, "status": "renewed"})
+        # The fresh deadline, so the page can show the next expiry and drop
+        # its renew banner without a reload. renew_user() extends from the
+        # previous expiry (+1 cycle), never from now.
+        fresh = db.get_user(user_id) or {}
+        return jsonify({"ok": True, "status": "renewed",
+                        "trial_expires_at": fresh.get("trial_expires_at")})
     elif res == "too_early":
         return ec.err(ec.RATE_LIMITED, "It is not time to renew yet — you can renew closer to your turn-off date.", 400)
     elif res == "not_trial":

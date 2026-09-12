@@ -119,7 +119,9 @@ function api(url, opts={}){
 
 function fmtDate(s){
   if(!s) return '—';
-  try{ return new Date(s).toLocaleString(); }catch(e){ return s; }
+  // Every console timestamp renders in IST with a 12-hour clock, whatever zone
+  // the operator's browser sits in.
+  try{ return new Intl.DateTimeFormat('en-IN',{timeZone:'Asia/Kolkata',day:'2-digit',month:'short',year:'numeric',hour:'numeric',minute:'2-digit',second:'2-digit',hour12:true}).format(new Date(s)); }catch(e){ return s; }
 }
 
 // Usernames, bot names and server IPs come straight from the database and are

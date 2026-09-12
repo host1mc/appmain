@@ -223,6 +223,13 @@ async function selectUserDetail(){
         <div class="card"><h2>Trial &amp; Bots</h2>
           <div class="kv"><span class="k">Account Type</span><span class="v"><span class="badge ${acct==='paid'?'on':'off'}">${esc(String(acct).toUpperCase())}</span></span></div>
           <div class="kv"><span class="k">Trial Expires</span><span class="v">${u.trial_expires_at?esc(fmtDate(u.trial_expires_at)):'—'}</span></div>
+          <div style="display:flex;gap:8px;align-items:center;margin:10px 0;flex-wrap:wrap">
+            <label style="font-size:13px;color:var(--muted)" for="edit-trial-expiry">Expires (IST):</label>
+            <input id="edit-trial-expiry" type="datetime-local" value="${esc(trialInputValue(u.trial_expires_at))}"
+                   style="background:var(--bg2);border:1px solid var(--line);color:var(--txt);padding:6px 10px;border-radius:8px;font-size:14px;color-scheme:dark">
+            <button class="btn btn-ghost btn-sm" onclick="saveTrialExpiry()">Save</button>
+            <button class="btn btn-ghost btn-sm" onclick="clearTrialExpiry()">Clear</button>
+          </div>
           <div class="kv"><span class="k">Status</span><span class="v">${trialExpired?'<span class="badge off">EXPIRED</span>':'<span class="badge on">Active</span>'}</span></div>
           <div class="kv"><span class="k">Bots</span><span class="v">${runningBots} running / ${totalBots} total</span></div>
           <hr class="sep">
@@ -270,7 +277,7 @@ async function selectUserDetail(){
 function api(path, opts){
   return fetch(path, {headers:{'Content-Type':'application/json'}, ...opts}).then(r=>r.json()).catch(()=>({ok:false}));
 }
-function fmtDate(d){if(!d)return'—';try{return new Date(d).toLocaleString()}catch(e){return d}}
+function fmtDate(d){if(!d)return'—';try{return new Intl.DateTimeFormat('en-IN',{timeZone:'Asia/Kolkata',day:'2-digit',month:'short',year:'numeric',hour:'numeric',minute:'2-digit',second:'2-digit',hour12:true}).format(new Date(d))}catch(e){return d}}
 // Usernames, bot names, server IPs and user agents all come from the database
 // and are attacker-controlled: nothing reaches innerHTML unescaped.
 function esc(s){ return String(s==null?'':s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
@@ -459,6 +466,30 @@ function unbanUser(){if(!confirm('Unban this user?'))return;api(API+USER_ID+'/un
 function stopAllBots(){if(!confirm('Stop all bots?'))return;api(API+USER_ID+'/bots/stop-all',{method:'POST'}).then(r=>{if(r&&r.ok){toast('All bots stopped');selectUserDetail()}else toast((r&&r.error)||'Error',true)})}
 function startAllBots(){if(!confirm('Start all bots?'))return;api(API+USER_ID+'/bots/start-all',{method:'POST'}).then(r=>{if(r&&r.ok){toast('All bots started');selectUserDetail()}else toast((r&&r.error)||'Error',true)})}
 function extendTrial(){if(!confirm('Extend trial by 7 days?'))return;api(API+USER_ID+'/extend-trial',{method:'POST'}).then(r=>{if(r&&r.ok){toast('Trial extended');selectUserDetail()}else toast((r&&r.error)||'Error',true)})}
+// datetime-local carries no zone. This console speaks IST everywhere, so the
+// stored UTC instant is shown as IST wall time and the edited IST wall time is
+// sent back pinned to +05:30 (toISOString). Round-trips exactly; the server
+// also accepts a naive value, reading it as UTC.
+const _IST_PICKER = new Intl.DateTimeFormat('en-CA',{timeZone:'Asia/Kolkata',year:'numeric',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',hour12:false});
+function trialInputValue(iso){
+  if(!iso) return '';
+  const d = new Date(iso);
+  if(isNaN(d)) return '';
+  const p = {};
+  for(const x of _IST_PICKER.formatToParts(d)) p[x.type] = x.value;
+  return `${p.year}-${p.month}-${p.day}T${p.hour === '24' ? '00' : p.hour}:${p.minute}`;
+}
+function saveTrialExpiry(){
+  const raw = ($('#edit-trial-expiry')?.value || '').trim();
+  if(!raw){ toast('Pick a date and time, or use Clear to remove the expiry', true); return; }
+  const d = new Date(raw + ':00+05:30');
+  if(isNaN(d)){ toast('That date and time could not be read', true); return; }
+  api(API+USER_ID+'/trial-expiry',{method:'PUT',body:JSON.stringify({trial_expires_at:d.toISOString()})}).then(r=>{if(r&&r.ok){toast('Expiry updated');selectUserDetail()}else toast((r&&r.error)||'Error',true)});
+}
+function clearTrialExpiry(){
+  if(!confirm('Remove the trial expiry? The trial will never expire.')) return;
+  api(API+USER_ID+'/trial-expiry',{method:'PUT',body:JSON.stringify({trial_expires_at:null})}).then(r=>{if(r&&r.ok){toast('Expiry cleared');selectUserDetail()}else toast((r&&r.error)||'Error',true)});
+}
 function updateSlots(){const v=parseInt($('#edit-slots')?.value)||0;api(API+USER_ID+'/slots',{method:'PUT',body:JSON.stringify({slots:v})}).then(r=>{if(r&&r.ok){toast('Slots updated');selectUserDetail()}else toast((r&&r.error)||'Error',true)})}
 // The container grant is sent as null when the box is empty, which clears it —
 // parseInt('')||0 would send 0 and switch hosting off instead.

@@ -1,0 +1,3 @@
+{% set _pm1 = ad_unit('banner_300x250') %}
+{% set _pm2 = ad_unit('banner_468x60') %}
+{% if _pm1 or _pm2 %}<div class="panel-mid-ads" role="complementary" aria-label="Advertisement">{{ _pm1 }}{{ _pm2 }}</div>{% endif %}

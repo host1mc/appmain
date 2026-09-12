@@ -102,10 +102,10 @@ APP_FP_GUARD = HERE / "static" / "g7.js"
 # Every template that contains promo markup of its own. base.html carries the
 # closing strip on every page plus the sidebar rail; dashboard.html carries the
 # stat-cards filler and its own closing card; new_server.html and server.html each
-# carry one tile in a rail their own layout leaves empty. account.html adds
-# nothing — it inherits base.html's two and is deliberately absent here, so the
-# group 4b sweep holds it to zero.
-PROMO_TEMPLATES = ("base.html", "dashboard.html", "new_server.html", "server.html")
+# carry one tile in a rail their own layout leaves empty; account.html carries
+# one mid-page tile between its summary and its password section.
+PROMO_TEMPLATES = ("base.html", "dashboard.html", "new_server.html",
+                   "server.html", "account.html")
 
 # The ``endpoint`` values routes.py actually passes to templating.render(), which
 # is what reaches a template as ``request.endpoint``. Four pages extend base.html
@@ -125,12 +125,13 @@ NON_DASHBOARD_ENDPOINTS = (
 
 # The endpoint each template is rendered under for the main body of group 4 and
 # for group 5's sweeps. base.html is also rendered standalone under every endpoint
-# below (see BASE_BY_ENDPOINT) because it is the only stand-in for account.html,
-# which adds no markup of its own; dashboard.html can only ever
+# below (see BASE_BY_ENDPOINT); account.html renders as itself under its own
+# endpoint, and dashboard.html can only ever
 # serve "dashboard", which is also the one endpoint that suppresses the inherited
 # closing strip.
 PRIMARY_ENDPOINT = {
     "base.html": "account_page",
+    "account.html": "account_page",
     "dashboard.html": DASHBOARD_ENDPOINT,
     "new_server.html": "new_server",
     "server.html": "server_page",
@@ -385,6 +386,103 @@ else:
           "both house_ads_enabled and guard_mode still use the 'is False' identity test")
 
 
+# ── group 2b: house_ads_visible folds the per-user opt-out on top ─────────────
+# house_ads_enabled is the site-wide answer; house_ads_visible is what a given
+# render actually shows, and the only thing it adds is the account's own opt-out.
+# The main site reads users.ads_disabled to switch its ad stack off per account;
+# /api/session now surfaces that flag onto the session the panel borrows, and
+# render() passes it here — so the panel and the public pages honour one and the
+# same choice. Two directions must hold and they are NOT symmetric:
+#   * the user layer can only ever take promos AWAY, never add them back — when
+#     the site-wide gate is off, no session value may switch a promo on;
+#   * the flag absent (signed out, or an account that never opted out) falls
+#     through to the site-wide answer unchanged.
+
+g2b = Group("2b. templating.house_ads_visible folds in the per-user opt-out")
+
+if tpl is None:
+    g2b.failures.append(f"skipped: panel_app.templating unavailable ({_IMPORT_ERROR})")
+else:
+    g2b.ok(hasattr(tpl, "house_ads_visible"), "templating exposes house_ads_visible")
+    hav = tpl.house_ads_visible
+
+    ON = FakeSettings(True, True)           # site-wide: promos allowed
+    NONE_ON = FakeSettings(None, True)      # master switch unreadable, still allowed
+    PANEL_OFF = FakeSettings(True, False)   # dedicated panel flag off
+    MASTER_OFF = FakeSettings(False, True)  # operator killed ads site-wide
+
+    # Site-wide ON, and what the visitor's own choice does to it. NONE_ON is here
+    # because house_ads_enabled fails a None master switch OPEN, so the per-user
+    # layer has to keep behaving over that tri-state, not just over a hard True.
+    ON_TABLE = [
+        (ON, None, True, "no session at all -> site-wide answer, promos show"),
+        (ON, {}, True, "signed in, no ad flag -> promos show"),
+        (ON, {"ads_disabled": 0}, True, "account has ads ON -> promos show"),
+        (ON, {"ads_disabled": 1}, False, "account opted OUT -> no promos"),
+        (ON, {"ads_disabled": True}, False, "opt-out as a real bool -> no promos"),
+        # /api/session sends the flag as int 0/1 (db.get_user_ads_disabled returns
+        # an int), but the read is `not bool(...)`, matching the main site's
+        # `not bool(user_resp.get("ads_disabled"))`. Pin the typed cases so a later
+        # switch to a str/None payload cannot silently flip a visitor's promos.
+        (ON, {"ads_disabled": "1"}, False, "truthy non-int opt-out -> no promos"),
+        (ON, {"ads_disabled": ""}, True, "falsy non-int -> promos show"),
+        (ON, {"ads_disabled": None}, True, "explicit None flag -> promos show"),
+        (NONE_ON, {"ads_disabled": 1}, False, "None master + opt-out -> no promos"),
+        (NONE_ON, {}, True, "None master + no flag -> promos show (fails open)"),
+    ]
+    for settings, session, want, why in ON_TABLE:
+        got = g2b.no_raise(lambda s=settings, se=session: hav(s, se),
+                           f"house_ads_visible(<on>, {session!r})")
+        g2b.eq(got, want, f"site allows, session={session!r} ({why})")
+        g2b.ok(got is True or got is False,
+               f"site allows, session={session!r} returns a real bool")
+
+    # THE KEY ASSERTION — the mirror of group 2's MASTER KILL. When the site-wide
+    # gate is off (master switch OR panel flag), NO session value may bring a promo
+    # back: the per-user layer subtracts, it never adds. The sharp case is a user
+    # who never opted out (ads_disabled=0) — house_ads is "off for everyone", and
+    # their standing "ads on" must not override the operator.
+    for off_settings, label in ((MASTER_OFF, "master switch off"),
+                                (PANEL_OFF, "panel flag off")):
+        for session in (None, {}, {"ads_disabled": 0}, {"ads_disabled": 1},
+                        {"ads_disabled": False}):
+            g2b.eq(g2b.no_raise(lambda s=off_settings, se=session: hav(s, se),
+                                f"house_ads_visible(<{label}>, {session!r})"),
+                   False,
+                   f"site OFF ({label}) beats session={session!r} "
+                   f"(user layer can only subtract, never add)")
+
+    # No snapshot at all -> False, the same defence house_ads_enabled makes.
+    g2b.eq(g2b.no_raise(lambda: hav(None, {"ads_disabled": 0}),
+                        "house_ads_visible(None, ...)"), False,
+           "settings=None -> False regardless of session")
+    g2b.eq(g2b.no_raise(lambda: hav(), "house_ads_visible() with no args"), False,
+           "no arguments at all -> False")
+
+    # ── the wiring: render() actually consults the per-user gate ──────────────
+    # The table proves the function is right; this proves render() calls it with
+    # the borrowed session rather than the site-wide house_ads_enabled it used
+    # before. A revert to house_ads_enabled(settings) there leaves every cell above
+    # green while silently ignoring the account's choice in production.
+    _tpl_src_2b = (PANEL_DIR / "templating.py").read_text(encoding="utf-8")
+    g2b.eq(_tpl_src_2b.count(
+        'ctx["house_ads"] = house_ads_visible(settings, auth.flask_session(request))'), 1,
+        "render() sets house_ads from house_ads_visible(settings, the borrowed session)")
+    g2b.eq(_tpl_src_2b.count('ctx["house_ads"] = house_ads_enabled('), 0,
+           "render() no longer gates house_ads on the site-wide answer alone")
+
+    # ── the source of the flag: /api/session surfaces users.ads_disabled ──────
+    # Read as text, never imported: backend.py does `import database` at module
+    # scope and this script is poisoned against reaching Oracle. The panel has no
+    # other read path to users, so if this line goes the per-user gate degrades to
+    # "site-wide only" — and every cell above still passes, because the borrowed
+    # session simply never carries the key. Hence checking the producer too.
+    _backend_src = (HERE / "backend.py").read_text(encoding="utf-8")
+    g2b.ok('data["ads_disabled"] = db.get_user_ads_disabled(' in _backend_src,
+           "api_get_session surfaces users.ads_disabled onto the borrowed session "
+           "(the panel's only read path to the per-user flag)")
+
+
 # ── group 3: PanelSettings and its fallback ──────────────────────────────────
 
 g3 = Group("3. PanelSettings.house_ads and panel_settings._fallback")
@@ -544,6 +642,11 @@ else:
 # through |tojson and server.html walks ``runtime_config.versions``.
 EXTRA_CONTEXT = {
     "base.html": {},
+    "account.html": {
+        "server_count": 1,
+        "max_servers": 3,
+        "quota_step": 3,
+    },
     "dashboard.html": {
         "stats": {"total": 1, "running": 1},
         "max_servers": 3,
@@ -634,6 +737,7 @@ for name in PROMO_TEMPLATES:
 EXPECTED_CLASSES = {
     "base.html": ("house-promo-rail", "house-promo-bar", "house-promo-eyebrow",
                   "house-promo-copy", "house-promo-cta"),
+    "account.html": ("house-promo-tile",),
     "dashboard.html": ("house-promo-slot", "house-promo-card", "house-promo-body"),
     "new_server.html": ("house-promo-tile",),
     "server.html": ("house-promo-tile",),
@@ -656,6 +760,7 @@ PROMO_CLASSES = ("house-promo-bar", "house-promo-card", "house-promo-body",
 # The rest of the page is unaffected either way — the promo is additive, not a
 # replacement for anything. Checked on a landmark each template must always have.
 for name, landmark in (("base.html", "panel-shell"),
+                       ("account.html", "account-summary"),
                        ("dashboard.html", "stat-cards"),
                        ("new_server.html", "deploy-layout"),
                        ("server.html", "details-grid")):
@@ -762,12 +867,13 @@ for name in ("new_server.html", "server.html"):
 # should carry it (CLOSERS sums to 0). Counted per treatment rather than in total
 # because both failure directions matter and they are not symmetric.
 #
-# Every page is its own real render where one exists. account.html adds no markup
-# of its own, so standalone base.html under its endpoint is a faithful stand-in;
-# the other three are rendered as themselves, because a tile added to a child
-# template is invisible to a base.html-only fixture.
+# Every page is its own real render where one exists, account.html included now
+# that it carries a tile of its own. base.html is still rendered standalone
+# under account_page as well, because that fixture is what holds the inherited
+# rail+strip to their exact set on a page whose child adds a slot alongside.
 PAGES_WITH_PROMO = [
     ("base.html@account_page", BASE_BY_ENDPOINT[("account_page", True)]),
+    ("account.html@account_page", RENDERED[("account.html", True)]),
     ("dashboard.html@dashboard", RENDERED[("dashboard.html", True)]),
     ("new_server.html@new_server", RENDERED[("new_server.html", True)]),
     ("server.html@server_page", RENDERED[("server.html", True)]),
@@ -786,6 +892,8 @@ for label, html in PAGES_WITH_PROMO:
 # none. Read as: which slots does this page actually carry.
 EXPECTED_SLOTS = {
     "base.html@account_page": {"house-promo-rail", "house-promo-bar"},
+    "account.html@account_page": {"house-promo-rail", "house-promo-tile",
+                                  "house-promo-bar"},
     "dashboard.html@dashboard": {"house-promo-rail", "house-promo-slot",
                                  "house-promo-card"},
     "new_server.html@new_server": {"house-promo-rail", "house-promo-tile",
@@ -810,10 +918,10 @@ for name in PROMO_TEMPLATES:
            f"{name} with house_ads=False: ZERO 'house-promo'")
 
 # No slot anywhere else. The invariants above only see the pages this script
-# renders, so a promo added to account.html would satisfy every cell
-# so far while putting two of the same treatment on that page in production. Scanning
-# the whole template directory is what closes that: only the four in PROMO_TEMPLATES
-# may contain promo markup at all.
+# renders, so a promo added to any other template would satisfy every cell
+# so far while putting two of the same treatment on that page in production.
+# Scanning the whole template directory is what closes that: only the five in
+# PROMO_TEMPLATES may contain promo markup at all.
 for path in sorted(TEMPLATES_DIR.glob("*.html")):
     if path.name in PROMO_TEMPLATES:
         continue
@@ -908,11 +1016,12 @@ for name in PROMO_TEMPLATES:
 # own through {% block scripts %}. The equality against the house_ads=False render
 # is the drift-proof half of this: whatever the real baseline becomes, the promos
 # must not move it.
-SCRIPT_BASELINE = {"base.html": 3, "dashboard.html": 4, "new_server.html": 5,
-                   "server.html": 4}
+SCRIPT_BASELINE = {"base.html": 3, "account.html": 3, "dashboard.html": 4,
+                   "new_server.html": 5, "server.html": 4}
 # What each child adds on top of base.html's three. For the failure message only.
 SCRIPT_EXTRAS = {
     "base.html": "",
+    "account.html": "",
     "dashboard.html": " + q2.js",
     "new_server.html": " + q3.js + the runtime-data JSON block",
     "server.html": " + q4.js",

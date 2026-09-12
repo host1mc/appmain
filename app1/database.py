@@ -18,6 +18,7 @@ import ssl
 import json
 import secrets
 import hashlib
+import ipaddress
 import sys
 import threading
 import time
@@ -810,6 +811,7 @@ def _ensure_oracle_cols_on(conn):
                 ip_address VARCHAR2(45),
                 blocked NUMBER DEFAULT 0,
                 reviewed NUMBER DEFAULT 0,
+                occurrences NUMBER DEFAULT 1,
                 details CLOB,
                 created_at VARCHAR2(50) NOT NULL,
                 -- SET NULL, not CASCADE: the device audit trail must outlive a
@@ -817,6 +819,21 @@ def _ensure_oracle_cols_on(conn):
                 CONSTRAINT fk_device_events_uid FOREIGN KEY ("uid") REFERENCES users("uid") ON DELETE SET NULL
             )
         """)
+    else:
+        cur.execute("SELECT column_name FROM user_tab_columns WHERE table_name='DEVICE_EVENTS'")
+        if "occurrences" not in {r[0].lower() for r in cur.fetchall()}:
+            _alter_retry(cur, "ALTER TABLE device_events ADD occurrences NUMBER DEFAULT 1",
+                         "device_events.occurrences")
+    cur.execute("SELECT COUNT(*) FROM user_indexes WHERE index_name='DEVICE_EVENTS_DUP'")
+    if cur.fetchone()[0] == 0:
+        try:
+            # log_device_event runs its dedupe lookup on every registration and
+            # login, so it gets an index -- expression for expression, since
+            # Oracle cannot use a plain one for the NVL()s.
+            cur.execute("CREATE INDEX device_events_dup ON device_events "
+                        "(event_type, NVL(lookup_hash,'~'), NVL(\"uid\",'~'))")
+        except Exception as ex:
+            _debug_print(f"[database] could not create device_events_dup: {ex}")
     cur.execute(
         "SELECT COUNT(*) FROM user_tab_columns WHERE table_name='SETTINGS'"
     )
@@ -1585,11 +1602,17 @@ def _migrate_at_rest_encryption():
                     # every such row identically and make the column actively
                     # wrong rather than merely absent.
                     continue
+                ip_lookup = _ip_lookup(plain)
+                if not ip_lookup:
+                    # Nothing routable to index. The column is already NULL on
+                    # this row, so the UPDATE would write NULL over NULL on
+                    # every boot for every loopback sighting.
+                    continue
                 cur.execute("UPDATE fingerprints SET ip_lookup_hash=:h WHERE id=:id",
-                            {"h": lookup_hash(plain), "id": fid})
+                            {"h": ip_lookup, "id": fid})
                 continue
             cur.execute("UPDATE fingerprints SET ip_address=:enc, ip_lookup_hash=:h WHERE id=:id",
-                        {"enc": encrypt(ip), "h": lookup_hash(ip), "id": fid})
+                        {"enc": encrypt(ip), "h": _ip_lookup(ip), "id": fid})
         # device_events: IP column encrypted, no lookup (display only).
         cur.execute("SELECT id, ip_address FROM device_events WHERE ip_address IS NOT NULL")
         for r in cur.fetchall():
@@ -2727,6 +2750,37 @@ def accounts_on_device(fingerprint_hash=None, lookup_hash=None):
     return out
 
 
+def _ip_lookup(ip_address):
+    """Keyed index value for a client IP, or None when the IP cannot identify one.
+
+    Canonicalised before hashing. One host reaches us spelled several ways --
+    ``::ffff:1.2.3.4`` for a v4 client on a v6 socket, an expanded v6, mixed-case
+    hex, a ``%zone`` suffix -- and hashing the raw string makes each spelling its
+    own "IP", so the same address on two logins reads as two different ones and
+    the shared-IP check misses it.
+
+    Anything not globally routable returns None, because it identifies the
+    network rather than the visitor. Loopback is why: when address resolution
+    falls back to the peer, every visitor is recorded as 127.0.0.1, and a single
+    index value shared by all of them makes accounts_on_ip() answer "these
+    accounts share an IP" for two people who have nothing in common -- an IPv6
+    visitor and an IPv4 one included. Private, link-local, CGNAT and unspecified
+    space is excluded on the same grounds.
+    """
+    if not ip_address:
+        return None
+    try:
+        addr = ipaddress.ip_address(str(ip_address).strip().split("%")[0])
+    except ValueError:
+        return None
+    # A v4 client seen through a v6 socket must land on the same index value as
+    # the same client seen directly, or it looks like a second address.
+    addr = getattr(addr, "ipv4_mapped", None) or addr
+    if not addr.is_global:
+        return None
+    return lookup_hash(addr.compressed)
+
+
 _IP_INDEX_CHECKED = False
 
 
@@ -2755,11 +2809,16 @@ def _warn_if_ip_index_unusable(cur):
         for r in cur.fetchmany(8):
             enc = r["ip_address"] if hasattr(r, "keys") else r[0]
             stored_h = r["ip_lookup_hash"] if hasattr(r, "keys") else r[1]
+            plain = decrypt(enc) if looks_encrypted(enc) else enc
+            expect = _ip_lookup(plain)
+            if expect is None:
+                # Nothing routable to index here, so a missing or mismatched
+                # value is this row's correct state rather than evidence of a
+                # rekey. Counting it would raise the alarm on every boot.
+                continue
             if not stored_h:
                 unindexed += 1
-                continue
-            plain = decrypt(enc) if looks_encrypted(enc) else enc
-            if plain and lookup_hash(plain) != stored_h:
+            elif expect != stored_h:
                 stale += 1
         if unindexed or stale:
             _debug_print("[db] accounts_on_ip: fingerprints.ip_lookup_hash is unusable "
@@ -2774,7 +2833,8 @@ def _warn_if_ip_index_unusable(cur):
 
 def accounts_on_ip(ip_address):
     """Every account whose bound device was last seen on this IP."""
-    if not ip_address:
+    ip_hash = _ip_lookup(ip_address)
+    if not ip_hash:
         return []
     uconn = _user_conn()
     try:
@@ -2784,7 +2844,7 @@ def accounts_on_ip(ip_address):
         # ciphertext (bind_fingerprint writes it encrypted and the startup
         # migration converts the rest), so comparing a plaintext IP to that column
         # could only ever return nothing while looking like a safety net.
-        cur.execute("SELECT \"uid\" FROM fingerprints WHERE ip_lookup_hash=:h AND bound=1", {"h": lookup_hash(ip_address)})
+        cur.execute("SELECT \"uid\" FROM fingerprints WHERE ip_lookup_hash=:h AND bound=1", {"h": ip_hash})
         rows = cur.fetchall()
         if not rows:
             _warn_if_ip_index_unusable(cur)
@@ -2961,7 +3021,7 @@ def bind_fingerprint(user_id, fingerprint_hash, device_info=None, ip_address=Non
             "VALUES(:u_id,:fh,:lh,:de,:ip,:iph,1,:cat)",
             {"u_id": user_id, "fh": encrypted, "lh": lookup, "de": device_enc,
              "ip": encrypt(ip_address) if ip_address else None,
-             "iph": lookup_hash(ip_address) if ip_address else None,
+             "iph": _ip_lookup(ip_address),
              "cat": _now()},
         )
         uconn.commit()
@@ -3001,7 +3061,7 @@ def rebind_fingerprint_to_session(user_id, fingerprint_hash, device_info=None, i
     if not lookup:
         return False
     try:
-        ip_hash = lookup_hash(ip_address) if ip_address else None
+        ip_hash = _ip_lookup(ip_address)
     except Exception:
         ip_hash = None
     try:
@@ -3077,7 +3137,7 @@ def update_fingerprint_device_info(user_id, device_info, ip_address=None):
         if device_enc and ip_address:
             cur.execute("UPDATE fingerprints SET device_info_enc=:de, ip_address=:ip, ip_lookup_hash=:iph WHERE \"uid\"=:id AND bound=1",
                         {"de": device_enc, "ip": encrypt(ip_address),
-                         "iph": lookup_hash(ip_address), "id": user_id})
+                         "iph": _ip_lookup(ip_address), "id": user_id})
         elif device_enc:
             cur.execute("UPDATE fingerprints SET device_info_enc=:de WHERE \"uid\"=:id AND bound=1",
                         {"de": device_enc, "id": user_id})
@@ -3087,7 +3147,7 @@ def update_fingerprint_device_info(user_id, device_info, ip_address=None):
             # from a browser that sent no fingerprint_detail left the admin
             # console showing an IP older than the last login.
             cur.execute("UPDATE fingerprints SET ip_address=:ip, ip_lookup_hash=:iph WHERE \"uid\"=:id AND bound=1",
-                        {"ip": encrypt(ip_address), "iph": lookup_hash(ip_address), "id": user_id})
+                        {"ip": encrypt(ip_address), "iph": _ip_lookup(ip_address), "id": user_id})
         uconn.commit()
     finally:
         uconn.close()
@@ -3226,7 +3286,7 @@ def record_fingerprint_history(user_id, fingerprint_hash, device_info=None, ip_a
         return False
     try:
         cur = uconn.cursor()
-        ip_hash = lookup_hash(ip_address) if ip_address else None
+        ip_hash = _ip_lookup(ip_address)
         cur.execute(
             "SELECT 1 FROM fingerprints "
             "WHERE \"uid\"=:id AND lookup_hash=:lh AND (ip_lookup_hash IS NULL AND :iph IS NULL OR ip_lookup_hash=:iph)",
@@ -3292,6 +3352,28 @@ def get_fingerprint_history(user_id, limit=50):
     return out
 
 
+def _device_event_bump(details_enc, ip_enc, blocked, now, dup_id):
+    """The UPDATE for a repeat sighting of a flag that is already on file.
+
+    created_at moves to the latest sighting, so the row reads and sorts as
+    last-seen; the context beside it moves with it, since a fresh timestamp
+    next to stale details misreads as a new incident. A field the repeat did
+    not carry keeps what is already there rather than being nulled out.
+    blocked only ever climbs: one occurrence having been blocked is an audit
+    signal a later allowed one must not erase.
+    """
+    sets = ["occurrences = NVL(occurrences,1) + 1", "created_at=:cat",
+            "blocked = GREATEST(NVL(blocked,0), :bl)"]
+    params = {"cat": now, "bl": 1 if blocked else 0, "id": dup_id}
+    if details_enc:
+        sets.append("details=:det")
+        params["det"] = details_enc
+    if ip_enc:
+        sets.append("ip_address=:ip")
+        params["ip"] = ip_enc
+    return "UPDATE device_events SET " + ", ".join(sets) + " WHERE id=:id", params
+
+
 def log_device_event(event_type, user_id=None, username=None, fingerprint_hash=None,
                      device_info=None, ip_address=None, blocked=False, details=None):
     if not fingerprint_hash:
@@ -3303,21 +3385,48 @@ def log_device_event(event_type, user_id=None, username=None, fingerprint_hash=N
             device_info = {"raw": device_info}
     device_enc = encrypt(json.dumps(device_info)) if device_info else None
     username_enc = encrypt(username) if username else None
+    details_enc = encrypt(json.dumps(details)) if details else None
+    ip_enc = encrypt(ip_address) if ip_address else None
+    lookup = _fp_lookup(fingerprint_hash)
+    now = _now()
     uconn = _user_conn()
     try:
         cur = uconn.cursor()
-        cur.execute(
-            "INSERT INTO device_events(\"uid\", username, event_type, lookup_hash, fingerprint_enc, "
-            "device_info_enc, ip_address, blocked, reviewed, details, created_at) "
-            "VALUES(:user_id,:un,:et,:lh,:fe,:de,:ip,:bl,0,:det,:cat)",
-            {"user_id": str(user_id) if user_id else None, "un": username_enc, "et": event_type,
-             "lh": _fp_lookup(fingerprint_hash),
-             "fe": encrypt(fingerprint_hash) if fingerprint_hash else None,
-             "de": device_enc,
-             "ip": encrypt(ip_address) if ip_address else None,
-             "bl": 1 if blocked else 0,
-             "det": encrypt(json.dumps(details)) if details else None, "cat": _now()},
-        )
+        # One row per person per rule, not one per sign-in. These rules are
+        # re-evaluated on every registration and login, so the same account on
+        # the same device appended an identical flag row each time. "uid" is
+        # part of the key so two accounts sharing one device stay two separate
+        # flags; the encrypted columns cannot be matched on. reviewed is left
+        # alone -- a repeat is nothing an operator has not already dismissed.
+        dup = None
+        try:
+            cur.execute(
+                "SELECT id FROM device_events WHERE event_type=:et "
+                "AND NVL(lookup_hash,'~')=NVL(:lh,'~') "
+                "AND NVL(\"uid\",'~')=NVL(:user_id,'~') FETCH FIRST 1 ROW ONLY",
+                {"et": event_type, "lh": lookup,
+                 "user_id": str(user_id) if user_id else None},
+            )
+            row = cur.fetchone()
+            dup = row[0] if row else None
+        except Exception as ex:
+            # A failed dedupe check must not lose the event it was checking for.
+            _debug_print(f"[database] device event dedupe check failed: {ex}", file=sys.stderr)
+        if dup:
+            cur.execute(*_device_event_bump(details_enc, ip_enc, blocked, now, dup))
+        else:
+            cur.execute(
+                "INSERT INTO device_events(\"uid\", username, event_type, lookup_hash, fingerprint_enc, "
+                "device_info_enc, ip_address, blocked, reviewed, occurrences, details, created_at) "
+                "VALUES(:user_id,:un,:et,:lh,:fe,:de,:ip,:bl,0,1,:det,:cat)",
+                {"user_id": str(user_id) if user_id else None, "un": username_enc, "et": event_type,
+                 "lh": lookup,
+                 "fe": encrypt(fingerprint_hash) if fingerprint_hash else None,
+                 "de": device_enc,
+                 "ip": ip_enc,
+                 "bl": 1 if blocked else 0,
+                 "det": details_enc, "cat": now},
+            )
         uconn.commit()
     except Exception as ex:
         _debug_print(f"[database] could not record device event {event_type}: {ex}", file=sys.stderr)
@@ -3360,7 +3469,8 @@ def get_device_events(limit=200, offset=0, only_unreviewed=False, user_id=None):
         where.append("\"uid\"=:user_id")
         params["user_id"] = str(user_id)
     sql = ("SELECT id, \"uid\", username, event_type, lookup_hash, fingerprint_enc, device_info_enc, "
-           "ip_address, blocked, reviewed, details, created_at FROM device_events")
+           "ip_address, blocked, reviewed, NVL(occurrences,1) AS occurrences, details, created_at "
+           "FROM device_events")
     if where:
         sql += " WHERE " + " AND ".join(where)
     sql += " ORDER BY created_at DESC"
@@ -3399,6 +3509,7 @@ def get_device_events(limit=200, offset=0, only_unreviewed=False, user_id=None):
                 pass
         d["blocked"] = int(d.get("blocked") or 0)
         d["reviewed"] = int(d.get("reviewed") or 0)
+        d["occurrences"] = int(d.get("occurrences") or 1)
         out.append(d)
     return out
 

@@ -29,8 +29,25 @@
       <div><dt>Memory per server</dt><dd>{{ settings.memory_mb if settings else 300 }} MB</dd></div>
       <div><dt>CPU per server</dt><dd>{{ settings.cpu_percent if settings else 35 }}% of a core</dd></div>
       <div><dt>Disk per server</dt><dd>{{ settings.disk_mb if settings else 600 }} MB</dd></div>
+      {% if trial and trial.is_trial %}
+        <div><dt>Trial expires</dt><dd>{{ trial.expires_display or '—' }}{% if trial.days_left is not none %} ({{ trial.days_left }} day{{ '' if trial.days_left == 1 else 's' }} left){% endif %}</dd></div>
+      {% endif %}
     </dl>
   </section>
+
+  {# Mid-page slot: this page otherwise carries only base.html's sidebar rail
+     and closing strip, so the summary-to-password stretch is the gap. Desktop
+     only (not is_mobile), so the phone layout stays exactly as it was;
+     house_ads already folds the console switch, the site-wide master switch
+     and this visitor's ads_disabled opt-out, so there is nothing further to
+     gate on. #}
+  {% if house_ads and not is_mobile %}
+    <aside class="house-promo-tile" aria-label="Promotion">
+      <span class="house-promo-eyebrow">Included</span>
+      <span class="house-promo-copy">Every slot ships with persistent disk and outbound networking — see what a hosting slot includes.</span>
+      <a class="house-promo-cta" href="{{ site_url('/hosting') }}">What you get <i>&rarr;</i></a>
+    </aside>
+  {% endif %}
 
   <section class="panel-section">
     {% if password_local %}

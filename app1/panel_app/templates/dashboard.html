@@ -32,6 +32,9 @@
           {% if trial.days_left is not none and trial.days_left > 0 %}
             About {{ trial.days_left }} day{{ '' if trial.days_left == 1 else 's' }} left.
           {% endif %}
+          {% if trial.expires_display %}
+            Current expiry: <strong>{{ trial.expires_display }}</strong>.
+          {% endif %}
         </p>
       </div>
       <form action="{{ url_for('renew') }}" method="post" class="inline-form">

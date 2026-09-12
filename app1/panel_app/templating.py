@@ -424,6 +424,25 @@ def house_ads_enabled(settings=None) -> bool:
     return bool(getattr(settings, "house_ads", False))
 
 
+def house_ads_visible(settings=None, session=None) -> bool:
+    """Whether this render actually shows the house-ad promos for this visitor.
+
+    Folds the per-user opt-out onto :func:`house_ads_enabled`'s site-wide answer:
+    a signed-in visitor who turned ads off in their account never sees the promos,
+    even while the site-wide master switch and ``panel_flag_house_ads`` are both on.
+    Signed out, or no flag, falls through to the site-wide answer unchanged.
+
+    The flag is ``users.ads_disabled`` — the same column the main site's ad stack
+    honours — surfaced onto the main-site session by ``/api/session`` and read here
+    off the session dict the panel already fetches once per request. So this stays a
+    pure ``(snapshot, dict) -> bool`` read with no store call of its own, and the
+    panel and the public pages can never disagree about one account's choice.
+    """
+    if not house_ads_enabled(settings):
+        return False
+    return not bool((session or {}).get("ads_disabled"))
+
+
 def sidebar_collapsed(request: Request) -> bool:
     """Whether this render starts with the sidebar minimised to the icon rail.
 
@@ -521,7 +540,7 @@ def render(
     ctx["current_user"] = current_user
     ctx["guard_mode"] = guard_mode(request, settings)
     ctx["settings"] = settings
-    ctx["house_ads"] = house_ads_enabled(settings)
+    ctx["house_ads"] = house_ads_visible(settings, auth.flask_session(request))
     ctx["sidebar_collapsed"] = sidebar_collapsed(request)
     ctx["is_mobile"] = _is_mobile_user_agent(request)
     ctx["site_url"] = _make_site_url(getattr(config, "main_site_url", ""))

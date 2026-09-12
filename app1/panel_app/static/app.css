@@ -410,6 +410,7 @@ svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width:
 .detail-card strong, .detail-card code { font-size: 16px; }
 .detail-card code { display: block; padding: 13px; border-radius: 6px; background: #090b0f; color: #cfd7e3; white-space: pre-wrap; }
 .detail-card p { margin: 8px 0 0; color: var(--muted-2); font-size: 12px; }
+.detail-card p.stacked-note { margin: 0; }
 .detail-card { transition: border-color .16s ease; }
 .detail-card:hover { border-color: rgba(var(--accent-rgb), .32); }
 

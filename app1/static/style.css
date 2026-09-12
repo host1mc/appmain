@@ -1174,6 +1174,16 @@ a:hover{color:var(--accent)}
 .ad-banner-160x300{min-height:300px;margin:16px auto}
 @media(max-width:900px){.ad-banner-160x600,.ad-banner-160x300{display:none}}
 
+.ad-rail{position:fixed;top:calc(var(--nav-height) + 24px);right:24px;z-index:40;display:none;width:160px}
+.ad-rail .ad-container{margin:0}
+@media(min-width:1600px){.ad-rail{display:block}}
+
+/* Logged-in panel slots: side-by-side on desktop, fully hidden on mobile so
+   the mobile layout (sticky .ad-mobile + social bar) stays byte-identical. */
+.panel-side-ads,.panel-mid-ads{display:flex;justify-content:center;align-items:flex-start;gap:18px;flex-wrap:wrap;margin:16px auto;max-width:640px}
+.panel-side-ads>.ad-container,.panel-mid-ads>.ad-container{margin:0;flex:0 1 auto}
+@media(max-width:900px){.panel-side-ads,.panel-mid-ads{display:none}}
+
 .product-cards{display:grid;grid-template-columns:1fr 1fr;gap:18px;margin-bottom:26px}
 .product-card{
   display:flex;flex-direction:column;gap:16px;padding:22px 24px;
@@ -2000,7 +2010,7 @@ img,video{height:auto}
 @media print {
   :root { color-scheme: light; }
   body { background: #fff !important; color: #111 !important; }
-  .ad-container, .ad-pair, #script-gate, .skip-link, .nav, .footer { display: none !important; }
+  .ad-container, .ad-pair, .ad-rail, .panel-side-ads, .panel-mid-ads, #script-gate, .skip-link, .nav, .footer { display: none !important; }
   main, .legal, .blog-list, .blog-card { background: transparent !important; color: #111 !important; }
   h1, h2, h3, h4, h5, h6, p, li, td, th, time, strong,
   .legal-intro, .legal-updated, .blog-lead, .blog-meta { color: #111 !important; }
