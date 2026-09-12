@@ -197,6 +197,7 @@
   {{ ad_unit('mobile') }}
   {{ ad_unit('popunder_entry') }}
   {{ ad_unit('social_bar') }}
+  {% include "_consent_banner.html" %}
   {{ ad_scripts() }}
   <script nonce="{{ csp_nonce }}" src="{{ url_for('static', filename='a4.js') }}" defer></script>
   <script nonce="{{ csp_nonce }}" src="{{ url_for('static', filename='n3.js') }}" defer></script>

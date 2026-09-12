@@ -4705,6 +4705,14 @@ AD_ZONES = {
     "leaderboard": "728×90 Leaderboard",
     "mobile": "320×50 Mobile",
     "popunder_entry": "Popunder (entry pages)",
+    # No ad_unit() slot: the push tags are emitted by ad_scripts() in
+    # frontend.py, and this is the switch that governs them — off kills the
+    # push tags while leaving every banner untouched.
+    "push": "Push tags (entry pages)",
+    # The responsive AdSense display unit (ads_config.AD_UNITS adsense_display).
+    # Like every other zone it resolves through the master switch, the page
+    # switch, the network switch and per-user overrides.
+    "adsense_display": "AdSense Display (responsive)",
 }
 
 # The ad networks' head loaders, mirroring ads_config.AD_NETWORKS. This module
@@ -4717,9 +4725,8 @@ AD_ZONES = {
 #                  Without either it can be toggled but nothing will ever
 #                  load, so the console shows it as not-configured.
 AD_NETWORKS = {
-    "effectivecpm": {"label": "EffectiveCPM", "default_on": True, "configured": True},
+    "effectivecpm": {"label": "Monetag", "default_on": True, "configured": True},
     "adstera": {"label": "Adstera", "default_on": False, "configured": False},
-    "vignette": {"label": "Vignette", "default_on": True, "configured": True},
     # AdSense's loader is built from the ADSENSE_CLIENT environment variable
     # rather than a literal in ads_config, so "configured" cannot be decided
     # here: this module is vendored standalone and deliberately imports nothing

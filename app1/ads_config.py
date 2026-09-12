@@ -62,6 +62,14 @@ if not re.fullmatch(r"[A-Za-z0-9-]{1,64}", ADSENSE_PUB_ID or ""):
     ADSENSE_PUB_ID = ""
 ADSENSE_CLIENT = f"ca-{ADSENSE_PUB_ID}" if ADSENSE_PUB_ID else ""
 
+# The AdSense ad-slot id (data-ad-slot) for the responsive display unit below,
+# from the environment like the publisher id: it comes from the AdSense
+# dashboard (Ads > By ad unit), it is per-deployment, and committing a real one
+# would publish another account's slot id. Digits only — anything else leaves
+# the unit inert, the same as an unset variable.
+_ADSENSE_SLOT_RAW = cf_edge._setting("ADSENSE_SLOT").strip()
+ADSENSE_SLOT = _ADSENSE_SLOT_RAW if re.fullmatch(r"[0-9]{1,20}", _ADSENSE_SLOT_RAW) else ""
+
 # The page-head loader scripts. Each network's tag is emitted by ad_head_html()
 # into the <head> of every template. Every network is toggleable from the admin
 # console (ad_network_<id> settings rows in database.AD_NETWORKS); "default_on"
@@ -84,7 +92,7 @@ AD_NETWORKS = {
     # default instead of this one, so flipping default_on in database.AD_NETWORKS
     # would silently stop matching what the units actually do.
     "effectivecpm": {
-        "label": "EffectiveCPM",
+        "label": "Monetag",
         "loader": "",
         "zone_id": "",
         "default_on": True,
@@ -94,12 +102,6 @@ AD_NETWORKS = {
         "loader": "",
         "zone_id": "",
         "default_on": False,
-    },
-    "vignette": {
-        "label": "Vignette",
-        "loader": "https://n6wxm.com/vignette.min.js",
-        "zone_id": "11694447",
-        "default_on": True,
     },
     "adsense": {
         "label": "Google AdSense",
@@ -206,6 +208,12 @@ AD_UNITS = {
         "src": "https://pl29657149.effectivecpmnetwork.com/"
                "c3/64/7d/c3647d39705a5be0636159b629ed3da2.js",
     },
+    "adsense_display": {
+        "label": "AdSense Display (responsive)",
+        "network": "adsense",
+        "kind": "adsense",
+        "css": "ad-adsense-display",
+    },
 }
 
 def _script_url(url):
@@ -307,6 +315,24 @@ def ad_unit_html(key, nonce=""):
     unit = AD_UNITS.get(key)
     if not unit:
         return ""
+    if unit.get("kind") == "adsense":
+        # Responsive AdSense display unit. Inert until the deployment provides
+        # both the publisher id (loader + ads.txt) and the ad-slot id: serving
+        # an <ins> without either would request ads for nobody. The push call
+        # is a nonce script because the page CSP has no unsafe-inline.
+        if not ADSENSE_CLIENT or not ADSENSE_SLOT:
+            return ""
+        nonce_attr = (f' nonce="{html.escape(str(nonce), quote=True)}"'
+                      if nonce else "")
+        return (
+            f'<div class="ad-container {html.escape(str(unit.get("css", "")), quote=True)}">'
+            f'<ins class="adsbygoogle" style="display:block"'
+            f' data-ad-client="{html.escape(ADSENSE_CLIENT, quote=True)}"'
+            f' data-ad-slot="{html.escape(ADSENSE_SLOT, quote=True)}"'
+            f' data-ad-format="auto" data-full-width-responsive="true"></ins>'
+            f"<script{nonce_attr}>(adsbygoogle=window.adsbygoogle||[]).push({{}});</script>"
+            "</div>"
+        )
     src = _script_url(unit.get("src"))
     if not src:
         return ""

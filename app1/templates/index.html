@@ -249,11 +249,13 @@
           <p>Free, no paywall. Paste your code, set a start command, and your bot is live — a one-click weekly renewal keeps it running, all from a single console.</p>
         </div>
       </div>
-      <div class="section-cta">
-        <a href="{{ site_url('hosting') }}" class="btn btn-primary btn-lg">Explore app hosting</a>
+    <div class="section-cta">
+        <a href="{{ panel_url('user_register') }}" class="btn btn-primary btn-lg">Deploy your app free</a>
         <a href="/panel" class="btn btn-ghost btn-lg">Open the panel</a>
       </div>
     </section>
+
+    {{ ad_unit('adsense_display') }}
 
     {% if reviews %}
 
@@ -335,6 +337,7 @@
   {{ ad_unit('mobile') }}
   {{ ad_unit('popunder_entry') }}
   {{ ad_unit('social_bar') }}
+  {% include "_consent_banner.html" %}
   {{ ad_scripts() }}
 </body>
 </html>

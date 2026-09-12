@@ -2255,6 +2255,28 @@ def _is_search_crawler():
     return False
 
 
+def _consent_allows_ads():
+    """Whether the visitor's cookie choice permits advertising right now.
+
+    Read from the cookie_consent cookie the consent banner writes (Accept /
+    Decline, one year). A decline always suppresses ads — and the guard's
+    third-party probes with them. Silence suppresses only when the admin
+    console's consent-required switch is on (opt-in regime); otherwise ads
+    serve until an explicit decline, matching get_ad_consent_required's
+    documented default. Anything unrecognised counts as silence, never as
+    consent.
+    """
+    try:
+        choice = (request.cookies.get("cookie_consent") or "").strip().lower()
+    except RuntimeError:
+        return True
+    if choice == "decline":
+        return False
+    if choice == "accept":
+        return True
+    return not bool(_ad_state()["consent_required"])
+
+
 @app.context_processor
 def _inject_guard_mode():
 
@@ -2264,7 +2286,14 @@ def _inject_guard_mode():
         return dict(guard_mode="off")
 
 
-    return dict(guard_mode="gate")
+    guard_mode = state["guard_mode"]
+    if guard_mode not in _AD_GUARD_MODES:
+        guard_mode = _AD_GUARD_MODE_DEFAULT
+    if not _consent_allows_ads():
+        # No third-party ad probes without consent: the guard's baits hit ad
+        # domains, so standing it down is part of honouring a decline.
+        return dict(guard_mode="off")
+    return dict(guard_mode=guard_mode)
 
 
 @app.context_processor
@@ -2281,6 +2310,8 @@ def _inject_ad_enabled():
 
         if not _ads_permitted() or not enabled:
             return False
+        if not _consent_allows_ads():
+            return False
         if zones is None:
             return True
         return bool(zones.get(key, False))
@@ -2290,19 +2321,9 @@ def _inject_ad_enabled():
 
         if not _ads_permitted() or not enabled:
             return Markup("")
-        is_mobile = bool(request.user_agent and request.user_agent.is_mobile)
-        is_auth_or_home = (
-            request.path == "/"
-            or request.path.startswith("/") and request.path.endswith("/")
-            or request.path.startswith("/user/login")
-            or request.path.startswith("/user/register")
-            or request.path.startswith("/api/auth/")
-            or request.path.startswith("/otp")
-            or request.path.startswith("/user/otp")
-        )
+        if not _consent_allows_ads():
+            return Markup("")
         effective_networks = dict(networks) if networks is not None else {k: v for k, v in ads_config.AD_NETWORKS.items() if v.get("default_on", True)}
-        if is_mobile or is_auth_or_home:
-            effective_networks["vignette"] = False
         return Markup(ads_config.ad_head_html(
             getattr(request, "csp_nonce", ""), effective_networks))
 
@@ -2323,7 +2344,10 @@ def _inject_ad_enabled():
         push_script = ""
 
 
-        if _ads_permitted() and enabled and not is_mobile and not is_auth_or_home:
+        # Push tags have no ad_unit of their own, so they honour the dedicated
+        # "push" zone switch instead — an operator can kill them for an AdSense
+        # review while leaving every banner exactly where it is.
+        if _ads_permitted() and enabled and not is_mobile and not is_auth_or_home and ad_zone("push"):
             push_script = (
                 f'<script nonce="{nonce}" src="https://5gvci.com/act/files/tag.min.js?z=11694617" data-cfasync="false" async></script>'
                 f'<script nonce="{nonce}">(function(s){{s.dataset.zone=\'11694505\';'

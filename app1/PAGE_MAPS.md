@@ -148,10 +148,17 @@ Endpoint `user_bot_editor` (`/user/bot/<id>`), **default off** — the units bel
 are in the markup but render only once an admin enables
 `ad_page_user_bot_editor`.
 
+Tight layout, one block per gap, no duplicates: leaderboard strip at the top
+of the content, native fluid unit mid-form (left column), one 300×250 box in
+the right rail under the preview, then mobile + social bar. No skyscraper in
+the rail, no bottom stack.
+
 ```
 ┌────────────────────────────────────────────────────────────┐
 │ NAV: logo · BOTS · SLOTS · DISCORD · SETTINGS · logout      │
 │ ◢ head: legacy ad loader ─────────────────────────────── L4│
+├────────────────────────────────────────────────────────────┤
+│ │ AD ▸ Effective CPM · banner 728×90 · DESKTOP (top)      │ │
 ├────────────────────────────────────────────────────────────┤
 │ ┌──────────────────────────────┐ ┌──────────────────────┐  │
 │ │ BOT CONFIG                    │ │ EMBED PREVIEW        │  │
@@ -159,17 +166,15 @@ are in the markup but render only once an admin enables
 │ │ token · guild · channel       │ │ ┌──────────────────┐ │  │
 │ │ widgets + add-widget          │ │ │ AD ▸ Effective   │ │  │
 │ │ [Save] [Preview] [Refresh]    │ │ │  CPM · banner    │ │  │
-│ └──────────────────────────────┘ │ │  160×600 ·        │ │  │
-│                                  │ │  DESKTOP (sidebar)│ │  │
-│                                  │ │  banner_160x600   │ │  │
-│                                  │ │  ────────── L204  │ │  │
+│ │ AD ▸ native (fluid, mid-form) │ │ │  300×250 ·       │ │  │
+│ └──────────────────────────────┘ │ │  DESKTOP (rail)  │ │  │
 │                                  │ └──────────────────┘ │  │
 │                                  └──────────────────────┘  │
 ├────────────────────────────────────────────────────────────┤
 │ modal: settings · toast                                     │
-│ AD ▸ Effective CPM · banner 320×50 · MOBILE ── L1463       │
-│ AD ▸ Effective CPM · social bar · BOTH ────────── L1464    │
-│ (ads.js ─────────────────────── L1466)                       │
+│ AD ▸ Effective CPM · banner 320×50 · MOBILE                 │
+│ AD ▸ Effective CPM · social bar · BOTH                       │
+│ (ads.js)                                                     │
 └────────────────────────────────────────────────────────────┘
 ```
 
@@ -179,31 +184,32 @@ Endpoint `user_bot_replies` (`/user/bot/<id>/replies`), **default off** — the
 units below are in the markup but render only once an admin enables
 `ad_page_user_bot_replies`.
 
+Same tight shape as the embed builder: leaderboard on top, native mid-form,
+one 300×250 box in the right rail, then mobile + social bar.
+
 ```
 ┌────────────────────────────────────────────────────────────┐
 │ NAV: logo · <user> · EMBED BUILDER · HOME · logout         │
 │ ◢ head: legacy ad loader ─────────────────────────────── L4│
 ├────────────────────────────────────────────────────────────┤
-│ ┌──────────────────────────────────────────────────────┐   │
-│ │ AD ▸ Effective CPM · banner 728×90 · DESKTOP         │   │
-│ │     leaderboard ───────────────────────────── L29    │   │
-│ └──────────────────────────────────────────────────────┘   │
+│ │ AD ▸ Effective CPM · banner 728×90 · DESKTOP (top)      │ │
 ├────────────────────────────────────────────────────────────┤
 │ CARD: "IP Reply — <bot>" · enable · saved-state pill       │
 │ ┌──────────────────────────────┐ ┌──────────────────┐      │
 │ │ TRIGGER word                 │ │ PREVIEW          │      │
 │ │ REPLY TYPE plain / embed     │ │ [discord-chat    │      │
 │ │  message text                │ │  mock]           │      │
-│ │  title / desc / footer       │ │ (no ads)         │      │
-│ │  accent colour               │ └──────────────────┘      │
-│ │ PLACEHOLDERS {ip} {port} …   │                           │
-│ │ [Save IP Reply]              │                           │
+│ │  title / desc / footer       │ │ ┌──────────────┐ │      │
+│ │  accent colour               │ │ │ AD ▸ 300×250 │ │      │
+│ │ PLACEHOLDERS {ip} {port} …   │ │ │ (rail)       │ │      │
+│ │ AD ▸ native (fluid, mid-form)│ │ └──────────────┘ │      │
+│ │ [Save IP Reply]              │ └──────────────────┘      │
 │ └──────────────────────────────┘                           │
 ├────────────────────────────────────────────────────────────┤
 │ toast                                                      │
-│ AD ▸ Effective CPM · banner 320×50 · MOBILE ── L117        │
-│ AD ▸ Effective CPM · social bar · BOTH ────────── L118     │
-│ (ads.js ─────────────────────── L120)                      │
+│ AD ▸ Effective CPM · banner 320×50 · MOBILE                 │
+│ AD ▸ Effective CPM · social bar · BOTH                       │
+│ (ads.js)                                                     │
 └────────────────────────────────────────────────────────────┘
 ```
 
@@ -212,26 +218,28 @@ units below are in the markup but render only once an admin enables
 Endpoint `user_dashboard` (`/user`), **default off** — the units below are in the
 markup but render only once an admin enables `ad_page_user_dashboard`.
 
+Tight layout: leaderboard on top, 468×60 after the product cards, one native
+fluid unit mid-page, one 300×250 box at the end — each separated by content,
+no tall mid-page block, no duplicates.
+
 ```
 ┌────────────────────────────────────────────────────────────┐
 │ NAV                                                         │
 │ ◢ head: legacy ad loader ─────────────────────────────── L4│
-│ ┌──────────────────────────────────────────────────────┐   │
-│ │ AD ▸ Effective CPM · banner 728×90 · DESKTOP         │   │
-│ │     leaderboard ───────────────────────────── L79    │   │
-│ └──────────────────────────────────────────────────────┘   │
+│ │ AD ▸ Effective CPM · banner 728×90 · DESKTOP (top)      │ │
+├────────────────────────────────────────────────────────────┤
+│  PRODUCT CARDS                                              │
+│ │ AD ▸ Effective CPM · banner 468×60 · DESKTOP            │ │
 ├────────────────────────────────────────────────────────────┤
 │  SLOT CARDS (bot name · status · start/stop · edit)        │
+│ │ AD ▸ Effective CPM · native (fluid, mid-page)          │ │
 ├────────────────────────────────────────────────────────────┤
-│ ┌──────────────────────────────────────────────────────┐   │
-│ │ AD ▸ Effective CPM · native (fluid) · BOTH           │   │
-│ │     native ────────────────────────────────── L81    │   │
-│ └──────────────────────────────────────────────────────┘   │
-│  upgrade-to-more-slots CTA                                  │
+│  REVIEW BOX                                                 │
+│ │ AD ▸ Effective CPM · banner 300×250 · DESKTOP (end)     │ │
 ├────────────────────────────────────────────────────────────┤
-│ AD ▸ Effective CPM · banner 320×50 · MOBILE ── L186       │
-│ AD ▸ Effective CPM · social bar · BOTH ────────── L187    │
-│ (ads.js ─────────────────────── L189)                       │
+│ AD ▸ Effective CPM · banner 320×50 · MOBILE                 │
+│ AD ▸ Effective CPM · social bar · BOTH                       │
+│ (ads.js)                                                     │
 └────────────────────────────────────────────────────────────┘
 ```
 
@@ -245,20 +253,17 @@ are in the markup but render only once an admin enables
 ┌────────────────────────────────────────────────────────────┐
 │ NAV                                                         │
 │ ◢ head: legacy ad loader ─────────────────────────────── L4│
-│ ┌──────────────────────────────────────────────────────┐   │
-│ │ AD ▸ Effective CPM · native (fluid) · BOTH           │   │
-│ │     native ────────────────────────────────── L80    │   │
-│ └──────────────────────────────────────────────────────┘   │
-│ ┌──────────────────────────────────────────────────────┐   │
-│ │ AD ▸ Effective CPM · banner 160×300 · DESKTOP        │   │
-│ │     banner_160x300 ──────────────────────── L82      │   │
-│ └──────────────────────────────────────────────────────┘   │
 ├────────────────────────────────────────────────────────────┤
 │  DOCS: formatting guide (markdown, fields, embeds)         │
+│ ┌────────────────────────────────────────────────────────┐ │
+│ │ AD ▸ Effective CPM · native (fluid) + banner 300×250  │ │
+│ │     side-by-side pair (.formatting-ad-pair)           │ │
+│ └────────────────────────────────────────────────────────┘ │
+│ │ AD ▸ Effective CPM · banner 728×90 · DESKTOP (end)     │ │
 ├────────────────────────────────────────────────────────────┤
-│ AD ▸ Effective CPM · banner 320×50 · MOBILE ── L85        │
-│ AD ▸ Effective CPM · social bar · BOTH ────────── L86     │
-│ (ads.js ─────────────────────── L88)                       │
+│ AD ▸ Effective CPM · banner 320×50 · MOBILE                 │
+│ AD ▸ Effective CPM · social bar · BOTH                       │
+│ (ads.js)                                                     │
 └────────────────────────────────────────────────────────────┘
 ```
 
@@ -321,7 +326,7 @@ with no row is waved through by `_ads_permitted()` with no switch reaching it.
 | Company | What it serves | Where |
 |---|---|---|
 | **Legacy ad loader** | legacy head loader | `<head>` of templates that call `ad_head()` |
-| **Effective CPM** | Every display unit (highperformanceformat.com + effectivecpmnetwork.com invoke.js) | the 13 templates carrying `ad_unit()` calls — every ad page except terms/privacy |
+| **Monetag** | Every display unit (highperformanceformat.com + effectivecpmnetwork.com invoke.js) | the 13 templates carrying `ad_unit()` calls — every ad page except terms/privacy |
 | **Effective CPM** | Social bar (pl29657149) | bottom of all 13 unit-carrying pages |
 | **Effective CPM** | Popunder (pl29657147) | entry pages only: index, user_login, user_register |
 | **Adstera** | — | `ads_config.py:88-93` — entry exists with a blank loader, so `ad_head_html()` skips it; paste the dashboard loader/zone to enable |

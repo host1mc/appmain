@@ -1,0 +1,38 @@
+{# Cookie consent banner. Shown until the visitor picks Accept or Decline; the
+   choice is stored in the cookie_consent cookie (not the session) so it
+   survives logouts and applies to anonymous visitors too. frontend.py reads
+   that cookie on every render: a decline always suppresses ads (and the
+   ad-block guard's third-party probes), while silence suppresses them only
+   when the admin console's consent-required switch is on. #}
+<div class="consent-banner" id="cookie-consent" hidden>
+  <p class="consent-text">We use cookies to measure and personalise the ads that keep this site free. Accept for personalised ads, or decline for limited, non-personalised ads. <a href="{{ site_url('privacy') }}">Privacy Policy</a></p>
+  <div class="consent-actions">
+    <button class="btn btn-primary btn-sm" type="button" data-consent="accept">Accept</button>
+    <button class="btn btn-ghost btn-sm" type="button" data-consent="decline">Decline</button>
+  </div>
+</div>
+<script nonce="{{ csp_nonce }}">
+(function () {
+  var NAME = 'cookie_consent';
+  function read() {
+    var m = document.cookie.match(new RegExp('(?:^|;\\s*)' + NAME + '=([^;]*)'));
+    return m ? decodeURIComponent(m[1]).toLowerCase() : '';
+  }
+  function write(v) {
+    document.cookie = NAME + '=' + encodeURIComponent(v)
+      + '; max-age=31536000; path=/; SameSite=Lax';
+  }
+  var bar = document.getElementById('cookie-consent');
+  if (!bar) return;
+  var cur = read();
+  if (cur !== 'accept' && cur !== 'decline') bar.hidden = false;
+  bar.addEventListener('click', function (e) {
+    var btn = e.target && e.target.closest ? e.target.closest('[data-consent]') : null;
+    if (!btn) return;
+    var v = btn.getAttribute('data-consent');
+    if (v !== 'accept' && v !== 'decline') return;
+    write(v);
+    bar.hidden = true;
+  });
+})();
+</script>

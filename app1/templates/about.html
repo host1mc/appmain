@@ -74,6 +74,8 @@
       <h2>Who runs this</h2>
       <p>ENDHOST is built and operated by <strong>Endevil</strong>, a small independent project rather than a company with a support department. Support, feature requests, and outage reports all go through the same place: our Discord community, where the people who actually write the code read them. If you would rather not use Discord, the <a href="{{ site_url('contact') }}">contact page</a> lists the alternative.</p>
 
+      {{ ad_unit('adsense_display') }}
+
       <h2>Roadmap and honesty about limits</h2>
       <p>Because this is a free shared service, there are limits worth stating plainly. We do not promise an uptime figure, we can suspend accounts that abuse the platform, and a very large Minecraft network with unusual requirements is probably better served by hosting its own bot. What we do commit to is that the core hosting stays free, that your token stays encrypted, and that you can delete your account and its data whenever you want.</p>
 
@@ -115,6 +117,7 @@
   {% include "_ad_rail.html" %}
   {{ ad_unit('mobile') }}
   {{ ad_unit('social_bar') }}
+  {% include "_consent_banner.html" %}
   {{ ad_scripts() }}
 </body>
 </html>

@@ -52,9 +52,12 @@ def backend(guard_mode="gate", consent_required=False, pages=None,
 
 
 def probe(url="/", consent=None, ua="Mozilla/5.0", user_id=None):
-    with app.test_request_context(url, headers={"User-Agent": ua}):
-        if consent:
-            frontend.session["cookie_consent"] = consent
+    # Consent travels as a real browser cookie (cookie_consent), which is what
+    # frontend._consent_allows_ads() reads — not the Flask session.
+    headers = {"User-Agent": ua}
+    if consent:
+        headers["Cookie"] = f"cookie_consent={consent}"
+    with app.test_request_context(url, headers=headers):
         if user_id:
             frontend.session["user_id"] = user_id
         ads = frontend._ads_permitted()

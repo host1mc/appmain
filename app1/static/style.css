@@ -1164,6 +1164,8 @@ a:hover{color:var(--accent)}
 .ad-pair{display:flex;justify-content:center;align-items:flex-start;gap:18px;flex-wrap:wrap;margin:16px auto;max-width:640px}
 .ad-pair > .ad-container{margin:0;flex:0 1 auto}
 .blog-ad-pair,.help-ad-pair{max-width:800px;margin:0 auto 36px}
+.formatting-ad-pair{max-width:820px;margin:0 auto 36px}
+.formatting-ad-pair .ad-banner-300x250{margin:0}
 .blog-ad-pair .ad-banner-468x60,.blog-ad-pair .ad-banner-300x250,
 .help-ad-pair .ad-banner-468x60,.help-ad-pair .ad-banner-300x250{margin:0}
 @media(max-width:768px){.blog-ad-pair,.help-ad-pair{display:none}}
@@ -1174,13 +1176,17 @@ a:hover{color:var(--accent)}
 .ad-banner-160x300{width:160px;height:300px;margin:16px auto}
 @media(max-width:900px){.ad-banner-160x600,.ad-banner-160x300{display:none}}
 
+/* Responsive AdSense display unit: fluid width, reserved floor so the page
+   does not jump when the creative loads. Hidden with the unit when unset. */
+.ad-adsense-display{width:min(728px,100%);min-height:100px;margin:16px auto}
+
 .ad-rail{position:fixed;top:calc(var(--nav-height) + 24px);right:24px;z-index:40;display:none;width:160px}
 .ad-rail .ad-container{margin:0}
 @media(min-width:1600px){.ad-rail{display:block}}
 
 /* Logged-in panel slots: side-by-side on desktop, fully hidden on mobile so
    the mobile layout (sticky .ad-mobile + social bar) stays byte-identical. */
-.panel-side-ads,.panel-mid-ads{display:flex;justify-content:center;align-items:flex-start;gap:18px;flex-wrap:wrap;margin:16px auto;max-width:640px}
+.panel-side-ads,.panel-mid-ads{display:flex;justify-content:center;align-items:flex-start;gap:20px;flex-wrap:wrap;margin:28px auto;padding:4px 0;max-width:640px}
 .panel-side-ads>.ad-container,.panel-mid-ads>.ad-container{margin:0;flex:0 1 auto}
 @media(max-width:900px){.panel-side-ads,.panel-mid-ads{display:none}}
 
